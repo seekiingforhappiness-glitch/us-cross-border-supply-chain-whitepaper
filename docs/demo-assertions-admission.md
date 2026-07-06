@@ -18,31 +18,31 @@ AC-DEMO-E（毛利为负）   ：三情景中 conservative 毛利为负 → 系�
 
 ## A. 闭环主线（happy path，AC-DEMO-A）
 
-- [ ] AA1. B1 建案：状态=draft；对 active SKU 建案被拒
-- [ ] AA2. B2 预审：2 条 finding 入库；case→in_precheck；risk_level=low（取 max severity）
-- [ ] AA3. B3 方案：DDP 门禁通过（has_ior + hts verified）；case→plan_ready
-- [ ] AA4. B4 三情景：毛利=报价−9 项成本之和，与手算一致；case→priced
-- [ ] AA5. B5 批准：case→approved，decision_reason 非空
-- [ ] AA6. E1 咬合：批准后 sku_status: candidate→active
-- [ ] AA7. 全链审计：B1→B2→B3→B4→B5 各恰一条 ok 记录，时序单调
+- [x] AA1. B1 建案：状态=draft；对 active SKU 建案被拒
+- [x] AA2. B2 预审：2 条 finding 入库；case→in_precheck；risk_level=low（取 max severity）
+- [x] AA3. B3 方案：DDP 门禁通过（has_ior + hts verified）；case→plan_ready
+- [x] AA4. B4 三情景：毛利=报价−9 项成本之和，与手算一致；case→priced
+- [x] AA5. B5 批准：case→approved，decision_reason 非空
+- [x] AA6. E1 咬合：批准后 sku_status: candidate→active
+- [x] AA7. 全链审计：B1→B2→B3→B4→B5 各恰一条 ok 记录，时序单调
 
 ## B. 门禁反断言（该拒的必须拒）
 
-- [ ] AB1. G1：AC-DEMO-B 批准尝试被拒，理由含 critical finding，且留审计
-- [ ] AB2. G2：AC-DEMO-C 的 DDP 方案在 B3 被拦（缺 IOR），换 DAP 后可通过
-- [ ] AB3. G3：跳过 B4 直接批准（case=plan_ready）被拒
-- [ ] AB4. B4 DDP 成本门禁：duty_tax=0 的 DDP 情景被拒
-- [ ] AB5. B6 校验：reject 不填理由被拒；more_info 不列缺失文件被拒
-- [ ] AB6. 回流：AC-DEMO-D 走 needs_more_info→in_precheck 后仍可走到终态（非终态语义，N3/C1 同理）
+- [x] AB1. G1：AC-DEMO-B 批准尝试被拒，理由含 critical finding，且留审计
+- [x] AB2. G2：AC-DEMO-C 的 DDP 方案在 B3 被拦（缺 IOR），换 DAP 后可通过
+- [x] AB3. G3：跳过 B4 直接批准（case=plan_ready）被拒
+- [x] AB4. B4 DDP 成本门禁：duty_tax=0 的 DDP 情景被拒
+- [x] AB5. B6 校验：reject 不填理由被拒；more_info 不列缺失文件被拒
+- [x] AB6. 回流：AC-DEMO-D 走 needs_more_info→in_precheck 后仍可走到终态（非终态语义，N3/C1 同理）
 
 ## C. 权限与复用断言
 
-- [ ] AC1. sales 调用 B5 审批：被拒且审计留痕（同 v0.2 B4 模式）
+- [x] AC1. sales 调用 B5 审批：被拒且审计留痕（同 v0.2 B4 模式）
 - [ ] AC2. sales 查看 CostScenario 成本字段：显示"无权查看"而非空白
-- [ ] AC3. compliance 调用 B6(reject)：被拒（仅 manager 可拒接）
-- [ ] AC4. **复用性**：AC-DEMO-A 的客户 CUS-0007 与控制塔 RSK-0044 是同一对象——
+- [x] AC3. compliance 调用 B6(reject)：被拒（仅 manager 可拒接）
+- [x] AC4. **复用性**：AC-DEMO-A 的客户 CUS-0007 与控制塔 RSK-0044 是同一对象——
       一条 SQL 同时取出该客户的准入案件与延误风险历史
-- [ ] AC5. **零回归**：v0.2 全部评估器（datagen/pipeline/engine/closed_loop/agent）保持全绿
+- [x] AC5. **零回归**：v0.2 全部评估器（datagen/pipeline/engine/closed_loop/agent）保持全绿
 
 ## D. AI 断言（V4 实现）
 

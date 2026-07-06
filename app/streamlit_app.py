@@ -14,9 +14,15 @@ import streamlit as st
 try:
     from app.actions import (assign_task, propose_mitigation, approve_mitigation,
                              close_risk_event)
+    from app.admission_actions import (create_admission_case, run_compliance_precheck,
+                                       build_logistics_plan, calculate_cost_scenario,
+                                       approve_quote_decision, reject_or_request_more_info)
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from actions import (assign_task, propose_mitigation, approve_mitigation,
                          close_risk_event)
+    from admission_actions import (create_admission_case, run_compliance_precheck,
+                                   build_logistics_plan, calculate_cost_scenario,
+                                   approve_quote_decision, reject_or_request_more_info)
 
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
@@ -39,6 +45,10 @@ def mask_tier(tier, role):
     return tier if role in ("cs", "manager") else "🔒无权查看"
 
 
+def mask_cost(v, role):
+    return v if role in ("finance", "manager") else "🔒无权查看"
+
+
 def show_result(r):
     if r["ok"]:
         # 成功消息存入会话状态，rerun 后仍可见（否则被刷新冲掉，用户会误以为没成功而重复点击）
@@ -51,9 +61,11 @@ def show_result(r):
 # ---------- 侧边栏 ----------
 with st.sidebar:
     st.title("🚢 控制塔")
-    role = st.selectbox("当前角色", ["ops", "cs", "manager"],
+    role = st.selectbox("当前角色", ["ops", "cs", "manager", "sales", "compliance", "finance"],
                         format_func=lambda r: {"ops": "物流运营 ops", "cs": "客户成功 cs",
-                                               "manager": "经理 manager"}[r])
+                                               "manager": "经理 manager", "sales": "销售 sales",
+                                               "compliance": "合规 compliance",
+                                               "finance": "财务 finance"}[r])
     actor = st.text_input("操作人", "daniel")
     st.caption(f"仿真时钟 as_of = **{AS_OF}**（D8）")
     n_open = rows("SELECT count(*) c FROM risk_events WHERE status NOT IN ('resolved','escalated')")[0]["c"]
@@ -62,7 +74,8 @@ with st.sidebar:
 if "flash" in st.session_state:  # 上一动作的成功回执
     st.success(st.session_state.pop("flash"))
 
-tab_risk, tab_task, tab_obj, tab_log = st.tabs(["🚨 风险队列", "🛠 任务处理台", "🔍 对象详情", "📜 审计日志"])
+tab_risk, tab_task, tab_obj, tab_adm, tab_log = st.tabs(
+    ["🚨 风险队列", "🛠 任务处理台", "🔍 对象详情", "📋 准入工作台", "📜 审计日志"])
 
 # ---------- 风险队列 ----------
 with tab_risk:
@@ -201,6 +214,141 @@ with tab_obj:
                    "行状态": x["line_status"], "订单": x["so_id"], "客户": x["customer_name"],
                    "客户等级": mask_tier(x["tier"], role)} for x in chain],
                  width="stretch")
+
+# ---------- 准入工作台（v0.3）----------
+with tab_adm:
+    if role == "sales":
+        with st.expander("➕ 新建准入案件（B1，销售）"):
+            with st.form("b1"):
+                custs = rows("SELECT customer_id, customer_name FROM customers ORDER BY customer_id")
+                cands = rows("SELECT sku_id, sku_name FROM skus WHERE sku_status='candidate'")
+                b1_c = st.selectbox("客户", [c["customer_id"] for c in custs],
+                                    format_func=lambda i: f"{i} {next(x['customer_name'] for x in custs if x['customer_id']==i)}")
+                b1_k = st.selectbox("候选 SKU", [k["sku_id"] for k in cands],
+                                    format_func=lambda i: f"{i} {next(x['sku_name'] for x in cands if x['sku_id']==i)}") if cands else None
+                b1_rt = st.selectbox("请求类型", ["new_sku", "ddp_quote", "dap_quote", "plan_review"])
+                b1_it = st.selectbox("意向贸易术语", ["FOB", "DAP", "DDP", "tbd"])
+                b1_dt = st.date_input("目标上线日", date.fromisoformat(AS_OF) + timedelta(days=60))
+                b1_qty = st.number_input("预估月单量", 100, 100000, 1000)
+                if st.form_submit_button("建案") and b1_k:
+                    show_result(create_admission_case(db(), b1_c, b1_k, b1_rt, b1_it,
+                                                      b1_dt.isoformat(), b1_qty,
+                                                      actor=actor, role=role, as_of=AS_OF))
+    acs = rows("""SELECT a.*, c.customer_name, k.sku_name FROM admission_cases a
+                  JOIN customers c ON c.customer_id=a.customer_id
+                  JOIN skus k ON k.sku_id=a.sku_id ORDER BY a.admission_case_id""")
+    st.dataframe([{"案件": a["admission_case_id"], "标题": a["case_title"],
+                   "术语": a["incoterm_candidate"], "风险": a["risk_level"] or "-",
+                   "状态": a["status"], "决定": a["decision"] or "-"} for a in acs],
+                 width="stretch", height=240)
+    asel = st.selectbox("查看案件", [a["admission_case_id"] for a in acs],
+                        index=[a["admission_case_id"] for a in acs].index("AC-2026-0031"))
+    ac = next(x for x in acs if x["admission_case_id"] == asel)
+    st.markdown(f"**{ac['case_title']}**　状态 `{ac['status']}`　风险 `{ac['risk_level'] or '-'}`"
+                + (f"　决定 `{ac['decision']}`：{ac['decision_reason']}" if ac["decision"] else ""))
+    finds = rows("SELECT * FROM compliance_findings WHERE admission_case_id=?", asel)
+    if finds:
+        st.markdown("**合规发现**")
+        st.dataframe([{"发现": f["compliance_finding_id"], "类型": f["finding_type"],
+                       "级别": f["severity"], "HTS": f["hts_candidate"] or "-",
+                       "机构": f["pga_agency"], "证据": f["evidence_status"],
+                       "建议": f["recommendation"]} for f in finds], width="stretch")
+    aplans = rows("SELECT * FROM logistics_plans WHERE admission_case_id=?", asel)
+    if aplans:
+        st.markdown("**物流方案**")
+        st.dataframe([{"方案": p["logistics_plan_id"], "路线": p["route_type"],
+                       "术语": p["incoterm"],
+                       "港口": f"{p['origin_port_locode']}→{p['destination_port_locode']}",
+                       "时效(天)": p["estimated_transit_days"], "SLA风险": p["sla_risk"]}
+                      for p in aplans], width="stretch")
+        pids = [p["logistics_plan_id"] for p in aplans]
+        scens = rows(f"""SELECT * FROM cost_scenarios
+                         WHERE logistics_plan_id IN ({','.join('?' * len(pids))})""", *pids)
+        if scens:
+            st.markdown("**成本情景（成本与毛利仅财务/经理可见）**")
+            st.dataframe([{"情景": s["cost_scenario_id"], "方案": s["logistics_plan_id"],
+                           "类型": s["scenario_type"],
+                           "报价$": mask_cost(s["quote_price_usd"], role),
+                           "毛利$": mask_cost(s["gross_margin_usd"], role),
+                           "毛利率": mask_cost(s["gross_margin_rate"], role)}
+                          for s in scens], width="stretch")
+    c1, c2 = st.columns(2)
+    with c1:
+        if role == "compliance":
+            with st.form(f"b2_{asel}"):
+                st.markdown("**合规预审（B2，合规）**")
+                ft = st.selectbox("类型", ["hts", "pga", "certification", "labeling", "origin",
+                                          "uflpa", "ad_cvd", "section_301", "platform_rule"])
+                sev = st.selectbox("严重度", ["low", "medium", "high", "critical"])
+                hts = st.text_input("HTS（类型为 hts 必填）", "8504.40.95")
+                pga = st.selectbox("PGA 机构", ["none", "CBP", "FDA", "FCC", "CPSC", "EPA", "USDA"])
+                ev = st.selectbox("证据状态", ["verified", "provided", "missing", "rejected"])
+                rec = st.selectbox("建议", ["accept", "more_docs", "dap_only", "reject", "escalate"])
+                if st.form_submit_button("提交预审"):
+                    show_result(run_compliance_precheck(db(), asel, [{
+                        "finding_title": f"{ft} review", "finding_type": ft, "severity": sev,
+                        "hts_candidate": hts if ft == "hts" else "", "pga_agency": pga,
+                        "evidence_status": ev, "recommendation": rec}],
+                        actor=actor, role=role, as_of=AS_OF))
+        if role == "ops":
+            with st.form(f"b3_{asel}"):
+                st.markdown("**物流方案（B3，运营）**")
+                rt = st.selectbox("路线", ["ocean_fcl", "ocean_lcl", "air_freight", "express",
+                                          "warehouse_fulfillment"])
+                it = st.selectbox("贸易术语", ["FOB", "DAP", "DDP"])
+                op = st.selectbox("起运港", ["CNYTN", "CNSHK", "CNNGB"])
+                dp = st.selectbox("目的港", ["USLAX", "USLGB"])
+                wr = st.selectbox("美仓区域", ["west", "central", "east", "platform"])
+                lm = st.selectbox("尾程", ["UPS", "FedEx", "USPS", "OnTrac", "LTL", "platform"])
+                td = st.number_input("预计总时效(天)", 3, 60, 32)
+                sr = st.selectbox("SLA 风险", ["low", "medium", "high"])
+                if st.form_submit_button("提交方案"):
+                    show_result(build_logistics_plan(db(), asel, {
+                        "plan_name": f"{rt}/{it}", "route_type": rt, "incoterm": it,
+                        "origin_port_locode": op, "destination_port_locode": dp,
+                        "us_warehouse_region": wr, "last_mile_method": lm,
+                        "estimated_transit_days": td, "sla_risk": sr},
+                        actor=actor, role=role, as_of=AS_OF))
+        if role == "finance" and aplans:
+            with st.form(f"b4_{asel}"):
+                st.markdown("**成本情景（B4，财务）**")
+                b4_p = st.selectbox("方案", [p["logistics_plan_id"] for p in aplans])
+                b4_t = st.selectbox("情景", ["conservative", "base", "optimistic"])
+                quote = st.number_input("报价 $", 0.0, step=100.0, value=10000.0)
+                costs = {k: st.number_input(k, 0.0, step=50.0, value=v) for k, v in
+                         (("product_cost_usd", 5000.0), ("first_mile_cost_usd", 300.0),
+                          ("international_freight_usd", 1800.0), ("duty_tax_usd", 650.0),
+                          ("customs_brokerage_usd", 180.0), ("warehouse_cost_usd", 400.0),
+                          ("last_mile_cost_usd", 900.0), ("returns_allowance_usd", 150.0),
+                          ("risk_buffer_usd", 250.0))}
+                if st.form_submit_button("提交情景"):
+                    show_result(calculate_cost_scenario(db(), b4_p, {"scenario_type": b4_t,
+                                "quote_price_usd": quote, **costs},
+                                actor=actor, role=role, as_of=AS_OF))
+    with c2:
+        if role == "manager" and aplans:
+            with st.form(f"b5_{asel}"):
+                st.markdown("**审批（B5，仅经理）——门禁 G1/G2/G3 自动校验**")
+                b5_p = st.selectbox("批准方案", [p["logistics_plan_id"] for p in aplans])
+                allsc = rows("SELECT cost_scenario_id FROM cost_scenarios WHERE logistics_plan_id=?", b5_p)
+                b5_s = st.selectbox("批准情景", [s["cost_scenario_id"] for s in allsc]) if allsc else None
+                b5_d = st.radio("决定", ["approve", "quote_with_conditions"], horizontal=True)
+                b5_r = st.text_input("审批理由")
+                b5_c = st.text_input("附加条件（quote_with_conditions）")
+                if st.form_submit_button("提交审批") and b5_s:
+                    show_result(approve_quote_decision(db(), asel, b5_p, b5_s, b5_d, b5_r, b5_c,
+                                                       actor=actor, role=role, as_of=AS_OF))
+        if role in ("compliance", "manager"):
+            with st.form(f"b6_{asel}"):
+                st.markdown("**拒接 / 补资料（B6）**")
+                b6_d = st.radio("决定", ["more_info", "reject"], horizontal=True,
+                                help="reject 仅经理可执行")
+                b6_m = st.text_input("缺失文件（more_info，分号分隔）")
+                b6_r = st.text_input("拒接原因（reject）")
+                if st.form_submit_button("提交"):
+                    show_result(reject_or_request_more_info(
+                        db(), asel, b6_d, [x.strip() for x in b6_m.split(";") if x.strip()],
+                        b6_r, actor=actor, role=role, as_of=AS_OF))
 
 # ---------- 审计日志 ----------
 with tab_log:
