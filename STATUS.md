@@ -4,33 +4,33 @@
 
 ## 当前位置
 
-- 阶段：**W2 数据生成完成，verify 全绿，待人抽查 + 1 项批准 → W3**
+- 阶段：**W3 完成（管道+对象层，评估全绿）→ 下一步 W4 风险引擎**
 
 ## 已完成
 
-- [x] W0：plan v0.2（D1-D9）+ 治理三件套 + .gitignore
+- [x] W0：plan v0.2（决策日志 D1-D11）+ 治理三件套
 - [x] W1：ontology manual + JSON + demo-assertions（C1-C6 已裁决）
-- [x] W2：`config/datagen.yaml` + `datagen/` 六模块
-- [x] W2：`data/raw/`（9 张含噪源表）+ `data/truth/`（ground truth ×2 + 快照）+ sqlite
-- [x] W2：verify 全部通过（可复现、15 设计案例、多客户击穿 ≥15）
-- [x] 规则澄清同步 manual §7 / JSON（delivered/released 跳过、severity 取最大）
+- [x] W2：datagen 六模块 + 15 设计案例 + ground truth 双表，verify 42 项全绿
+- [x] W2+：真实字段 Tier 1（D11）+ 真实感升级（ISO 柜号/船名池/真实商号）
+- [x] W3：pipeline 重建对象层 → data/ontology.sqlite；重建精度 100%；DQ 报告
+- [x] docs/data-guide.md 小白数据导读；docs/field-gap-analysis.md 字段差距分析
 
 ## 阻塞 / 待人确认
 
-- [x] plan §9 milestone 估算修订已批准（D10）
-- [x] 真实字段调研完成，Tier 1 已采纳实施（D11，docs/field-gap-analysis.md）
-- [ ] 数据真实感抽查（10 分钟）：data/raw/tms_shipments.csv 现在含单证号/SCAC/柜型/LOCODE，
-      重点看 SHP-2026-0099（DEMO-01 主案例）
+- [ ] 阅读 docs/data-guide.md（20 分钟），按 §5 三个动作抽查数据——现在不需要行业经验也能查
 - [ ] （随时可做）W1 走查：demo-assertions A 段对照 manual §3/§5
 
-## 下一步（W3 管道与对象层）
+## 下一步（W4 风险引擎与影响传播）
 
-1. `pipeline/`：清洗 + 状态标准化 + supplier 名称 entity resolution（限时，超时用硬编码映射兜底）
-2. 建 `data/ontology.sqlite`：对象表 + link 表（从含噪源表重建，禁读 data/truth/）
-3. 数据质量报告（空值率、判重量、乱序量、状态冲突修正量、ER 命中率）
-4. W3 验收：影响传播链一条 SQL 走通；对象数与源数据差异可解释
+1. `engine/rules.py`：R1-R3 实现（读 ontology.sqlite，显式 as_of_date，D8）
+2. `engine/detect.py`：生成 RiskEvent 写入 risk_events 表（A2 语义：同键合并升级）
+3. `engine/evaluate.py`：对 expected_risk_events 算查准/查全，KPI：Recall≥95%（高危漏判=0）、
+   Precision≥85%（评估判定逻辑受 AGENTS §5 保护，不得为过而改）
+4. W4 验收：KPI 达标 + 不达标先修规则禁改指标
 
-## 会话交接备注
+## 复现命令
 
-任何模型接手：读 AGENTS.md §0。复现数据：`python3 -m datagen.generate && python3 -m datagen.verify`。
-data/ 在 .gitignore 中，git 里只有代码和配置，数据用命令重新生成。
+```
+python3 -m datagen.generate && python3 -m datagen.verify   # 数据
+python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate  # 对象层
+```
