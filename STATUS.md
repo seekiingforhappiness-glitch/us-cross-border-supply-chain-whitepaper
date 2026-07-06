@@ -4,7 +4,7 @@
 
 ## 当前位置
 
-- 阶段：**W5 代码完成（动作层+控制塔 UI+闭环测试全绿）→ 待人 C3 走查后进 W6 AI 层**
+- 阶段：**W5 正式关闭（C3 人工走查通过，24/24 断言全部打勾）→ W6 AI 协同层（最后一周）**
 
 ## 已完成
 
@@ -33,10 +33,9 @@
 
 ## 阻塞 / 待人确认
 
-- [ ] **C3 五分钟走查（W5 正式验收，只有你能做）**：
-      `pip install -r requirements.txt && streamlit run app/streamlit_app.py`
-      按 demo-assertions A 段在界面走一遍；切 ops 角色看"客户等级"列应显示无权查看（B7）
-- [ ] 阅读 docs/data-guide.md 抽查数据（此前遗留）
+- [x] C3 五分钟走查完成（2026-07-06）：Daniel 在 UI 亲手走完 RSK-0044 全闭环，
+      顺带现场验证 B4/B6/B7；发现并修复 UI 缺陷一处（成功回执被 rerun 冲掉导致重复点击）
+- [ ] 阅读 docs/data-guide.md 抽查数据（遗留，不阻塞）
 
 ## 下一步（W6 AI 协同层与收尾）
 

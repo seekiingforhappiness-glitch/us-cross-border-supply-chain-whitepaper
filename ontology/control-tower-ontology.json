@@ -211,7 +211,7 @@
         {"name": "title", "type": "string", "required": true},
         {"name": "assignee_role", "type": "enum", "required": true, "values": ["ops", "cs", "manager"]},
         {"name": "priority", "type": "enum", "required": true, "values": ["P1", "P2", "P3"]},
-        {"name": "due_at", "type": "date", "required": true},
+        {"name": "due_at", "type": "date", "required": true, "description": "Task handling deadline (when the handler must complete mitigation); NOT the delivery date or customer promise date."},
         {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay"]},
         {"name": "proposal_params", "type": "json", "required": false, "sensitiveSubfields": ["est_cost_usd"]},
         {"name": "approval_status", "type": "enum", "required": false, "values": ["pending", "approved", "rejected"]},

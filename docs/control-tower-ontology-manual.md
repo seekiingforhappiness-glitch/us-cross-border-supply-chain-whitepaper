@@ -181,7 +181,7 @@ DQ 规则：同一 (shipment, type) 不允许并存两个非终态事件（A2 �
 | title | string | 是 | 否 | |
 | assignee_role | enum | 是 | 否 | ops / cs / manager |
 | priority | enum | 是 | 否 | P1 / P2 / P3 |
-| due_at | date | 是 | 否 | |
+| due_at | date | 是 | 否 | 任务处理截止日（要求处理人完成处置的期限，≠交付日期/客户承诺日） |
 | proposed_action | enum | 否 | 否 | expedite / reschedule / accept_delay |
 | proposal_params | json | 否 | **est_cost_usd 仅 ops/manager 可见** | 按动作类型定 schema，见 A4 |
 | approval_status | enum | 否 | 否 | pending / approved / rejected |

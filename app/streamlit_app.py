@@ -41,7 +41,8 @@ def mask_tier(tier, role):
 
 def show_result(r):
     if r["ok"]:
-        st.success("；".join(r["side_effects"]) or "完成")
+        # 成功消息存入会话状态，rerun 后仍可见（否则被刷新冲掉，用户会误以为没成功而重复点击）
+        st.session_state["flash"] = "✅ " + ("；".join(r["side_effects"]) or "完成")
         st.rerun()
     else:
         st.error(r["error"])
@@ -57,6 +58,9 @@ with st.sidebar:
     st.caption(f"仿真时钟 as_of = **{AS_OF}**（D8）")
     n_open = rows("SELECT count(*) c FROM risk_events WHERE status NOT IN ('resolved','escalated')")[0]["c"]
     st.metric("未结风险", n_open)
+
+if "flash" in st.session_state:  # 上一动作的成功回执
+    st.success(st.session_state.pop("flash"))
 
 tab_risk, tab_task, tab_obj, tab_log = st.tabs(["🚨 风险队列", "🛠 任务处理台", "🔍 对象详情", "📜 审计日志"])
 
@@ -95,7 +99,9 @@ with tab_risk:
             st.markdown("**派发任务（A3，运营）**")
             a_role = st.selectbox("处理角色", ["ops", "cs"])
             prio = st.selectbox("优先级", ["P1", "P2", "P3"])
-            due = st.date_input("截止", date.fromisoformat(AS_OF) + timedelta(days=2))
+            due = st.date_input("任务处理截止日", date.fromisoformat(AS_OF) + timedelta(days=2),
+                                help="要求处理人完成处置的期限（默认 48 小时），"
+                                     "不是货物交付日期，也不是客户承诺日")
             if st.form_submit_button("派单"):
                 show_result(assign_task(db(), sel, a_role, prio, due.isoformat(),
                                         actor=actor, role=role, as_of=AS_OF))
@@ -114,7 +120,7 @@ with tab_task:
                     ORDER BY t.task_id DESC""")
     st.dataframe([{"任务": t["task_id"], "风险": t["risk_event_id"],
                    "级别": f"{SEV_ICON[t['severity']]}{t['severity']}", "货运": t["shipment_id"],
-                   "负责角色": t["assignee_role"], "优先级": t["priority"], "截止": t["due_at"],
+                   "负责角色": t["assignee_role"], "优先级": t["priority"], "处理截止": t["due_at"],
                    "提案": t["proposed_action"] or "-", "审批": t["approval_status"] or "-",
                    "状态": t["status"]} for t in tasks],
                  width="stretch", height=230)
