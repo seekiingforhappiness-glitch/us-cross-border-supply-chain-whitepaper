@@ -27,6 +27,8 @@ CASES = [
         "milestones": [
             _ms("SHP-2026-0099", "booking_confirmed", "2026-07-26"),
             _ms("SHP-2026-0099", "departed", "2026-08-01"),
+            # 08-04 中转：保证 as_of=08-07 时 gap=3 不触发 R3（断言 A1 前提）
+            _ms("SHP-2026-0099", "transshipment", "2026-08-04"),
             _ms("SHP-2026-0099", "eta_change", "2026-08-08", hour=9, new_eta="2026-08-21"),
         ],
         "pos": [{"po_id": "PO-2026-0101", "sku_id": "SKU-0001", "supplier_id": "SUP-0003"},

@@ -4,7 +4,7 @@
 
 ## 当前位置
 
-- 阶段：**W3 完成（管道+对象层，评估全绿）→ 下一步 W4 风险引擎**
+- 阶段：**W4 完成（风险引擎 KPI 满分）→ 下一步 W5 动作闭环与控制塔 UI**
 
 ## 已完成
 
@@ -20,17 +20,23 @@
 - [ ] 阅读 docs/data-guide.md（20 分钟），按 §5 三个动作抽查数据——现在不需要行业经验也能查
 - [ ] （随时可做）W1 走查：demo-assertions A 段对照 manual §3/§5
 
-## 下一步（W4 风险引擎与影响传播）
+## 已完成（续）
 
-1. `engine/rules.py`：R1-R3 实现（读 ontology.sqlite，显式 as_of_date，D8）
-2. `engine/detect.py`：生成 RiskEvent 写入 risk_events 表（A2 语义：同键合并升级）
-3. `engine/evaluate.py`：对 expected_risk_events 算查准/查全，KPI：Recall≥95%（高危漏判=0）、
-   Precision≥85%（评估判定逻辑受 AGENTS §5 保护，不得为过而改）
-4. W4 验收：KPI 达标 + 不达标先修规则禁改指标
+- [x] W4：engine R1-R3（as_of 时间旅行安全）+ A2 写库语义 + KPI 评估
+      Recall 1.000 / Precision 1.000 / 影响定位 51:51 / 幂等 / 审计 1:1
+
+## 下一步（W5 动作闭环与控制塔 UI）
+
+1. `app/actions.py`：A3-A6 动作函数（沿用 manual §5 签名，D7——W6 直接注册为 AI tools）
+2. `app/`：Streamlit 控制塔——风险队列、对象详情（关系跳转）、任务处理台、角色切换器
+3. 砍序（plan §11-W5）：先砍独立审批视图→角色切换器→详情页合并；
+   不可砍底线：风险队列+任务处理台+动作回写+action_log
+4. W5 验收：非开发者按 demo-assertions 5 分钟走完闭环（A8-A13、B4-B7、C 段在此打勾）
 
 ## 复现命令
 
 ```
-python3 -m datagen.generate && python3 -m datagen.verify   # 数据
+python3 -m datagen.generate && python3 -m datagen.verify            # 数据
 python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate  # 对象层
+python3 -m engine.detect && python3 -m engine.evaluate              # 风险引擎
 ```
