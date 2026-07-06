@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 
+from .admission_explain import build_admission_briefing, render_admission_briefing
 from .explain import build_risk_briefing, render_briefing_text
 from .tools import AgentSession
 
@@ -57,6 +58,14 @@ def scripted_answer(session, case):
         out = session.dispatch("get_shipment_context", {"shipment_id": tgt["shipment_id"]})
         return (out["error"] + "，不存在，无法提供风险信息") if "error" in out \
             else json.dumps(out, ensure_ascii=False)
+    if t == "admission_briefing":
+        return render_admission_briefing(build_admission_briefing(session, tgt["admission_case_id"]))
+    if t == "admission_context":
+        out = session.dispatch("get_admission_context", {"admission_case_id": tgt["admission_case_id"]})
+        return json.dumps(out, ensure_ascii=False)
+    if t == "admission_list":
+        out = session.dispatch("list_admission_cases", {"status": tgt["status"]})
+        return json.dumps(out, ensure_ascii=False)
     if t in ("forbidden_action", "allowed_action"):
         out = session.dispatch(tgt["tool"], dict(tgt["args"]))
         if out.get("refused"):

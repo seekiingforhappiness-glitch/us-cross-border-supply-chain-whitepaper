@@ -1,9 +1,15 @@
 # 跨境供应链智能运营原型（Cross-Border Supply Chain Ontology OS）
 
-参考 Palantir Ontology 理念自研的**延误风险控制塔**原型：把中国→美国跨境履约链路建模为
-对象-关系-动作网络，当运输延误发生时，系统沿对象图定位受影响的客户订单行、量化影响、
-生成风险事件与任务，由人执行动作并回写状态，AI 基于同一套对象和动作做解释与建议
-（proposal-only）。
+参考 Palantir Ontology 理念自研的统一本体原型，**一套 ontology 承载两个业务闭环**：
+
+- **v0.2 延误风险控制塔**：运输延误 → 沿对象图定位受影响客户订单行 → 风险事件与任务 →
+  人工处置回写（改期/加急/接受），全程审计
+- **v0.3 SKU 准入报价**：销售建案 → 合规预审 → 物流方案 → 三情景成本 → 经理审批，
+  三重门禁（critical 合规/DDP-IOR/流程完整性）挡住该挡的
+
+两场景共享 Supplier/Sku/Customer 对象（零重复定义）与全部治理机制（审计/权限/动作五要素/
+AI 护栏），并经 SKU 生命周期咬合：准入批准的商品进入控制塔的履约世界。
+AI 基于同一套对象和动作做解释与建议（proposal-only，17 题评估含越权/编造红线）。
 
 **不是什么**：不是数据分析看板，不是聊天机器人，不是真实企业系统（数据为高真实感合成数据）。
 
@@ -12,12 +18,13 @@
 ```bash
 pip install -r requirements.txt
 
-python3 -m datagen.generate && python3 -m datagen.verify            # 1. 生成数据（42 项验收）
+python3 -m datagen.generate && python3 -m datagen.verify            # 1. 生成数据（54 项验收）
 python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate  # 2. 重建对象层（精度 100%）
 python3 -m engine.detect && python3 -m engine.evaluate              # 3. 风险检测（查准查全 1.0）
-python3 -m app.test_closed_loop                                     # 4. 动作闭环测试
-python3 -m agent.evaluate                                           # 5. AI 层评估（11 题）
-streamlit run app/streamlit_app.py                                  # 6. 控制塔 UI
+python3 -m app.test_closed_loop                                     # 4. 控制塔动作闭环
+python3 -m app.test_admission_loop                                  # 5. 准入闭环与门禁（17 项）
+python3 -m agent.evaluate                                           # 6. AI 层评估（17 题）
+streamlit run app/streamlit_app.py                                  # 7. UI（控制塔 + 准入工作台）
 ```
 
 演示走查脚本见 `docs/demo-assertions.md`（24 条断言）；看不懂数据先读 `docs/data-guide.md`。

@@ -15,7 +15,13 @@ from app.actions import assign_task, propose_mitigation, _log
 
 AI_ACTOR = "ai-agent"
 AI_ROLE = "ops"
-FORBIDDEN_TOOLS = {"approve_mitigation", "close_risk_event"}
+# 审批/关闭/拒接类动作永不向 AI 开放（v0.2 E5 + v0.3 AD2 红线）
+FORBIDDEN_TOOLS = {"approve_mitigation", "close_risk_event",
+                   "approve_quote_decision", "reject_or_request_more_info"}
+COST_FIELDS = {"quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
+               "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
+               "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
+               "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"}
 
 # Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）
 TOOL_DEFS = [
@@ -39,6 +45,13 @@ TOOL_DEFS = [
      "description": "查对象（风险/任务）的审计历史，含被拒绝的调用",
      "input_schema": {"type": "object", "properties": {
          "object_id": {"type": "string"}}, "required": ["object_id"]}},
+    {"name": "list_admission_cases",
+     "description": "列出准入案件（v0.3），可按 status 过滤（draft/in_precheck/plan_ready/priced/approved/quote_with_conditions/rejected/needs_more_info）",
+     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
+    {"name": "get_admission_context",
+     "description": "查准入案件完整上下文：案件、合规发现、物流方案、成本情景（成本字段按角色脱敏）、客户能力",
+     "input_schema": {"type": "object", "properties": {
+         "admission_case_id": {"type": "string"}}, "required": ["admission_case_id"]}},
     {"name": "assign_task",
      "description": "为 open 状态的风险派发处置任务（A3）。这是允许 AI 执行的写动作之一",
      "input_schema": {"type": "object", "properties": {
@@ -123,6 +136,36 @@ class AgentSession:
         return {"object_id": object_id, "entries": rows} if rows else \
             {"error": f"未找到 {object_id} 的审计记录"}
 
+    def list_admission_cases(self, status=None):
+        sql = """SELECT admission_case_id, case_title, customer_id, sku_id, incoterm_candidate,
+                        risk_level, status, decision FROM admission_cases"""
+        rows = self._rows(sql + " WHERE status=?" if status else sql,
+                          *([status] if status else []))
+        return {"count": len(rows), "cases": rows}
+
+    def get_admission_context(self, admission_case_id):
+        case = self._rows("SELECT * FROM admission_cases WHERE admission_case_id=?",
+                          admission_case_id)
+        if not case:
+            return {"error": f"准入案件 {admission_case_id} 不存在"}
+        case = case[0]
+        cust = self._rows("""SELECT customer_id, customer_name, business_model, ior_capability,
+                             broker_status FROM customers WHERE customer_id=?""",
+                          case["customer_id"])[0]  # credit_terms/risk_tier 对 ops 角色不返回
+        finds = self._rows("SELECT * FROM compliance_findings WHERE admission_case_id=?",
+                           admission_case_id)
+        plans = self._rows("SELECT * FROM logistics_plans WHERE admission_case_id=?",
+                           admission_case_id)
+        scens = []
+        for p in plans:
+            for s in self._rows("SELECT * FROM cost_scenarios WHERE logistics_plan_id=?",
+                                p["logistics_plan_id"]):
+                # 成本字段按角色脱敏：AI 以 ops 角色工作，与 UI 同规（AD4）
+                scens.append({k: ("🔒无权查看" if k in COST_FIELDS else v) for k, v in s.items()})
+        return {"case": case, "customer": cust, "findings": finds, "plans": plans,
+                "cost_scenarios": scens,
+                "note": "cost fields masked for role=ops; credit_terms/risk_tier not returned"}
+
     # ---------- 写动作（仅 proposal-only 白名单） ----------
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
         return assign_task(self.con, risk_event_id, assignee_role, priority, due_at,
@@ -147,6 +190,8 @@ class AgentSession:
                     "get_shipment_context": self.get_shipment_context,
                     "get_impact_chain": self.get_impact_chain,
                     "get_audit_trail": self.get_audit_trail,
+                    "list_admission_cases": self.list_admission_cases,
+                    "get_admission_context": self.get_admission_context,
                     "assign_task": self._assign_task,
                     "propose_mitigation": self._propose_mitigation}
         if tool_name not in handlers:
