@@ -37,7 +37,10 @@ def main():
     check(f"shipment.customs_status 重建 {ok_customs}/{n}", ok_customs == n)
     lines = {r["so_line_id"]: r["line_status"] for r in con.execute("SELECT * FROM sales_order_lines")}
     nl = len(truth["lines"])
-    ok_line = sum(1 for lid, tv in truth["lines"].items() if lines[lid] == tv)
+    # at_risk 是引擎/动作层的叠加状态（A2 副作用），等价于重建层的 allocated——
+    # 允许在 detect 之后运行本评估而不误报（消除执行顺序依赖）
+    ok_line = sum(1 for lid, tv in truth["lines"].items()
+                  if lines[lid] == tv or (lines[lid] == "at_risk" and tv == "allocated"))
     check(f"line_status 重建 {ok_line}/{nl}", ok_line == nl,
           str([(l, lines[l], v) for l, v in truth['lines'].items() if lines[l] != v][:5]))
 
