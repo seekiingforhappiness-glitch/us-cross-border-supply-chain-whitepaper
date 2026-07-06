@@ -35,6 +35,10 @@ def main():
         return con.execute(sql, a).fetchone()
 
     risk = q1("SELECT * FROM risk_events WHERE shipment_id='SHP-2026-0099' AND rule_id='R1'")
+    if risk is None or risk["status"] != "open":
+        print("前置不满足：DEMO-01 风险不存在或已被处理过（如 UI 走查后）。\n"
+              "请先重建：python3 -m pipeline.build_ontology && python3 -m engine.detect")
+        sys.exit(2)
     rid = risk["risk_event_id"]
 
     print("== 派发（A8）==")

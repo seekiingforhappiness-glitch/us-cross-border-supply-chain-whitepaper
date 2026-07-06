@@ -1,9 +1,9 @@
 {
-  "version": "0.2.0",
-  "name": "cross_border_control_tower_ontology",
-  "displayName": "跨境供应链延误风险控制塔 Ontology",
-  "scope": "MVP for delay risk detection, line-level impact propagation, risk/task dispatch, human mitigation actions, and closed-loop write-back.",
-  "authority": "docs/control-tower-ontology-manual.md is the human-readable source; this file must stay consistent with it. Decisions D1-D9 in docs/control-tower-plan-v0.2.md govern changes.",
+  "version": "0.3.0",
+  "name": "cross_border_unified_ontology",
+  "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入报价，两场景共享）",
+  "scope": "Two scenarios on one ontology: (1) delay-risk control tower with closed-loop mitigation; (2) SKU admission & quote decision workflow. Shared objects: Supplier/Sku/Customer (zero duplication, decision E1/E2).",
+  "authority": "Human-readable sources: docs/control-tower-ontology-manual.md (v0.2 scenario) + docs/admission-manual-v0.3.md (v0.3 scenario). Decisions D1-D11 and E1-E5 govern changes. Filename kept for reference stability.",
   "asOfPolicy": {
     "rule": "All engine evaluation and UI rendering take an explicit as_of_date parameter. Implicit system time is forbidden (D8)."
   },
@@ -15,10 +15,15 @@
       "Synthetic keys must be generated in the data preparation layer and persisted before application usage."
     ]
   },
-  "roles": ["ops", "cs", "manager", "system"],
+  "roles": ["ops", "cs", "manager", "system", "sales", "compliance", "finance"],
   "sensitiveFieldRules": [
     {"object": "Customer", "field": "tier", "visibleTo": ["cs", "manager"]},
     {"object": "Task", "field": "proposal_params.est_cost_usd", "visibleTo": ["ops", "manager"]},
+    {"object": "Customer", "field": "credit_terms", "visibleTo": ["finance", "manager"]},
+    {"object": "Customer", "field": "risk_tier", "visibleTo": ["finance", "manager"]},
+    {"object": "Supplier", "field": "uflpa_risk_flag", "visibleTo": ["compliance", "manager"]},
+    {"object": "CostScenario", "field": "*_usd and margin fields", "visibleTo": ["finance", "manager"]},
+    {"object": "AdmissionCase", "field": "conditions", "visibleTo": ["finance", "manager"]},
     {"rendering": "Fields hidden by permission must render as 'no access', never as blank/null. null must not be interpreted as 'no risk'."}
   ],
   "objects": [
@@ -31,7 +36,11 @@
         {"name": "supplier_id", "type": "string", "required": true},
         {"name": "supplier_name", "type": "string", "required": true, "description": "Canonical name after entity resolution."},
         {"name": "city", "type": "string", "required": true},
-        {"name": "lead_time_days", "type": "number", "required": true}
+        {"name": "lead_time_days", "type": "number", "required": true},
+        {"name": "factory_audit_status", "type": "enum", "required": false, "values": ["not_started", "pending", "passed", "failed", "waived"], "description": "E2 admission fields; nullable."},
+        {"name": "compliance_docs_status", "type": "enum", "required": false, "values": ["missing", "partial", "provided", "verified", "rejected"]},
+        {"name": "uflpa_risk_flag", "type": "boolean", "required": false, "sensitive": true},
+        {"name": "origin_evidence_status", "type": "enum", "required": false, "values": ["missing", "provided", "verified", "rejected"]}
       ],
       "dataQualityRules": ["supplier_id unique", "lead_time_days > 0"]
     },
@@ -44,9 +53,22 @@
         {"name": "sku_id", "type": "string", "required": true},
         {"name": "sku_name", "type": "string", "required": true},
         {"name": "category", "type": "enum", "required": true, "values": ["charger", "cable", "earbuds", "phone_case"]},
-        {"name": "unit_price_usd", "type": "number", "required": true, "description": "Used for affected_value_usd."}
+        {"name": "unit_price_usd", "type": "number", "required": true, "description": "Used for affected_value_usd."},
+        {"name": "sku_status", "type": "enum", "required": true, "values": ["candidate", "active"], "description": "E1 lifecycle: admission targets candidates; approval promotes to active."},
+        {"name": "declared_value_usd", "type": "number", "required": false, "description": "Admission fields (E1); nullable for legacy active SKUs."},
+        {"name": "package_weight_kg", "type": "number", "required": false},
+        {"name": "package_l_cm", "type": "number", "required": false},
+        {"name": "package_w_cm", "type": "number", "required": false},
+        {"name": "package_h_cm", "type": "number", "required": false},
+        {"name": "battery_flag", "type": "boolean", "required": false},
+        {"name": "food_contact_flag", "type": "boolean", "required": false},
+        {"name": "children_product_flag", "type": "boolean", "required": false},
+        {"name": "material", "type": "string", "required": false},
+        {"name": "use_case", "type": "string", "required": false},
+        {"name": "origin_country", "type": "string", "required": false},
+        {"name": "platform", "type": "enum", "required": false, "values": ["amazon", "walmart", "tiktok_shop", "shopify", "other"]}
       ],
-      "dataQualityRules": ["sku_id unique", "unit_price_usd > 0"]
+      "dataQualityRules": ["sku_id unique", "unit_price_usd > 0", "candidate skus must have regulatory flags explicit before precheck"]
     },
     {
       "type": "Customer",
@@ -57,9 +79,15 @@
         {"name": "customer_id", "type": "string", "required": true},
         {"name": "customer_name", "type": "string", "required": true},
         {"name": "tier", "type": "enum", "required": true, "sensitive": true, "values": ["A", "B", "C"], "description": "Drives severity escalation in R1."},
-        {"name": "us_state", "type": "string", "required": true}
+        {"name": "us_state", "type": "string", "required": true},
+        {"name": "business_model", "type": "enum", "required": false, "values": ["platform_seller", "brand_dtc", "trader", "service_provider", "other"], "description": "E2 admission fields; nullable."},
+        {"name": "sales_channel", "type": "string", "required": false},
+        {"name": "ior_capability", "type": "enum", "required": false, "values": ["has_ior", "needs_partner", "unknown"], "description": "DDP gate G2 depends on it."},
+        {"name": "broker_status", "type": "enum", "required": false, "values": ["has_broker", "needs_broker", "unknown"]},
+        {"name": "credit_terms", "type": "string", "required": false, "sensitive": true},
+        {"name": "risk_tier", "type": "enum", "required": false, "sensitive": true, "values": ["low", "medium", "high", "critical"], "description": "Credit risk; distinct from commercial tier A/B/C."}
       ],
-      "dataQualityRules": ["customer_id unique", "tier required (R1 depends on it)"]
+      "dataQualityRules": ["customer_id unique", "tier required (R1 depends on it)", "ior_capability must not be unknown before approving DDP (v0.1 rule)"]
     },
     {
       "type": "SalesOrder",
@@ -220,6 +248,93 @@
         {"name": "status", "type": "enum", "required": true, "values": ["assigned", "in_progress", "done", "cancelled"]}
       ],
       "dataQualityRules": ["max 1 non-terminal task per risk_event (D9/C4)"]
+    },
+    {
+      "type": "AdmissionCase",
+      "primaryKey": "admission_case_id",
+      "titleKey": "case_title",
+      "ownerRole": "sales creates / manager decides",
+      "statusField": "status",
+      "properties": [
+        {"name": "admission_case_id", "type": "string", "required": true},
+        {"name": "case_title", "type": "string", "required": true},
+        {"name": "customer_id", "type": "string", "required": true},
+        {"name": "sku_id", "type": "string", "required": true, "description": "Must be a candidate SKU (B1 precondition)."},
+        {"name": "request_type", "type": "enum", "required": true, "values": ["new_sku", "ddp_quote", "dap_quote", "plan_review"]},
+        {"name": "incoterm_candidate", "type": "enum", "required": true, "values": ["FOB", "DAP", "DDP", "tbd"]},
+        {"name": "target_launch_date", "type": "date", "required": true},
+        {"name": "monthly_order_estimate", "type": "number", "required": true},
+        {"name": "risk_level", "type": "enum", "derived": true, "values": ["low", "medium", "high", "critical"], "description": "Max severity across findings; recomputed by B2."},
+        {"name": "status", "type": "enum", "required": true, "values": ["draft", "in_precheck", "plan_ready", "priced", "approved", "quote_with_conditions", "rejected", "needs_more_info"]},
+        {"name": "decision", "type": "enum", "required": false, "values": ["approve", "quote_with_conditions", "reject", "more_info"]},
+        {"name": "decision_reason", "type": "string", "required": false, "description": "Required at terminal states."},
+        {"name": "conditions", "type": "string", "required": false, "sensitive": true}
+      ],
+      "dataQualityRules": ["terminal states require decision_reason"]
+    },
+    {
+      "type": "ComplianceFinding",
+      "primaryKey": "compliance_finding_id",
+      "titleKey": "finding_title",
+      "ownerRole": "compliance",
+      "properties": [
+        {"name": "compliance_finding_id", "type": "string", "required": true},
+        {"name": "admission_case_id", "type": "string", "required": true},
+        {"name": "finding_title", "type": "string", "required": true},
+        {"name": "finding_type", "type": "enum", "required": true, "values": ["hts", "pga", "labeling", "certification", "origin", "uflpa", "ad_cvd", "section_301", "platform_rule"]},
+        {"name": "severity", "type": "enum", "required": true, "values": ["low", "medium", "high", "critical"]},
+        {"name": "hts_candidate", "type": "string", "required": false, "description": "Required iff finding_type=hts (B2)."},
+        {"name": "pga_agency", "type": "enum", "required": false, "values": ["CBP", "FDA", "FCC", "CPSC", "EPA", "USDA", "none"]},
+        {"name": "required_document", "type": "string", "required": false},
+        {"name": "evidence_status", "type": "enum", "required": true, "values": ["missing", "provided", "verified", "rejected"]},
+        {"name": "recommendation", "type": "enum", "required": true, "values": ["accept", "more_docs", "dap_only", "reject", "escalate"]}
+      ],
+      "dataQualityRules": ["finding_type=hts requires hts_candidate"]
+    },
+    {
+      "type": "LogisticsPlan",
+      "primaryKey": "logistics_plan_id",
+      "titleKey": "plan_name",
+      "ownerRole": "ops",
+      "properties": [
+        {"name": "logistics_plan_id", "type": "string", "required": true},
+        {"name": "admission_case_id", "type": "string", "required": true},
+        {"name": "plan_name", "type": "string", "required": true},
+        {"name": "route_type", "type": "enum", "required": true, "values": ["express", "air_freight", "ocean_fcl", "ocean_lcl", "warehouse_fulfillment"], "description": "ocean_parcel removed (N4)."},
+        {"name": "incoterm", "type": "enum", "required": true, "values": ["FOB", "DAP", "DDP"]},
+        {"name": "origin_port_locode", "type": "enum", "required": true, "values": ["CNYTN", "CNSHK", "CNNGB"], "description": "Aligned with D11 (N2)."},
+        {"name": "destination_port_locode", "type": "enum", "required": true, "values": ["USLAX", "USLGB"]},
+        {"name": "us_warehouse_region", "type": "enum", "required": true, "values": ["west", "central", "east", "platform"]},
+        {"name": "last_mile_method", "type": "enum", "required": true, "values": ["UPS", "FedEx", "USPS", "OnTrac", "LTL", "platform"]},
+        {"name": "estimated_transit_days", "type": "number", "required": true},
+        {"name": "sla_risk", "type": "enum", "required": true, "values": ["low", "medium", "high"]},
+        {"name": "operational_notes", "type": "string", "required": false}
+      ],
+      "dataQualityRules": ["DDP plan requires customer has_ior and an hts_candidate finding (gate, enforced by B3)"]
+    },
+    {
+      "type": "CostScenario",
+      "primaryKey": "cost_scenario_id",
+      "titleKey": "scenario_type",
+      "ownerRole": "finance",
+      "properties": [
+        {"name": "cost_scenario_id", "type": "string", "required": true},
+        {"name": "logistics_plan_id", "type": "string", "required": true},
+        {"name": "scenario_type", "type": "enum", "required": true, "values": ["conservative", "base", "optimistic"]},
+        {"name": "quote_price_usd", "type": "number", "required": true, "sensitive": true, "description": "Added in v0.3 (N1): v0.1 had margin fields but no price."},
+        {"name": "product_cost_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "first_mile_cost_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "international_freight_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "duty_tax_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "customs_brokerage_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "warehouse_cost_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "last_mile_cost_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "returns_allowance_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "risk_buffer_usd", "type": "number", "required": true, "sensitive": true},
+        {"name": "gross_margin_usd", "type": "number", "derived": true, "sensitive": true, "description": "quote - sum(costs)."},
+        {"name": "gross_margin_rate", "type": "number", "derived": true, "sensitive": true}
+      ],
+      "dataQualityRules": ["DDP scenario requires duty_tax>0, customs_brokerage>0, risk_buffer>0 (gate, enforced by B4)"]
     }
   ],
   "links": [
@@ -234,7 +349,12 @@
     {"linkType": "allocation_to_line", "source": "ShipmentAllocation", "target": "SalesOrderLine", "cardinality": "N:1"},
     {"linkType": "risk_on_shipment", "source": "RiskEvent", "target": "Shipment", "cardinality": "N:1"},
     {"linkType": "risk_affects_line", "source": "RiskEvent", "target": "SalesOrderLine", "cardinality": "N:M", "via": "affected_so_line_ids"},
-    {"linkType": "task_handles_risk", "source": "Task", "target": "RiskEvent", "cardinality": "N:1"}
+    {"linkType": "task_handles_risk", "source": "Task", "target": "RiskEvent", "cardinality": "N:1"},
+    {"linkType": "case_has_sku", "source": "AdmissionCase", "target": "Sku", "cardinality": "N:1", "rule": "targets candidate SKU"},
+    {"linkType": "case_for_customer", "source": "AdmissionCase", "target": "Customer", "cardinality": "N:1", "rule": "SAME Customer object as control tower (reuse proof, E2)"},
+    {"linkType": "case_has_finding", "source": "AdmissionCase", "target": "ComplianceFinding", "cardinality": "1:N"},
+    {"linkType": "case_has_plan", "source": "AdmissionCase", "target": "LogisticsPlan", "cardinality": "1:N"},
+    {"linkType": "plan_has_scenario", "source": "LogisticsPlan", "target": "CostScenario", "cardinality": "1:N"}
   ],
   "stateMachines": {
     "Shipment": {
@@ -280,6 +400,20 @@
         {"from": "in_progress", "to": "cancelled", "trigger": "linked risk closed as false_alarm"}
       ],
       "notes": "created state removed (D9/C6)."
+    },
+    "AdmissionCase": {
+      "states": ["draft", "in_precheck", "plan_ready", "priced", "approved", "quote_with_conditions", "rejected", "needs_more_info"],
+      "transitions": [
+        {"from": "draft", "to": "in_precheck", "trigger": "B2"},
+        {"from": "in_precheck", "to": "plan_ready", "trigger": "B3"},
+        {"from": "plan_ready", "to": "priced", "trigger": "B4"},
+        {"from": "priced", "to": "approved", "trigger": "B5(approve)"},
+        {"from": "priced", "to": "quote_with_conditions", "trigger": "B5(quote_with_conditions)"},
+        {"from": "any_non_terminal", "to": "rejected", "trigger": "B6(reject, manager only)"},
+        {"from": "any_non_terminal", "to": "needs_more_info", "trigger": "B6(more_info)"},
+        {"from": "needs_more_info", "to": "in_precheck", "trigger": "B2", "notes": "补资料回流，非终态（同 C1 思想）"}
+      ],
+      "notes": "Terminal: approved / quote_with_conditions / rejected. quote_with_conditions promoted to a status (N3)."
     }
   },
   "actions": [
@@ -353,6 +487,63 @@
       "successEffects": ["RiskEvent -> resolved (or escalated)", "resolved_at / resolution_summary written"],
       "failureHandling": ["non-terminal task and outcome != false_alarm -> reject"],
       "audit": ["outcome", "resolution_summary"]
+    },
+    {
+      "id": "B1", "name": "CreateAdmissionCase",
+      "signature": "create_admission_case(customer_id, sku_id, request_type, incoterm_candidate, target_launch_date, monthly_order_estimate, actor, role) -> Result",
+      "executors": ["sales"],
+      "preconditions": ["customer and sku exist", "sku_status=candidate"],
+      "successEffects": ["AdmissionCase created, status=draft"],
+      "failureHandling": ["active SKU -> reject (re-review flow is v0.4)"],
+      "audit": ["request_type", "incoterm_candidate"]
+    },
+    {
+      "id": "B2", "name": "RunCompliancePrecheck",
+      "signature": "run_compliance_precheck(admission_case_id, findings, actor, role) -> Result",
+      "executors": ["compliance"],
+      "preconditions": ["case in {draft,in_precheck,needs_more_info}", "each finding passes schema", "finding_type=hts requires hts_candidate"],
+      "successEffects": ["findings written", "case -> in_precheck", "case.risk_level = max severity"],
+      "failureHandling": ["schema failure -> reject whole batch, nothing written"],
+      "audit": ["finding count", "max severity"]
+    },
+    {
+      "id": "B3", "name": "BuildLogisticsPlan",
+      "signature": "build_logistics_plan(admission_case_id, plan, actor, role) -> Result",
+      "executors": ["ops"],
+      "preconditions": ["case in {in_precheck,plan_ready}", "DDP gate: customer.ior_capability=has_ior AND exists finding with hts_candidate"],
+      "successEffects": ["LogisticsPlan created", "case -> plan_ready"],
+      "failureHandling": ["DDP missing IOR/HTS -> reject with missing items"],
+      "audit": ["route_type", "incoterm"]
+    },
+    {
+      "id": "B4", "name": "CalculateCostScenario",
+      "signature": "calculate_cost_scenario(logistics_plan_id, scenario, actor, role) -> Result",
+      "executors": ["finance"],
+      "preconditions": ["plan exists", "case in {plan_ready,priced}", "DDP scenario: duty_tax>0 AND customs_brokerage>0 AND risk_buffer>0"],
+      "successEffects": ["CostScenario created with computed margin", "case -> priced"],
+      "failureHandling": ["DDP missing duty/brokerage/buffer -> reject"],
+      "audit": ["scenario_type", "gross_margin_rate"]
+    },
+    {
+      "id": "B5", "name": "ApproveQuoteDecision",
+      "signature": "approve_quote_decision(admission_case_id, approved_logistics_plan_id, approved_cost_scenario_id, decision, decision_reason, conditions, actor, role) -> Result",
+      "executors": ["manager"],
+      "preconditions": [
+        "G1: no unresolved critical finding (severity=critical AND evidence_status!=verified)",
+        "G2: if approved plan is DDP then customer.ior_capability=has_ior",
+        "G3: case=priced AND referenced plan/scenario exist"],
+      "successEffects": ["case -> approved | quote_with_conditions", "decision/reason/conditions written", "if approve: sku_status candidate->active (E1/N5)"],
+      "failureHandling": ["any gate -> reject AND audit (admission-side guardrail assertions)"],
+      "audit": ["decision", "decision_reason", "gates_checked"]
+    },
+    {
+      "id": "B6", "name": "RejectOrRequestMoreInfo",
+      "signature": "reject_or_request_more_info(admission_case_id, decision, missing_documents, rejection_reason, actor, role) -> Result",
+      "executors": ["compliance (more_info)", "manager (reject)"],
+      "preconditions": ["case non-terminal", "reject requires rejection_reason", "more_info requires missing_documents"],
+      "successEffects": ["case -> rejected | needs_more_info"],
+      "failureHandling": ["missing reason/documents -> reject"],
+      "audit": ["decision", "missing_documents", "rejection_reason"]
     }
   ],
   "riskRules": [
