@@ -267,7 +267,8 @@ CASES = [
 SHIP_DEFAULTS = {"mode": "ocean_fcl", "origin_port": "yantian", "destination_port": "los_angeles",
                  "destination_warehouse": "LAX-DC1", "ata": None, "customs_status": "not_filed",
                  "missing_docs": [], "expedite_flag": False,
-                 "vessel_voyage": "MV Pacific/101E", "carrier_name": "COSCO"}
+                 # 柜号/船名由 enrich_shipments 按船司统一生成（ISO 6346 + 船名池）
+                 "container_no": None, "vessel_voyage": None, "carrier_name": "COSCO"}
 
 
 def apply_design_cases(world, rng):
@@ -280,8 +281,6 @@ def apply_design_cases(world, rng):
         # shipment
         sp = dict(SHIP_DEFAULTS)
         sp.update(case["shipment"])
-        if sp.get("container_no") is None or "container_no" not in sp:
-            sp["container_no"] = f"CONT{9000000 + int(sp['shipment_id'][-4:])}"
         for f in ("etd", "eta_initial", "eta_current"):
             sp[f] = D(sp[f])
         if sp.get("ata"):

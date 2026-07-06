@@ -31,7 +31,7 @@ world:
   docs_missing_rate: 0.10           # 世界真实状态（非噪声），进 expected_risk_events
   delay_days_per_change: [4, 12]
   multi_customer_breach_min: 15   # plan §9：一票延误击穿多客户 ≥15，确定性补齐
-  transshipment_rate: 0.35
+  transshipment_rate: 0.40
 
 noise_rates:                    # 数据质量噪声（进 injected_noise_log，不产生风险）
   eta_multi_change: 0.30        # ≥1 次 ETA 变更的 shipment 占比

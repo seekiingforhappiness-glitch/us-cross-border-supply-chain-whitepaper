@@ -28,6 +28,7 @@ def build(cfg):
     W.ensure_multi_customer_breach(w, cfg, rng)
     W.enrich_shipments(w, rng)      # D11 Tier 1 字段
     W.enrich_milestones(w, rng)
+    W.sync_po_status(w)
     W.finalize_line_status(w)
     expected = sweep(w, cfg)
     noise = apply_noise(w, design_noise, cfg, rng)

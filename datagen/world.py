@@ -13,6 +13,42 @@ LOCODE = {"yantian": "CNYTN", "shekou": "CNSHK", "ningbo": "CNNGB",
 TRANSSHIP_HUBS = ["SGSIN", "KRPUS", "TWKHH"]
 CONTAINER_TYPES = ["40HC", "40GP", "20GP"]
 INCOTERMS = ["FOB"] * 6 + ["CIF"] * 3 + ["DDP"]  # 权重 60/30/10
+# 真实感：箱主代码按船司（ISO 6346），船名池按船司（船属于船公司，不得混配）
+BOX_OWNER = {"COSU": ["CSNU", "CCLU", "CBHU"], "OOLU": ["OOLU", "OOCU"], "MATS": ["MATU"],
+             "ZIMU": ["ZIMU", "ZCSU"], "EGLV": ["EGHU", "EGSU", "EITU"]}
+VESSELS = {"COSU": ["COSCO SHIPPING PISCES", "COSCO SHIPPING ROSE", "XIN LOS ANGELES"],
+           "OOLU": ["OOCL TOKYO", "OOCL LONG BEACH", "OOCL BREMERHAVEN"],
+           "MATS": ["MANOA", "DANIEL K. INOUYE", "MATSONIA"],
+           "ZIMU": ["ZIM SAN DIEGO", "ZIM MOUNT EVEREST"],
+           "EGLV": ["EVER FORTUNE", "EVER LAMBENT", "EVER LIBRA"]}
+CUSTOMER_NAMES = ["Pacific Rim Distribution LLC", "Bluewave Electronics Inc.", "SummitTech Wholesale",
+                  "Redwood Retail Group", "Lakeshore Trading Co.", "Ironpeak Supply LLC",
+                  "Coastal Gadget Outlet", "Metro Accessories Depot", "Northgate Commerce Inc.",
+                  "Silverline Imports", "Frontier Retail Partners", "Harborview Merchants LLC",
+                  "Canyon Electronics Supply", "Beacon Hill Trading", "Aurora Goods Inc."]
+SKU_NAMES = {"charger": ["20W USB-C Fast Charger", "65W GaN Wall Charger", "Dual-Port Car Charger",
+                         "30W PD Travel Charger", "10W Wireless Charging Pad"],
+             "cable": ["USB-C to USB-C Cable 1m", "USB-C Braided Cable 2m", "Lightning to USB-C Cable 1m",
+                       "Micro-USB Cable 0.5m", "HDMI 2.1 Cable 1.5m"],
+             "earbuds": ["TWS Earbuds A20", "ANC Wireless Earbuds Pro", "Sport Neckband Earphones",
+                         "Gaming Earbuds Low-Latency"],
+             "phone_case": ["TPU Clear Case", "Shockproof Rugged Case", "Leather Folio Case",
+                            "MagSafe Silicone Case"]}
+
+
+def iso6346_check_digit(code10):
+    """ISO 6346 校验位：4 位箱主代码 + 6 位序号 → 第 11 位。"""
+    vals = {c: v for c, v in zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            [10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26,
+             27, 28, 29, 30, 31, 32, 34, 35, 36, 37, 38])}
+    total = sum((vals[ch] if ch.isalpha() else int(ch)) * (2 ** i) for i, ch in enumerate(code10))
+    return str(total % 11 % 10)
+
+
+def make_container_no(scac, rng):
+    owner = rng.choice(BOX_OWNER[scac])
+    serial = f"{rng.randint(0, 999999):06d}"
+    return f"{owner}{serial}{iso6346_check_digit(owner + serial)}"
 WAREHOUSES = ["LAX-DC1", "ONT-DC2", "RIV-DC3"]
 CARRIERS = ["COSCO", "OOCL", "Matson", "ZIM", "Evergreen"]
 CATEGORIES = ["charger", "cable", "earbuds", "phone_case"]
@@ -88,7 +124,7 @@ def build_world(cfg, rng):
             name, cat, price = FORCED_SKUS[i]
         else:
             cat = rng.choice(CATEGORIES)
-            name = f"{cat.replace('_', ' ').title()} Model-{i:03d}"
+            name = f"{rng.choice(SKU_NAMES[cat])} ({i:03d})"
             price = round(rng.uniform(2.0, 25.0), 2)
         sup = f"SUP-{rng.randint(1, c['suppliers']):04d}" if i not in FORCED_SKUS else "SUP-0003"
         skus[kid] = {"sku_id": kid, "sku_name": name, "category": cat,
@@ -103,7 +139,7 @@ def build_world(cfg, rng):
         if i in FORCED_CUSTOMERS:
             name, tier = FORCED_CUSTOMERS[i]
         else:
-            name, tier = f"US Buyer {i:03d} LLC", tier_pool[i - 1]
+            name, tier = CUSTOMER_NAMES[i - 1], tier_pool[i - 1]
         customers[cid] = {"customer_id": cid, "customer_name": name, "tier": tier,
                           "us_state": rng.choice(US_STATES)}
 
@@ -136,7 +172,7 @@ def build_world(cfg, rng):
             continue
         kid = f"SKU-{rng.randint(1, c['skus']):04d}"
         sup = skus[kid]["supplier_id"]
-        pd = start + timedelta(days=rng.randint(0, max(1, (as_of - start).days - 20)))
+        pd = start + timedelta(days=rng.randint(0, max(1, (as_of - start).days - 25)))
         pos[pid] = {"po_id": pid, "supplier_id": sup, "sku_id": kid,
                     "qty": rng.randint(500, 5000), "po_date": pd,
                     "expected_ready_date": pd + timedelta(days=suppliers[sup]["lead_time_days"]),
@@ -169,8 +205,8 @@ def build_world(cfg, rng):
         eta_initial = etd + timedelta(days=rng.randint(*wc["transit_days"]))
         shipments[sid] = {
             "shipment_id": sid, "mode": rng.choice(["ocean_fcl", "ocean_fcl", "ocean_lcl"]),
-            "container_no": f"CONT{rng.randint(1000000, 9999999)}",
-            "vessel_voyage": f"{rng.choice(['MV Pacific','MV Orient','MV Horizon','MV Liberty'])}/{rng.randint(100,199)}E",
+            "container_no": None,   # enrich_shipments 按船司生成 ISO 6346 柜号
+            "vessel_voyage": None,  # enrich_shipments 按船司船名池生成
             "carrier_name": rng.choice(CARRIERS),
             "origin_port": rng.choice(PORTS_CN), "destination_port": rng.choice(PORTS_US),
             "destination_warehouse": rng.choice(WAREHOUSES),
@@ -291,6 +327,8 @@ def enrich_shipments(world, rng):
         sp["carrier_scac"] = scac
         sp["booking_no"] = f"{scac}{rng.randint(10**8, 10**9 - 1)}"
         sp["mbl_no"] = f"{scac}{rng.randint(10**8, 10**9 - 1)}"
+        sp["container_no"] = make_container_no(scac, rng)                       # ISO 6346
+        sp["vessel_voyage"] = f"{rng.choice(VESSELS[scac])} {rng.randint(20, 89):03d}E"  # 东行航次
         ct = rng.choice(CONTAINER_TYPES)
         sp["container_type"] = ct
         if ct == "20GP":
@@ -300,6 +338,15 @@ def enrich_shipments(world, rng):
         sp["incoterm"] = rng.choice(INCOTERMS)
         sp["origin_port_locode"] = LOCODE[sp["origin_port"]]
         sp["destination_port_locode"] = LOCODE[sp["destination_port"]]
+
+
+def sync_po_status(world):
+    """PO 状态与所在 shipment 状态联动（真实感：未开船的 PO 不该是 shipped）。"""
+    m = {"planned": "ready", "in_transit": "shipped", "arrived": "shipped",
+         "customs": "shipped", "delivered": "closed"}
+    for sp in world["shipments"].values():
+        for pid in sp["po_ids"]:
+            world["pos"][pid]["status"] = m[sp["status"]]
 
 
 def enrich_milestones(world, rng):
@@ -431,6 +478,50 @@ def ensure_multi_customer_breach(world, cfg, rng):
                     ln["promised_delivery_date"] = new_promise
                     tightened = True
                     break
+                if not tightened:
+                    break
+            if len(breach_custs(sp)) >= 2:
+                n_multi += 1
+    # 后备 3：多客户在船但未延误（或已到港）的船 → 注入延误 + 收紧承诺。
+    # 这是 plan §9 "人为设计 ≥15 个多客户击穿案例"的批量实现形态，保证确定性达标。
+    as_of = world["as_of"]
+    if n_multi < target:
+        for sp in sorted(world["shipments"].values(), key=lambda s: s["shipment_id"]):
+            if n_multi >= target:
+                break
+            sid = sp["shipment_id"]
+            if sid in design or sp["etd"] >= as_of:
+                continue
+            aboard = {cust(a["so_line_id"]) for a in alloc_by_ship.get(sid, [])
+                      if lines[a["so_line_id"]]["line_status"] in ("allocated", "open")}
+            if len(aboard) < 2 or len(breach_custs(sp)) >= 2:
+                continue
+            # 注入延误：剥离到港后事件，临近 as_of 追加 eta_change（"刚收到延误通知"）
+            strip = {"arrived", "customs_filed", "customs_hold", "customs_released", "delivered"}
+            world["milestones"] = [m for m in world["milestones"]
+                                   if not (m["shipment_id"] == sid and m["event_type"] in strip)]
+            new_eta = max(sp["eta_current"], as_of) + timedelta(days=rng.randint(4, 9))
+            t = max(sp["etd"] + timedelta(days=1), as_of - timedelta(days=1))
+            world["milestones"].append({"shipment_id": sid, "event_type": "eta_change",
+                                        "event_time": f"{t.isoformat()}T11:00:00Z",
+                                        "new_eta": new_eta.isoformat(),
+                                        "source_system": "carrier_edi"})
+            sp.update(eta_current=new_eta, status="in_transit", ata=None, customs_status="not_filed")
+            for _ in range(2):  # 收紧两个客户的行到击穿窗口
+                blocked = breach_custs(sp)
+                if len(blocked) >= 2:
+                    break
+                cands = sorted((lines[a["so_line_id"]] for a in alloc_by_ship.get(sid, [])
+                                if lines[a["so_line_id"]]["line_status"] in ("allocated", "open")
+                                and cust(a["so_line_id"]) not in blocked),
+                               key=lambda x: x["so_line_id"])
+                tightened = False
+                for ln in cands:
+                    new_promise = sp["eta_initial"] + timedelta(days=buf)
+                    if new_promise > sos[ln["so_id"]]["order_date"]:
+                        ln["promised_delivery_date"] = new_promise
+                        tightened = True
+                        break
                 if not tightened:
                     break
             if len(breach_custs(sp)) >= 2:
