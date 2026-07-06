@@ -2,6 +2,11 @@
 
 依据：plan §2.1 演示脚本。每周验收对断言打勾，不对感觉打勾。所有断言必须可通过查询 `ontology.sqlite` / `action_log` 机械验证。
 
+> **自动化覆盖（W4/W5）**：A1-A7、B1-B3、B7 → `engine.evaluate` + `pipeline.evaluate`；
+> A8-A13、B4-B6、C1-C2、C4 → `app.test_closed_loop`。以上全部通过。
+> **C3（五分钟 UI 走查）是唯一必须由人完成的断言**：`streamlit run app/streamlit_app.py`，
+> 按 A 段顺序在界面操作（B7 顺带验证：切到 ops 角色看客户等级列）。
+
 ## 固定演示案例 DEMO-01（W2 确定性生成，不靠随机）
 
 ```text

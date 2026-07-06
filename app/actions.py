@@ -1,0 +1,213 @@
+"""W5 动作层：A3-A6（manual §5 五要素）。
+
+- 纯函数写 sqlite，不依赖 Streamlit——W6 直接注册为 AI tools（D7）
+- 统一返回 {ok, object_id, side_effects, error}，从不抛异常给调用方
+- 一切调用（成功/失败/越权）都写 action_log（断言 B4/C4）
+- 审计时间戳基于 as_of，不用系统时钟（D8）
+"""
+import json
+import sqlite3
+
+ROLE_PERMS = {  # manual §6 权限矩阵
+    "AssignTask": {"ops", "system"},
+    "ProposeMitigation": {"ops", "cs"},
+    "ApproveMitigation": {"manager"},
+    "CloseRiskEvent": {"ops"},
+}
+PARAM_SCHEMAS = {
+    "expedite": {"new_mode", "est_cost_usd", "expected_new_eta"},
+    "reschedule": {"new_promise_date", "notify_customer"},
+    "accept_delay": {"reason"},
+}
+RISK_TERMINAL = ("resolved", "escalated")
+TASK_TERMINAL = ("done", "cancelled")
+
+
+def _log(cur, actor, role, action, target, params, as_of, result):
+    cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
+                   as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                (actor, role, action, target, json.dumps(params, ensure_ascii=False),
+                 as_of, f"{as_of}T00:00:00Z", result))
+
+
+def _res(ok, object_id=None, side_effects=None, error=None):
+    return {"ok": ok, "object_id": object_id, "side_effects": side_effects or [], "error": error}
+
+
+def _denied(con, action, target, actor, role, as_of):
+    cur = con.cursor()
+    _log(cur, actor, role, action, target, {}, as_of, "denied: role not permitted")
+    con.commit()
+    return _res(False, error=f"权限拒绝：角色 {role} 不允许执行 {action}（已记录审计）")
+
+
+def _fail(con, action, target, actor, role, as_of, msg, params=None):
+    cur = con.cursor()
+    _log(cur, actor, role, action, target, params or {}, as_of, f"rejected: {msg}")
+    con.commit()
+    return _res(False, error=msg)
+
+
+def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role, as_of):
+    """A3：派单。前置：风险 open 且无非终态任务。成功：Task=assigned，Risk→acknowledged。"""
+    if role not in ROLE_PERMS["AssignTask"]:
+        return _denied(con, "AssignTask", risk_event_id, actor, role, as_of)
+    cur = con.cursor()
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?", (risk_event_id,)).fetchone()
+    if not risk:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, "风险事件不存在")
+    # 先查既有任务（manual A3：已有非终态 Task → 拒绝并返回其 id），再查状态
+    ex = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=? AND status NOT IN (?,?)""",
+                     (risk_event_id, *TASK_TERMINAL)).fetchone()
+    if ex:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of,
+                     f"已存在非终态任务 {ex['task_id']}（单风险单任务，D9/C4）")
+    if risk["status"] != "open":
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of,
+                     f"风险状态为 {risk['status']}，仅 open 可派单")
+    seq = cur.execute("SELECT count(*) FROM tasks").fetchone()[0] + 1
+    tid = f"TSK-{seq:04d}"
+    cur.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
+                 assignee_role, priority, due_at, None, None, None, None, None, "assigned"))
+    cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
+                (risk_event_id,))
+    _log(cur, actor, role, "AssignTask", tid,
+         {"risk_event_id": risk_event_id, "assignee_role": assignee_role, "priority": priority},
+         as_of, "ok")
+    con.commit()
+    return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged", f"Task {tid} assigned"])
+
+
+def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, role, as_of):
+    """A4：提交处置方案。前置：Task=assigned、参数过 schema、改期日晚于受影响行当前承诺。"""
+    if role not in ROLE_PERMS["ProposeMitigation"]:
+        return _denied(con, "ProposeMitigation", task_id, actor, role, as_of)
+    cur = con.cursor()
+    task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    if not task:
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of, "任务不存在")
+    if task["status"] != "assigned":
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
+                     f"任务状态为 {task['status']}，仅 assigned 可提案")
+    schema = PARAM_SCHEMAS.get(proposed_action)
+    if schema is None or not schema <= set(proposal_params):
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
+                     f"参数不符合 {proposed_action} schema（需 {sorted(schema or [])}）",
+                     proposal_params)
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
+                       (task["risk_event_id"],)).fetchone()
+    if proposed_action == "reschedule":
+        rows = cur.execute(
+            f"""SELECT max(promised_delivery_date) m FROM sales_order_lines WHERE so_line_id IN
+            ({','.join('?' * len(json.loads(risk['affected_so_line_ids'])))})""",
+            json.loads(risk["affected_so_line_ids"])).fetchone()
+        if rows["m"] and proposal_params["new_promise_date"] <= rows["m"]:
+            return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
+                         f"新承诺日必须晚于受影响行当前承诺日（最晚 {rows['m']}）", proposal_params)
+    cur.execute("""UPDATE tasks SET status='in_progress', proposed_action=?, proposal_params=?,
+                   approval_status='pending' WHERE task_id=?""",
+                (proposed_action, json.dumps(proposal_params, ensure_ascii=False), task_id))
+    cur.execute("UPDATE risk_events SET status='mitigating' WHERE risk_event_id=?",
+                (task["risk_event_id"],))
+    _log(cur, actor, role, "ProposeMitigation", task_id,
+         {"proposed_action": proposed_action, **proposal_params}, as_of, "ok")
+    con.commit()
+    return _res(True, task_id, [f"Task {task_id}: assigned→in_progress (pending approval)",
+                                f"RiskEvent {task['risk_event_id']}: →mitigating"])
+
+
+def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
+    """A5：审批（仅经理）。approved 按方案回写；rejected 退回 assigned，提案留痕于 action_log。"""
+    if role not in ROLE_PERMS["ApproveMitigation"]:
+        return _denied(con, "ApproveMitigation", task_id, actor, role, as_of)
+    cur = con.cursor()
+    task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    if not task or task["approval_status"] != "pending":
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     "任务不存在或无待审批提案")
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
+                       (task["risk_event_id"],)).fetchone()
+    affected = json.loads(risk["affected_so_line_ids"])
+    params = json.loads(task["proposal_params"] or "{}")
+    effects = []
+    if decision == "rejected":
+        cur.execute("""UPDATE tasks SET status='assigned', approval_status='rejected',
+                       proposed_action=NULL, proposal_params=NULL WHERE task_id=?""", (task_id,))
+        effects.append(f"Task {task_id}: →assigned（提案已驳回，参数留痕于审计）")
+    elif decision == "approved":
+        act = task["proposed_action"]
+        if act == "reschedule":
+            for lid in affected:
+                cur.execute("""UPDATE sales_order_lines SET promised_delivery_date=?,
+                               reschedule_count=reschedule_count+1, line_status='allocated'
+                               WHERE so_line_id=? AND line_status='at_risk'""",
+                            (params["new_promise_date"], lid))
+            effects.append(f"受影响行承诺日→{params['new_promise_date']}，at_risk→allocated")
+        elif act == "expedite":
+            cur.execute("UPDATE shipments SET expedite_flag=1 WHERE shipment_id=?",
+                        (risk["shipment_id"],))
+            for lid in affected:
+                cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
+                               WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
+            effects.append(f"Shipment {risk['shipment_id']} expedite_flag=1，行风险解除（D9/C2 简化）")
+        elif act == "accept_delay":
+            effects.append("接受延误：行保持 at_risk 至交付")
+        cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
+                       approved_by_role=?, action_taken=? WHERE task_id=?""",
+                    (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
+        effects.append(f"Task {task_id}: →done")
+    else:
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     "decision 必须是 approved/rejected")
+    _log(cur, actor, role, "ApproveMitigation", task_id,
+         {"decision": decision, "comment": comment, "proposal": params}, as_of, "ok")
+    con.commit()
+    return _res(True, task_id, effects)
+
+
+def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, role, as_of):
+    """A6：关闭。前置：任务全终态（false_alarm 例外：联动取消）；mitigated 须有已批准提案。"""
+    if role not in ROLE_PERMS["CloseRiskEvent"]:
+        return _denied(con, "CloseRiskEvent", risk_event_id, actor, role, as_of)
+    cur = con.cursor()
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?", (risk_event_id,)).fetchone()
+    if not risk or risk["status"] in RISK_TERMINAL:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of, "风险不存在或已终态")
+    if not resolution_summary:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of, "关闭必须填写处理小结")
+    open_tasks = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
+                                AND status NOT IN (?,?)""",
+                             (risk_event_id, *TASK_TERMINAL)).fetchall()
+    effects = []
+    if outcome == "false_alarm":
+        for tr in open_tasks:
+            cur.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?", (tr["task_id"],))
+            effects.append(f"Task {tr['task_id']} cancelled（误报联动）")
+        for lid in json.loads(risk["affected_so_line_ids"]):  # 误报回滚行状态
+            cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
+                           WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
+    elif open_tasks:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                     f"存在非终态任务 {[t['task_id'] for t in open_tasks]}，仅 false_alarm 可强制关闭")
+    if outcome == "mitigated":
+        ok = cur.execute("""SELECT 1 FROM tasks WHERE risk_event_id=? AND approval_status='approved'
+                            AND status='done'""", (risk_event_id,)).fetchone()
+        if not ok:
+            return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                         "outcome=mitigated 需要存在已批准并执行的提案")
+    status = "escalated" if outcome == "escalated" else "resolved"
+    cur.execute("""UPDATE risk_events SET status=?, outcome=?, resolution_summary=?, resolved_at=?
+                   WHERE risk_event_id=?""",
+                (status, outcome, resolution_summary, as_of, risk_event_id))
+    _log(cur, actor, role, "CloseRiskEvent", risk_event_id,
+         {"outcome": outcome, "resolution_summary": resolution_summary}, as_of, "ok")
+    con.commit()
+    effects.append(f"RiskEvent {risk_event_id}: →{status} ({outcome})")
+    return _res(True, risk_event_id, effects)
+
+
+def connect(db_path="data/ontology.sqlite"):
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    return con

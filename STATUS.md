@@ -4,7 +4,7 @@
 
 ## 当前位置
 
-- 阶段：**W4 完成（风险引擎 KPI 满分）→ 下一步 W5 动作闭环与控制塔 UI**
+- 阶段：**W5 代码完成（动作层+控制塔 UI+闭环测试全绿）→ 待人 C3 走查后进 W6 AI 层**
 
 ## 已完成
 
@@ -25,13 +25,25 @@
 - [x] W4：engine R1-R3（as_of 时间旅行安全）+ A2 写库语义 + KPI 评估
       Recall 1.000 / Precision 1.000 / 影响定位 51:51 / 幂等 / 审计 1:1
 
-## 下一步（W5 动作闭环与控制塔 UI）
+## 已完成（续 2）
 
-1. `app/actions.py`：A3-A6 动作函数（沿用 manual §5 签名，D7——W6 直接注册为 AI tools）
-2. `app/`：Streamlit 控制塔——风险队列、对象详情（关系跳转）、任务处理台、角色切换器
-3. 砍序（plan §11-W5）：先砍独立审批视图→角色切换器→详情页合并；
-   不可砍底线：风险队列+任务处理台+动作回写+action_log
-4. W5 验收：非开发者按 demo-assertions 5 分钟走完闭环（A8-A13、B4-B7、C 段在此打勾）
+- [x] W5：app/actions.py（A3-A6 五要素+越权审计）+ Streamlit 控制塔四视图 + 角色切换
+- [x] W5：test_closed_loop 全绿（A8-A13/B4-B6/C1-C2/C4）；UI AppTest 双角色无异常
+- [x] demo-assertions 除 C3 外全部自动化通过
+
+## 阻塞 / 待人确认
+
+- [ ] **C3 五分钟走查（W5 正式验收，只有你能做）**：
+      `pip install -r requirements.txt && streamlit run app/streamlit_app.py`
+      按 demo-assertions A 段在界面走一遍；切 ops 角色看"客户等级"列应显示无权查看（B7）
+- [ ] 阅读 docs/data-guide.md 抽查数据（此前遗留）
+
+## 下一步（W6 AI 协同层与收尾）
+
+1. `agent/tools.py`：注册 A3-A6 + 3 个查询函数（对象/影响链/审计历史）为 LLM tools（D7 兑现）
+2. `agent/`：风险解释与处置建议（proposal-only，复用 v0.1 手册 §7 护栏与输出 schema）
+3. 10 题评估集 + 越权/编造测试（AI 回答必须可溯源到对象 ID）
+4. 终版 README、架构说明、项目复盘
 
 ## 复现命令
 
@@ -39,4 +51,6 @@
 python3 -m datagen.generate && python3 -m datagen.verify            # 数据
 python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate  # 对象层
 python3 -m engine.detect && python3 -m engine.evaluate              # 风险引擎
+python3 -m app.test_closed_loop                                     # 动作闭环（临时副本）
+streamlit run app/streamlit_app.py                                  # 控制塔 UI
 ```
