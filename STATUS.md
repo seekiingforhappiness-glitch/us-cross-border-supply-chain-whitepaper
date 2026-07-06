@@ -24,7 +24,8 @@
 
 - [x] V1：admission-manual-v0.3（3 对象扩展 + 4 新对象 + 状态机 + 6 动作五要素 + 6 角色矩阵，
       勘误 N1-N5）；统一 ontology JSON 0.3.0（15 对象/17 关系/12 动作）；准入断言清单（22 条）
-- [ ] V2：datagen 准入扩展（候选 SKU、案件、5 个设计案例、门禁 ground truth）+ pipeline 建表 + 零回归
+- [x] V2：datagen/admission.py（独立随机流零扰动）+ qms 四表 + 门禁真值 + pipeline 建表；
+      verify 54 项全绿；六评估器零回归；AC4 复用性 SQL 预验证通过
 - [ ] V3：动作 B1-B6 + 准入工作台 UI + 无头闭环测试
 - [ ] V4：AI 扩展（admission briefing + 评估 +6 题）+ 复盘更新
 

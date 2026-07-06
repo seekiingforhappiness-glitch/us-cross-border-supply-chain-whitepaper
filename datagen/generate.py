@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 
 from . import world as W
+from . import admission as ADM
 from .design_cases import apply_design_cases
 from .noise import apply_noise
 from .oracle import sweep
@@ -32,6 +33,10 @@ def build(cfg):
     W.finalize_line_status(w)
     expected = sweep(w, cfg)
     noise = apply_noise(w, design_noise, cfg, rng)
+    # v0.3 准入世界：独立随机流（seed+1000），控制塔数据零扰动（V2 决策）
+    adm_rng = random.Random(cfg["seed"] + 1000)
+    ADM.extend_shared_objects(w, adm_rng)
+    ADM.build_admission_world(w, cfg, adm_rng)
     return w, expected, noise
 
 
@@ -50,11 +55,19 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
 
     tables = {}
     tables["srm_suppliers"] = ([dict(s) for s in sorted(w["suppliers"].values(), key=lambda x: x["supplier_id"])],
-                               ["supplier_id", "supplier_name", "city", "lead_time_days"])
+                               ["supplier_id", "supplier_name", "city", "lead_time_days",
+                                "factory_audit_status", "compliance_docs_status",
+                                "uflpa_risk_flag", "origin_evidence_status"])
     tables["catalog_skus"] = ([dict(s) for s in sorted(w["skus"].values(), key=lambda x: x["sku_id"])],
-                              ["sku_id", "sku_name", "category", "unit_price_usd", "supplier_id"])
+                              ["sku_id", "sku_name", "category", "unit_price_usd", "supplier_id",
+                               "sku_status", "declared_value_usd", "package_weight_kg",
+                               "package_l_cm", "package_w_cm", "package_h_cm", "battery_flag",
+                               "food_contact_flag", "children_product_flag", "material",
+                               "use_case", "origin_country", "platform"])
     tables["oms_customers"] = ([dict(c) for c in sorted(w["customers"].values(), key=lambda x: x["customer_id"])],
-                               ["customer_id", "customer_name", "tier", "us_state"])
+                               ["customer_id", "customer_name", "tier", "us_state",
+                                "business_model", "sales_channel", "ior_capability",
+                                "broker_status", "credit_terms", "risk_tier"])
     tables["oms_sales_orders"] = ([{**s, "order_date": s["order_date"].isoformat()}
                                    for s in sorted(w["sos"].values(), key=lambda x: x["so_id"])],
                                   ["so_id", "customer_id", "order_date"])
@@ -105,9 +118,36 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                  "event_time", "event_locode", "new_eta", "source_system", "ingested_at"])
     tables["tms_allocations"] = (sorted(w["allocations"], key=lambda a: a["allocation_id"]),
                                  ["allocation_id", "shipment_id", "so_line_id", "allocated_qty"])
+    # v0.3 准入四表（qms_ = 报价管理系统）
+    adm = w["admission"]
+    tables["qms_admission_cases"] = (adm["cases"],
+                                     ["admission_case_id", "case_title", "customer_id", "sku_id",
+                                      "request_type", "incoterm_candidate", "target_launch_date",
+                                      "monthly_order_estimate", "risk_level", "status",
+                                      "decision", "decision_reason", "conditions"])
+    tables["qms_compliance_findings"] = (adm["findings"],
+                                         ["compliance_finding_id", "admission_case_id",
+                                          "finding_title", "finding_type", "severity",
+                                          "hts_candidate", "pga_agency", "required_document",
+                                          "evidence_status", "recommendation"])
+    tables["qms_logistics_plans"] = (adm["plans"],
+                                     ["logistics_plan_id", "admission_case_id", "plan_name",
+                                      "route_type", "incoterm", "origin_port_locode",
+                                      "destination_port_locode", "us_warehouse_region",
+                                      "last_mile_method", "estimated_transit_days", "sla_risk",
+                                      "operational_notes"])
+    tables["qms_cost_scenarios"] = (adm["scenarios"],
+                                    ["cost_scenario_id", "logistics_plan_id", "scenario_type",
+                                     "quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
+                                     "international_freight_usd", "duty_tax_usd",
+                                     "customs_brokerage_usd", "warehouse_cost_usd",
+                                     "last_mile_cost_usd", "returns_allowance_usd",
+                                     "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"])
 
     for name, (rows, cols) in tables.items():
         _dump(raw / f"{name}.csv", rows, cols)
+    _dump(truth / "expected_admission_gates.csv", adm["gates"],
+          ["case_label", "admission_case_id", "gate", "attempt", "expected", "reason"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

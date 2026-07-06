@@ -64,7 +64,7 @@ def main():
     noi = load(truth_dir, "injected_noise_log")
     c = cfg["counts"]
     check("suppliers 数量", len(t["srm_suppliers"]) == c["suppliers"])
-    check("skus 数量", len(t["catalog_skus"]) == c["skus"])
+    check("skus 数量（目录+候选）", len(t["catalog_skus"]) == c["skus"] + 15)  # 15=准入候选（v0.3）
     check("customers 数量", len(t["oms_customers"]) == c["customers"])
     check("sales_orders 数量", len(t["oms_sales_orders"]) == c["sales_orders"],
           f"got {len(t['oms_sales_orders'])}")
@@ -182,6 +182,62 @@ def main():
         by_noise[r["noise_type"]] += 1
     print(f"  风险分布: {dict(by_rule)}  多客户击穿: {multi}")
     print(f"  噪声分布: {dict(by_noise)}")
+
+    print("== 6. 准入扩展（v0.3-V2）==")
+    adm_cases = load(raw_dir, "qms_admission_cases")
+    adm_find = load(raw_dir, "qms_compliance_findings")
+    adm_plans = load(raw_dir, "qms_logistics_plans")
+    adm_scen = load(raw_dir, "qms_cost_scenarios")
+    gates = load(truth_dir, "expected_admission_gates")
+    skus = {r["sku_id"]: r for r in t["catalog_skus"]}
+    custs = {r["customer_id"]: r for r in t["oms_customers"]}
+    cases = {r["admission_case_id"]: r for r in adm_cases}
+    candidates = [k for k, v in skus.items() if v["sku_status"] == "candidate"]
+
+    check("案件数=40 / 候选+转正 SKU=15", len(adm_cases) == 40
+          and sum(1 for k in skus if k.startswith("SKU-9")) == 15)
+    check("遗留 SKU 准入字段为空（迁移语义）",
+          skus["SKU-0001"]["declared_value_usd"] == "" and skus["SKU-0001"]["sku_status"] == "active")
+    check("候选 SKU 不进控制塔（无 PO/订单行引用）",
+          not any(r["sku_id"].startswith("SKU-9") for r in t["srm_purchase_orders"])
+          and not any(r["sku_id"].startswith("SKU-9") for r in t["oms_so_lines"]))
+    ok_margin = all(abs(float(s["gross_margin_usd"]) - (float(s["quote_price_usd"])
+                    - sum(float(s[k]) for k in ("product_cost_usd", "first_mile_cost_usd",
+                          "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
+                          "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
+                          "risk_buffer_usd")))) < 0.02 for s in adm_scen)
+    check(f"毛利=报价−9项成本（{len(adm_scen)} 情景全对账）", ok_margin)
+    approved = [c for c in adm_cases if c["status"] in ("approved", "quote_with_conditions")]
+    check("批准案件的 SKU 已转 active（E1/N5）",
+          all(skus[c["sku_id"]]["sku_status"] == "active" for c in approved))
+    # 设计案例
+    a = cases["AC-2026-0031"]
+    a_plan = [p for p in adm_plans if p["admission_case_id"] == "AC-2026-0031"]
+    a_scen = [s for s in adm_scen if s["logistics_plan_id"] == a_plan[0]["logistics_plan_id"]] if a_plan else []
+    check("AC-DEMO-A：priced/CUS-0007(has_ior)/DDP方案/三情景毛利为正",
+          a["status"] == "priced" and custs["CUS-0007"]["ior_capability"] == "has_ior"
+          and a_plan and a_plan[0]["incoterm"] == "DDP" and len(a_scen) == 3
+          and all(float(s["gross_margin_usd"]) > 0 for s in a_scen))
+    b_find = [f for f in adm_find if f["admission_case_id"] == "AC-2026-0032"]
+    check("AC-DEMO-B：存在未verified的critical finding（G1素材）",
+          any(f["severity"] == "critical" and f["evidence_status"] != "verified" for f in b_find)
+          and cases["AC-2026-0032"]["risk_level"] == "critical")
+    check("AC-DEMO-C：in_precheck/客户needs_partner/尚无方案",
+          cases["AC-2026-0033"]["status"] == "in_precheck"
+          and custs["CUS-0011"]["ior_capability"] == "needs_partner"
+          and not any(p["admission_case_id"] == "AC-2026-0033" for p in adm_plans))
+    check("AC-DEMO-D：needs_more_info（回流素材）",
+          cases["AC-2026-0034"]["status"] == "needs_more_info")
+    e_plan = [p for p in adm_plans if p["admission_case_id"] == "AC-2026-0035"]
+    e_scen = [s for s in adm_scen if e_plan and s["logistics_plan_id"] == e_plan[0]["logistics_plan_id"]]
+    check("AC-DEMO-E：conservative 毛利为负、base 为正",
+          any(s["scenario_type"] == "conservative" and float(s["gross_margin_usd"]) < 0 for s in e_scen)
+          and any(s["scenario_type"] == "base" and float(s["gross_margin_usd"]) > 0 for s in e_scen))
+    check("门禁真值表 ≥7 条且案件引用存在",
+          len(gates) >= 7 and all(g["admission_case_id"] in cases for g in gates))
+    check("finding 引用完整 / hts 类必带税号",
+          all(f["admission_case_id"] in cases for f in adm_find)
+          and all(f["hts_candidate"] for f in adm_find if f["finding_type"] == "hts"))
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

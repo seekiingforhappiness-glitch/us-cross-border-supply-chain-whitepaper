@@ -53,7 +53,9 @@ def derive_shipment_state(sid, events, eta_initial):
 def main():
     t = {n: load(n) for n in ["srm_suppliers", "catalog_skus", "oms_customers", "oms_sales_orders",
                               "oms_so_lines", "srm_purchase_orders", "tms_shipments",
-                              "tms_milestones", "tms_allocations"]}
+                              "tms_milestones", "tms_allocations",
+                              "qms_admission_cases", "qms_compliance_findings",
+                              "qms_logistics_plans", "qms_cost_scenarios"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
 
     # 1) milestone 判重（四元组保首条，重复标记保留——事件不可变，只标不删）
@@ -165,13 +167,21 @@ def main():
                         [[r.get(c.split()[0], "") for c in cols] for r in rows])
 
     table("suppliers", t["srm_suppliers"],
-          ["supplier_id TEXT", "supplier_name TEXT", "city TEXT", "lead_time_days INTEGER"],
+          ["supplier_id TEXT", "supplier_name TEXT", "city TEXT", "lead_time_days INTEGER",
+           "factory_audit_status TEXT", "compliance_docs_status TEXT",
+           "uflpa_risk_flag TEXT", "origin_evidence_status TEXT"],
           "supplier_id")
     table("skus", t["catalog_skus"],
-          ["sku_id TEXT", "sku_name TEXT", "category TEXT", "unit_price_usd REAL", "supplier_id TEXT"],
+          ["sku_id TEXT", "sku_name TEXT", "category TEXT", "unit_price_usd REAL", "supplier_id TEXT",
+           "sku_status TEXT", "declared_value_usd TEXT", "package_weight_kg TEXT",
+           "package_l_cm TEXT", "package_w_cm TEXT", "package_h_cm TEXT", "battery_flag TEXT",
+           "food_contact_flag TEXT", "children_product_flag TEXT", "material TEXT",
+           "use_case TEXT", "origin_country TEXT", "platform TEXT"],
           "sku_id")
     table("customers", t["oms_customers"],
-          ["customer_id TEXT", "customer_name TEXT", "tier TEXT", "us_state TEXT"], "customer_id")
+          ["customer_id TEXT", "customer_name TEXT", "tier TEXT", "us_state TEXT",
+           "business_model TEXT", "sales_channel TEXT", "ior_capability TEXT",
+           "broker_status TEXT", "credit_terms TEXT", "risk_tier TEXT"], "customer_id")
     table("sales_orders", so_rows,
           ["so_id TEXT", "customer_id TEXT", "order_date TEXT", "status TEXT"], "so_id")
     table("sales_order_lines", line_rows,
@@ -197,6 +207,36 @@ def main():
     table("shipment_allocations", sorted(t["tms_allocations"], key=lambda x: x["allocation_id"]),
           ["allocation_id TEXT", "shipment_id TEXT", "so_line_id TEXT", "allocated_qty INTEGER"],
           "allocation_id")
+    # v0.3 准入四表（工作流数据，qms 为记录系统，直通加载 + 引用完整性入 DQ）
+    table("admission_cases", sorted(t["qms_admission_cases"], key=lambda x: x["admission_case_id"]),
+          ["admission_case_id TEXT", "case_title TEXT", "customer_id TEXT", "sku_id TEXT",
+           "request_type TEXT", "incoterm_candidate TEXT", "target_launch_date TEXT",
+           "monthly_order_estimate INTEGER", "risk_level TEXT", "status TEXT",
+           "decision TEXT", "decision_reason TEXT", "conditions TEXT"], "admission_case_id")
+    table("compliance_findings", sorted(t["qms_compliance_findings"],
+                                        key=lambda x: x["compliance_finding_id"]),
+          ["compliance_finding_id TEXT", "admission_case_id TEXT", "finding_title TEXT",
+           "finding_type TEXT", "severity TEXT", "hts_candidate TEXT", "pga_agency TEXT",
+           "required_document TEXT", "evidence_status TEXT", "recommendation TEXT"],
+          "compliance_finding_id")
+    table("logistics_plans", sorted(t["qms_logistics_plans"], key=lambda x: x["logistics_plan_id"]),
+          ["logistics_plan_id TEXT", "admission_case_id TEXT", "plan_name TEXT", "route_type TEXT",
+           "incoterm TEXT", "origin_port_locode TEXT", "destination_port_locode TEXT",
+           "us_warehouse_region TEXT", "last_mile_method TEXT", "estimated_transit_days INTEGER",
+           "sla_risk TEXT", "operational_notes TEXT"], "logistics_plan_id")
+    table("cost_scenarios", sorted(t["qms_cost_scenarios"], key=lambda x: x["cost_scenario_id"]),
+          ["cost_scenario_id TEXT", "logistics_plan_id TEXT", "scenario_type TEXT",
+           "quote_price_usd REAL", "product_cost_usd REAL", "first_mile_cost_usd REAL",
+           "international_freight_usd REAL", "duty_tax_usd REAL", "customs_brokerage_usd REAL",
+           "warehouse_cost_usd REAL", "last_mile_cost_usd REAL", "returns_allowance_usd REAL",
+           "risk_buffer_usd REAL", "gross_margin_usd REAL", "gross_margin_rate REAL"],
+          "cost_scenario_id")
+    case_ids = {r["admission_case_id"] for r in t["qms_admission_cases"]}
+    dq["admission_orphan_findings"] = sum(
+        1 for r in t["qms_compliance_findings"] if r["admission_case_id"] not in case_ids)
+    dq["admission_orphan_plans"] = sum(
+        1 for r in t["qms_logistics_plans"] if r["admission_case_id"] not in case_ids)
+
     cur.execute("CREATE TABLE supplier_name_map (raw_name TEXT PRIMARY KEY, supplier_id TEXT)")
     cur.executemany("INSERT INTO supplier_name_map VALUES (?,?)",
                     [(k, v or "") for k, v in sorted(mapping.items())])
