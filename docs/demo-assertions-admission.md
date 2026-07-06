@@ -38,7 +38,7 @@ AC-DEMO-E（毛利为负）   ：三情景中 conservative 毛利为负 → 系�
 ## C. 权限与复用断言
 
 - [x] AC1. sales 调用 B5 审批：被拒且审计留痕（同 v0.2 B4 模式）
-- [ ] AC2. sales 查看 CostScenario 成本字段：显示"无权查看"而非空白
+- [x] AC2. sales 查看 CostScenario 成本字段：显示"无权查看"而非空白
 - [x] AC3. compliance 调用 B6(reject)：被拒（仅 manager 可拒接）
 - [x] AC4. **复用性**：AC-DEMO-A 的客户 CUS-0007 与控制塔 RSK-0044 是同一对象——
       一条 SQL 同时取出该客户的准入案件与延误风险历史

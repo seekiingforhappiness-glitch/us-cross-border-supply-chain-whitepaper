@@ -28,8 +28,7 @@
       verify 54 项全绿；六评估器零回归；AC4 复用性 SQL 预验证通过
 - [x] V3：admission_actions B1-B6（G1/G2/G3 门禁）+ 准入工作台 UI（6 角色）+
       test_admission_loop 17 项全绿；七评估器全绿；断言 17/22 自动化通过
-- [ ] V3 人工验收：准入侧 5 分钟四角色接力走查（sales→compliance→ops→finance→manager），
-      顺带验证 AC2 成本脱敏——`streamlit run app/streamlit_app.py` → 📋 准入工作台
+- [x] V3 人工验收完成（2026-07-06）：Daniel 四角色接力走完 AC-2026-0041 全链（审计链复核无误）；AC2 由 AppTest 机械验证
 - [ ] V4：AI 扩展（admission briefing + 评估 +6 题）+ 复盘更新
 
 ## 待人自选（不阻塞）
