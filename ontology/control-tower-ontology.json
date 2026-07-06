@@ -344,8 +344,8 @@
     }
   ],
   "riskRules": [
-    {"id": "R1", "type": "delay_breach", "logic": "shipment.eta_current + config.customs_buffer_days + config.lastmile_buffer_days > line.promised_delivery_date (via allocations)", "severity": "breach<=3d: medium; >3d: high; customer tier=A: +1 level"},
-    {"id": "R2", "type": "docs_missing", "logic": "missing_docs non-empty AND (eta_current - as_of_date) < 7d", "severity": "high"},
+    {"id": "R1", "type": "delay_breach", "logic": "shipment.eta_current + config.customs_buffer_days + config.lastmile_buffer_days > line.promised_delivery_date (via allocations); skip delivered shipments and fulfilled/cancelled lines", "severity": "per-line: breach<=3d medium, >3d high, tier=A +1 level; event severity = max over affected lines"},
+    {"id": "R2", "type": "docs_missing", "logic": "missing_docs non-empty AND (eta_current - as_of_date) < 7d; skip delivered shipments and customs_status=released", "severity": "high"},
     {"id": "R3", "type": "stalled", "logic": "status=in_transit AND as_of_date - latest milestone.event_time >= config.stall_days", "severity": "medium"}
   ],
   "config": {

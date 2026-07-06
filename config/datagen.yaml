@@ -1,0 +1,47 @@
+# W2 数据生成配置（AGENTS.md §7：参数一律进配置，禁止硬编码）
+seed: 42
+
+window:
+  start: "2026-05-01"
+  end: "2026-08-31"
+  as_of: "2026-08-08"          # D8 固定快照日；oracle 与引擎评估均以此为准
+
+buffers:                        # R1 缓冲（plan §8）
+  customs_days: 3
+  lastmile_days: 2
+
+risk:
+  stall_days: 5                 # R3
+  docs_window_days: 7           # R2
+
+counts:                         # plan §9 规模
+  suppliers: 10
+  skus: 20
+  customers: 15
+  sales_orders: 300
+  purchase_orders: 250
+  shipments: 120
+
+world:
+  lines_per_so_weights: {1: 0.30, 2: 0.25, 3: 0.20, 4: 0.15, 5: 0.10}
+  qty_range: [50, 2000]
+  promise_offset_days: [35, 60]     # promise = order_date + offset
+  transit_days: [13, 17]            # 海运
+  pos_per_shipment: [1, 4]
+  docs_missing_rate: 0.10           # 世界真实状态（非噪声），进 expected_risk_events
+  delay_days_per_change: [4, 12]
+  multi_customer_breach_min: 15   # plan §9：一票延误击穿多客户 ≥15，确定性补齐
+  transshipment_rate: 0.35
+
+noise_rates:                    # 数据质量噪声（进 injected_noise_log，不产生风险）
+  eta_multi_change: 0.30        # ≥1 次 ETA 变更的 shipment 占比
+  eta_change_3plus: 0.10        # ≥3 次
+  milestone_duplicate: 0.05
+  milestone_out_of_order: 0.05
+  status_conflict: 0.08
+  null_vessel_carrier: 0.10
+  supplier_name_variant: 0.20
+
+output:
+  raw_dir: "data/raw"
+  truth_dir: "data/truth"       # 仅 datagen/verify 与 W4 评估可读；pipeline/engine 禁读

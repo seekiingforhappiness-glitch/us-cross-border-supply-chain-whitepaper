@@ -355,6 +355,12 @@ detect_risks(ontology_db, as_of_date, config) -> list[RiskCandidate]
 # R3 静默停滞: status=in_transit 且 as_of_date − 最近 milestone.event_time ≥ 5d → medium
 ```
 
+W2 落定的规则澄清（oracle 与 W4 引擎必须一致）：
+
+- R1/R2 跳过 status=delivered 的 shipment；R1 跳过 fulfilled/cancelled 的行
+- R2 另跳过 customs_status=released（已放行则文件缺失已无意义）
+- R1 事件级 severity = 各受影响行 per-line severity（含 tier 升级）取最大
+
 ## 8. 非平凡设计选择（需人批准后生效）
 
 | # | 选择 | 理由 | 代价 |
