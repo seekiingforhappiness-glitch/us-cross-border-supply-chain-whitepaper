@@ -1,0 +1,362 @@
+{
+  "version": "0.2.0",
+  "name": "cross_border_control_tower_ontology",
+  "displayName": "跨境供应链延误风险控制塔 Ontology",
+  "scope": "MVP for delay risk detection, line-level impact propagation, risk/task dispatch, human mitigation actions, and closed-loop write-back.",
+  "authority": "docs/control-tower-ontology-manual.md is the human-readable source; this file must stay consistent with it. Decisions D1-D9 in docs/control-tower-plan-v0.2.md govern changes.",
+  "asOfPolicy": {
+    "rule": "All engine evaluation and UI rendering take an explicit as_of_date parameter. Implicit system time is forbidden (D8)."
+  },
+  "primaryKeyPolicy": {
+    "requiredPattern": "*_id",
+    "rules": [
+      "All object instances must use a stable unique primary key.",
+      "Do not use any mutable display name as a primary key.",
+      "Synthetic keys must be generated in the data preparation layer and persisted before application usage."
+    ]
+  },
+  "roles": ["ops", "cs", "manager", "system"],
+  "sensitiveFieldRules": [
+    {"object": "Customer", "field": "tier", "visibleTo": ["cs", "manager"]},
+    {"object": "Task", "field": "proposal_params.est_cost_usd", "visibleTo": ["ops", "manager"]},
+    {"rendering": "Fields hidden by permission must render as 'no access', never as blank/null. null must not be interpreted as 'no risk'."}
+  ],
+  "objects": [
+    {
+      "type": "Supplier",
+      "primaryKey": "supplier_id",
+      "titleKey": "supplier_name",
+      "ownerRole": "ops",
+      "properties": [
+        {"name": "supplier_id", "type": "string", "required": true},
+        {"name": "supplier_name", "type": "string", "required": true, "description": "Canonical name after entity resolution."},
+        {"name": "city", "type": "string", "required": true},
+        {"name": "lead_time_days", "type": "number", "required": true}
+      ],
+      "dataQualityRules": ["supplier_id unique", "lead_time_days > 0"]
+    },
+    {
+      "type": "Sku",
+      "primaryKey": "sku_id",
+      "titleKey": "sku_name",
+      "ownerRole": "ops",
+      "properties": [
+        {"name": "sku_id", "type": "string", "required": true},
+        {"name": "sku_name", "type": "string", "required": true},
+        {"name": "category", "type": "enum", "required": true, "values": ["charger", "cable", "earbuds", "phone_case"]},
+        {"name": "unit_price_usd", "type": "number", "required": true, "description": "Used for affected_value_usd."}
+      ],
+      "dataQualityRules": ["sku_id unique", "unit_price_usd > 0"]
+    },
+    {
+      "type": "Customer",
+      "primaryKey": "customer_id",
+      "titleKey": "customer_name",
+      "ownerRole": "cs",
+      "properties": [
+        {"name": "customer_id", "type": "string", "required": true},
+        {"name": "customer_name", "type": "string", "required": true},
+        {"name": "tier", "type": "enum", "required": true, "sensitive": true, "values": ["A", "B", "C"], "description": "Drives severity escalation in R1."},
+        {"name": "us_state", "type": "string", "required": true}
+      ],
+      "dataQualityRules": ["customer_id unique", "tier required (R1 depends on it)"]
+    },
+    {
+      "type": "SalesOrder",
+      "primaryKey": "so_id",
+      "ownerRole": "cs",
+      "properties": [
+        {"name": "so_id", "type": "string", "required": true},
+        {"name": "customer_id", "type": "string", "required": true},
+        {"name": "order_date", "type": "date", "required": true},
+        {"name": "status", "type": "enum", "required": true, "derived": true, "values": ["open", "in_fulfillment", "fulfilled", "cancelled"], "description": "Aggregated from line statuses; never written by actions."}
+      ],
+      "dataQualityRules": ["so_id unique", "must have >=1 line", "status is derived-only"]
+    },
+    {
+      "type": "SalesOrderLine",
+      "primaryKey": "so_line_id",
+      "ownerRole": "cs",
+      "statusField": "line_status",
+      "properties": [
+        {"name": "so_line_id", "type": "string", "required": true},
+        {"name": "so_id", "type": "string", "required": true},
+        {"name": "sku_id", "type": "string", "required": true},
+        {"name": "qty", "type": "number", "required": true},
+        {"name": "promised_delivery_date", "type": "date", "required": true, "description": "Current promise; updated only by approved reschedule (A5)."},
+        {"name": "original_promised_date", "type": "date", "required": true, "description": "Immutable after creation."},
+        {"name": "reschedule_count", "type": "number", "required": true, "description": "Default 0; +1 per approved reschedule (D9/C1)."},
+        {"name": "line_status", "type": "enum", "required": true, "values": ["open", "allocated", "at_risk", "fulfilled", "cancelled"]}
+      ],
+      "dataQualityRules": ["qty > 0", "promised_delivery_date >= order_date", "original_promised_date immutable"]
+    },
+    {
+      "type": "PurchaseOrder",
+      "primaryKey": "po_id",
+      "ownerRole": "ops",
+      "statusField": "status",
+      "properties": [
+        {"name": "po_id", "type": "string", "required": true},
+        {"name": "supplier_id", "type": "string", "required": true},
+        {"name": "sku_id", "type": "string", "required": true, "description": "Single-SKU PO (D2 simplification)."},
+        {"name": "qty", "type": "number", "required": true},
+        {"name": "po_date", "type": "date", "required": true},
+        {"name": "expected_ready_date", "type": "date", "required": true},
+        {"name": "status", "type": "enum", "required": true, "values": ["placed", "ready", "shipped", "closed", "cancelled"]}
+      ],
+      "dataQualityRules": ["po_id unique", "expected_ready_date >= po_date"]
+    },
+    {
+      "type": "Shipment",
+      "primaryKey": "shipment_id",
+      "ownerRole": "ops",
+      "statusField": "status",
+      "properties": [
+        {"name": "shipment_id", "type": "string", "required": true},
+        {"name": "mode", "type": "enum", "required": true, "values": ["ocean_fcl", "ocean_lcl"]},
+        {"name": "container_no", "type": "string", "required": false, "description": "Demoted attribute (D5); nullable by noise."},
+        {"name": "vessel_voyage", "type": "string", "required": false, "description": "Demoted attribute; nullable by noise."},
+        {"name": "carrier_name", "type": "string", "required": false, "description": "Demoted attribute; nullable by noise."},
+        {"name": "origin_port", "type": "enum", "required": true, "values": ["yantian", "shekou", "ningbo"]},
+        {"name": "destination_port", "type": "enum", "required": true, "values": ["los_angeles", "long_beach"]},
+        {"name": "destination_warehouse", "type": "string", "required": true},
+        {"name": "etd", "type": "date", "required": true},
+        {"name": "eta_initial", "type": "date", "required": true, "description": "Immutable after creation."},
+        {"name": "eta_current", "type": "date", "required": true, "description": "Updated only by A1 IngestMilestone."},
+        {"name": "ata", "type": "date", "required": false},
+        {"name": "customs_status", "type": "enum", "required": true, "values": ["not_filed", "filed", "hold", "released"]},
+        {"name": "missing_docs", "type": "list", "required": true, "itemValues": ["commercial_invoice", "packing_list", "bill_of_lading", "isf"], "description": "Empty list = complete."},
+        {"name": "expedite_flag", "type": "boolean", "required": true, "description": "Set true by approved expedite (D9/C2 simplification)."},
+        {"name": "delay_days", "type": "number", "derived": true, "description": "eta_current - eta_initial."},
+        {"name": "status", "type": "enum", "required": true, "values": ["planned", "in_transit", "arrived", "customs", "delivered"]}
+      ],
+      "dataQualityRules": ["eta_initial >= etd", "eta_current writable only via A1", "delay_days derived-only"]
+    },
+    {
+      "type": "ShipmentMilestone",
+      "primaryKey": "milestone_id",
+      "ownerRole": "system",
+      "immutable": true,
+      "properties": [
+        {"name": "milestone_id", "type": "string", "required": true},
+        {"name": "shipment_id", "type": "string", "required": true},
+        {"name": "event_type", "type": "enum", "required": true, "values": ["booking_confirmed", "departed", "eta_change", "transshipment", "arrived", "customs_filed", "customs_hold", "customs_released", "delivered"]},
+        {"name": "event_time", "type": "datetime", "required": true, "description": "Business time; may arrive out of order."},
+        {"name": "new_eta", "type": "date", "required": false, "description": "Required iff event_type=eta_change."},
+        {"name": "source_system", "type": "enum", "required": true, "values": ["carrier_edi", "forwarder_portal", "manual"]},
+        {"name": "payload", "type": "json", "required": false},
+        {"name": "ingested_at", "type": "datetime", "required": true},
+        {"name": "is_duplicate", "type": "boolean", "derived": true, "description": "Set by pipeline; duplicates are kept but trigger no side effects."}
+      ],
+      "dataQualityRules": ["append-only, never update or delete", "eta_change requires new_eta", "duplicate = same (shipment_id, event_type, event_time, source_system)"]
+    },
+    {
+      "type": "ShipmentAllocation",
+      "primaryKey": "allocation_id",
+      "ownerRole": "system",
+      "description": "Hub object for impact propagation (D3).",
+      "properties": [
+        {"name": "allocation_id", "type": "string", "required": true},
+        {"name": "shipment_id", "type": "string", "required": true},
+        {"name": "so_line_id", "type": "string", "required": true},
+        {"name": "allocated_qty", "type": "number", "required": true}
+      ],
+      "dataQualityRules": [
+        "sum(allocated_qty) per so_line <= line.qty",
+        "allocated sku must be in the sku set of the shipment's POs"
+      ]
+    },
+    {
+      "type": "RiskEvent",
+      "primaryKey": "risk_event_id",
+      "ownerRole": "system",
+      "statusField": "status",
+      "properties": [
+        {"name": "risk_event_id", "type": "string", "required": true},
+        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled"]},
+        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3"]},
+        {"name": "severity", "type": "enum", "required": true, "values": ["medium", "high", "critical"]},
+        {"name": "shipment_id", "type": "string", "required": true},
+        {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3)."},
+        {"name": "affected_value_usd", "type": "number", "derived": true},
+        {"name": "detected_at", "type": "date", "required": true, "description": "as_of_date at detection."},
+        {"name": "root_cause", "type": "string", "required": true},
+        {"name": "status", "type": "enum", "required": true, "values": ["open", "acknowledged", "mitigating", "resolved", "escalated"]},
+        {"name": "resolved_at", "type": "date", "required": false},
+        {"name": "outcome", "type": "enum", "required": false, "values": ["mitigated", "accepted_delay", "false_alarm", "escalated"]},
+        {"name": "resolution_summary", "type": "string", "required": false, "description": "Required at close."}
+      ],
+      "dataQualityRules": ["no two non-terminal events for same (shipment_id, type) — A2 merges instead"]
+    },
+    {
+      "type": "Task",
+      "primaryKey": "task_id",
+      "ownerRole": "ops",
+      "statusField": "status",
+      "properties": [
+        {"name": "task_id", "type": "string", "required": true},
+        {"name": "risk_event_id", "type": "string", "required": true},
+        {"name": "title", "type": "string", "required": true},
+        {"name": "assignee_role", "type": "enum", "required": true, "values": ["ops", "cs", "manager"]},
+        {"name": "priority", "type": "enum", "required": true, "values": ["P1", "P2", "P3"]},
+        {"name": "due_at", "type": "date", "required": true},
+        {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay"]},
+        {"name": "proposal_params", "type": "json", "required": false, "sensitiveSubfields": ["est_cost_usd"]},
+        {"name": "approval_status", "type": "enum", "required": false, "values": ["pending", "approved", "rejected"]},
+        {"name": "approved_by_role", "type": "enum", "required": false},
+        {"name": "action_taken", "type": "string", "required": false},
+        {"name": "status", "type": "enum", "required": true, "values": ["assigned", "in_progress", "done", "cancelled"]}
+      ],
+      "dataQualityRules": ["max 1 non-terminal task per risk_event (D9/C4)"]
+    }
+  ],
+  "links": [
+    {"linkType": "customer_places", "source": "Customer", "target": "SalesOrder", "cardinality": "1:N"},
+    {"linkType": "so_has_line", "source": "SalesOrder", "target": "SalesOrderLine", "cardinality": "1:N", "rule": "no orphan lines"},
+    {"linkType": "line_for_sku", "source": "SalesOrderLine", "target": "Sku", "cardinality": "N:1"},
+    {"linkType": "supplier_provides", "source": "Supplier", "target": "Sku", "cardinality": "1:N", "rule": "single supplier per sku in v0.2"},
+    {"linkType": "po_from_supplier", "source": "PurchaseOrder", "target": "Supplier", "cardinality": "N:1"},
+    {"linkType": "po_shipped_by", "source": "PurchaseOrder", "target": "Shipment", "cardinality": "N:1", "rule": "one shipment carries multiple POs (D2)"},
+    {"linkType": "shipment_has_milestone", "source": "Shipment", "target": "ShipmentMilestone", "cardinality": "1:N", "rule": "append-only"},
+    {"linkType": "allocation_to_shipment", "source": "ShipmentAllocation", "target": "Shipment", "cardinality": "N:1"},
+    {"linkType": "allocation_to_line", "source": "ShipmentAllocation", "target": "SalesOrderLine", "cardinality": "N:1"},
+    {"linkType": "risk_on_shipment", "source": "RiskEvent", "target": "Shipment", "cardinality": "N:1"},
+    {"linkType": "risk_affects_line", "source": "RiskEvent", "target": "SalesOrderLine", "cardinality": "N:M", "via": "affected_so_line_ids"},
+    {"linkType": "task_handles_risk", "source": "Task", "target": "RiskEvent", "cardinality": "N:1"}
+  ],
+  "stateMachines": {
+    "Shipment": {
+      "states": ["planned", "in_transit", "arrived", "customs", "delivered"],
+      "transitions": [
+        {"from": "planned", "to": "in_transit", "trigger": "A1(departed)"},
+        {"from": "in_transit", "to": "arrived", "trigger": "A1(arrived)"},
+        {"from": "arrived", "to": "customs", "trigger": "A1(customs_filed|customs_hold|customs_released)"},
+        {"from": "customs", "to": "delivered", "trigger": "A1(delivered)"}
+      ],
+      "notes": "departed state removed (D9/C5). delayed is a derived flag, not a state."
+    },
+    "SalesOrderLine": {
+      "states": ["open", "allocated", "at_risk", "fulfilled", "cancelled"],
+      "transitions": [
+        {"from": "open", "to": "allocated", "trigger": "allocation (data build)"},
+        {"from": "allocated", "to": "at_risk", "trigger": "A2"},
+        {"from": "at_risk", "to": "allocated", "trigger": "A5(approved reschedule|expedite)", "notes": "re-entry, not terminal (D9/C1); re-breach re-alarms"},
+        {"from": "at_risk", "to": "fulfilled", "trigger": "delivery confirmation"},
+        {"from": "allocated", "to": "fulfilled", "trigger": "delivery confirmation"},
+        {"from": "open", "to": "cancelled", "trigger": "cancellation"},
+        {"from": "allocated", "to": "cancelled", "trigger": "cancellation"}
+      ]
+    },
+    "RiskEvent": {
+      "states": ["open", "acknowledged", "mitigating", "resolved", "escalated"],
+      "transitions": [
+        {"from": "open", "to": "acknowledged", "trigger": "A3"},
+        {"from": "acknowledged", "to": "mitigating", "trigger": "A4"},
+        {"from": "mitigating", "to": "resolved", "trigger": "A6(outcome=mitigated|accepted_delay|false_alarm)"},
+        {"from": "open", "to": "escalated", "trigger": "A6(outcome=escalated)"},
+        {"from": "acknowledged", "to": "escalated", "trigger": "A6(outcome=escalated)"},
+        {"from": "mitigating", "to": "escalated", "trigger": "A6(outcome=escalated)"}
+      ]
+    },
+    "Task": {
+      "states": ["assigned", "in_progress", "done", "cancelled"],
+      "transitions": [
+        {"from": "assigned", "to": "in_progress", "trigger": "A4"},
+        {"from": "in_progress", "to": "done", "trigger": "A5(approved)"},
+        {"from": "in_progress", "to": "assigned", "trigger": "A5(rejected)", "notes": "proposal retained in action_log"},
+        {"from": "assigned", "to": "cancelled", "trigger": "linked risk closed as false_alarm"},
+        {"from": "in_progress", "to": "cancelled", "trigger": "linked risk closed as false_alarm"}
+      ],
+      "notes": "created state removed (D9/C6)."
+    }
+  },
+  "actions": [
+    {
+      "id": "A1",
+      "name": "IngestMilestone",
+      "signature": "ingest_milestone(shipment_id, event_type, event_time, source_system, new_eta=None, payload=None, as_of_date=...) -> Result",
+      "executors": ["system"],
+      "preconditions": ["shipment exists", "eta_change requires new_eta", "exact duplicate -> store with is_duplicate=true and skip ALL side effects"],
+      "successEffects": ["append milestone", "if event_time newer than last applied: update eta_current / customs_status / state transition", "trigger risk detection for shipment as_of event date"],
+      "failureHandling": ["unknown shipment -> reject", "illegal transition -> store event, no transition, return warning, count in DQ report"],
+      "audit": ["source_system", "rules_triggered", "duplicate_flag"]
+    },
+    {
+      "id": "A2",
+      "name": "CreateRiskEvent",
+      "signature": "create_risk_event(shipment_id, rule_id, type, severity, affected_so_line_ids, root_cause, as_of_date, actor='system') -> Result",
+      "executors": ["system", "ops"],
+      "preconditions": ["affected lines non-empty for delay_breach", "existing non-terminal (shipment,type) event -> merge (max severity, union lines), return existing id"],
+      "successEffects": ["RiskEvent=open", "affected SOLines -> at_risk", "compute affected_value_usd"],
+      "failureHandling": ["line without allocation to shipment -> reject"],
+      "audit": ["rule_id", "merged_or_created"]
+    },
+    {
+      "id": "A3",
+      "name": "AssignTask",
+      "signature": "assign_task(risk_event_id, assignee_role, priority, due_at, actor) -> Result",
+      "executors": ["system", "ops"],
+      "preconditions": ["RiskEvent in {open}", "no non-terminal task for this risk"],
+      "successEffects": ["Task=assigned", "RiskEvent -> acknowledged"],
+      "failureHandling": ["existing non-terminal task -> reject, return its id", "terminal risk -> reject"],
+      "audit": ["assignee_role", "priority"]
+    },
+    {
+      "id": "A4",
+      "name": "ProposeMitigation",
+      "signature": "propose_mitigation(task_id, proposed_action, proposal_params, actor_role) -> Result",
+      "executors": ["ops", "cs"],
+      "paramsSchema": {
+        "expedite": {"new_mode": "air", "est_cost_usd": "number", "expected_new_eta": "date"},
+        "reschedule": {"new_promise_date": "date", "notify_customer": true},
+        "accept_delay": {"reason": "string"}
+      },
+      "preconditions": ["Task=assigned", "params match schema", "reschedule: new_promise_date > current promise"],
+      "successEffects": ["Task -> in_progress, approval_status=pending", "RiskEvent -> mitigating"],
+      "failureHandling": ["schema validation fails -> reject, task unchanged"],
+      "audit": ["proposed_action", "params (est_cost_usd masked per sensitiveFieldRules)"]
+    },
+    {
+      "id": "A5",
+      "name": "ApproveMitigation",
+      "signature": "approve_mitigation(task_id, decision, comment, actor_role='manager') -> Result",
+      "executors": ["manager"],
+      "preconditions": ["approval_status=pending"],
+      "successEffects": {
+        "approved.reschedule": ["affected SOLines: promised_delivery_date=new_promise_date, reschedule_count+1, at_risk->allocated"],
+        "approved.expedite": ["shipment.expedite_flag=true", "affected SOLines: at_risk->allocated (D9/C2 simplification)"],
+        "approved.accept_delay": ["lines stay at_risk until delivery", "risk closable as accepted_delay"],
+        "approved.common": ["Task->done", "action_taken summary"],
+        "rejected": ["Task->assigned", "approval_status=rejected", "proposal retained in action_log"]
+      },
+      "failureHandling": ["non-manager caller -> reject AND audit the violation attempt"],
+      "audit": ["decision", "comment", "approved_by_role"]
+    },
+    {
+      "id": "A6",
+      "name": "CloseRiskEvent",
+      "signature": "close_risk_event(risk_event_id, outcome, resolution_summary, actor_role) -> Result",
+      "executors": ["ops"],
+      "preconditions": ["all tasks terminal", "outcome=mitigated requires an approved proposal", "outcome=false_alarm cancels non-terminal tasks then closes"],
+      "successEffects": ["RiskEvent -> resolved (or escalated)", "resolved_at / resolution_summary written"],
+      "failureHandling": ["non-terminal task and outcome != false_alarm -> reject"],
+      "audit": ["outcome", "resolution_summary"]
+    }
+  ],
+  "riskRules": [
+    {"id": "R1", "type": "delay_breach", "logic": "shipment.eta_current + config.customs_buffer_days + config.lastmile_buffer_days > line.promised_delivery_date (via allocations)", "severity": "breach<=3d: medium; >3d: high; customer tier=A: +1 level"},
+    {"id": "R2", "type": "docs_missing", "logic": "missing_docs non-empty AND (eta_current - as_of_date) < 7d", "severity": "high"},
+    {"id": "R3", "type": "stalled", "logic": "status=in_transit AND as_of_date - latest milestone.event_time >= config.stall_days", "severity": "medium"}
+  ],
+  "config": {
+    "customs_buffer_days": 3,
+    "lastmile_buffer_days": 2,
+    "stall_days": 5,
+    "note": "Values live in config/*.yaml; these are defaults, not hardcoded constants."
+  },
+  "auditLog": {
+    "table": "action_log",
+    "fields": ["actor", "role", "action", "target_object_id", "params_json", "as_of_date", "timestamp", "result"],
+    "rules": ["every state change has exactly one action_log row", "rejected/unauthorized attempts are also logged with failure reason"]
+  }
+}
