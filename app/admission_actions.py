@@ -6,7 +6,10 @@
 """
 import json
 
-from .actions import _log, _res
+try:
+    from .actions import _log, _res
+except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上下文
+    from actions import _log, _res
 
 ADM_PERMS = {
     "CreateAdmissionCase": {"sales"},
