@@ -288,7 +288,9 @@ def apply_design_cases(world, rng):
             sp["ata"] = D(sp["ata"])
         world["shipments"][sp["shipment_id"]] = sp
         world["design_ship_case"][sp["shipment_id"]] = cid
-        world["milestones"].extend(case["milestones"])
+        # 必须复制：CASES 是模块常量，后续 enrich 会原地写字段，
+        # 同进程二次 build 复用被污染的常量会破坏可复现性
+        world["milestones"].extend(dict(m) for m in case["milestones"])
         # POs（补齐通用字段；供应商默认取 SKU 目录归属）
         for po in case["pos"]:
             sup = po.get("supplier_id") or world["skus"][po["sku_id"]]["supplier_id"]
@@ -307,6 +309,8 @@ def apply_design_cases(world, rng):
                 lid = f"SOL-{so_num}-{ln['n']}"
                 world["lines"][lid] = {"so_line_id": lid, "so_id": so["so_id"], "sku_id": ln["sku_id"],
                                        "qty": ln["qty"], "promised_delivery_date": D(ln["promise"]),
+                                       # 设计案例成交价 = 目录价（保证断言金额精确，如 DEMO-01 的 3250）
+                                       "unit_price_usd": world["skus"][ln["sku_id"]]["unit_price_usd"],
                                        "line_status": "open" if ln.get("alloc") is False else "allocated"}
                 if ln.get("alloc") is False:
                     continue

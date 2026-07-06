@@ -64,7 +64,7 @@ def sweep(world, cfg):
                 tier = customers[sos[ln["so_id"]]["customer_id"]]["tier"]
                 sev = _line_sev(breach, tier)
                 hits.append(a["so_line_id"])
-                value += a["allocated_qty"] * skus[ln["sku_id"]]["unit_price_usd"]
+                value += a["allocated_qty"] * ln["unit_price_usd"]  # D11：成交价口径
                 max_breach = max(max_breach, breach)
                 if SEV_ORDER[sev] > SEV_ORDER[worst]:
                     worst = sev
@@ -75,14 +75,12 @@ def sweep(world, cfg):
         if (sp["missing_docs"] and sp["status"] != "delivered" and sp["customs_status"] != "released"
                 and (sp["eta_current"] - as_of).days < docs_window):
             emit("R2", "docs_missing", sp, [a["so_line_id"] for a in active_allocs], "high", 0,
-                 sum(a["allocated_qty"] * skus[lines[a["so_line_id"]]["sku_id"]]["unit_price_usd"]
-                     for a in active_allocs),
+                 sum(a["allocated_qty"] * lines[a["so_line_id"]]["unit_price_usd"] for a in active_allocs),
                  f"missing {','.join(sp['missing_docs'])} with eta within {docs_window}d")
         # --- R3 静默停滞 ---
         gap = (as_of - last_event.get(sp["shipment_id"], as_of)).days
         if sp["status"] == "in_transit" and gap >= stall_days:
             emit("R3", "stalled", sp, [a["so_line_id"] for a in active_allocs], "medium", 0,
-                 sum(a["allocated_qty"] * skus[lines[a["so_line_id"]]["sku_id"]]["unit_price_usd"]
-                     for a in active_allocs),
+                 sum(a["allocated_qty"] * lines[a["so_line_id"]]["unit_price_usd"] for a in active_allocs),
                  f"in_transit with no milestone for {gap}d")
     return expected

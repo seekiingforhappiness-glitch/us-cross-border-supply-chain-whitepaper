@@ -6,6 +6,13 @@ from datetime import date, timedelta
 
 PORTS_CN = ["yantian", "shekou", "ningbo"]
 PORTS_US = ["los_angeles", "long_beach"]
+# Tier 1 真实字段（docs/field-gap-analysis.md，D11）
+SCAC = {"COSCO": "COSU", "OOCL": "OOLU", "Matson": "MATS", "ZIM": "ZIMU", "Evergreen": "EGLV"}
+LOCODE = {"yantian": "CNYTN", "shekou": "CNSHK", "ningbo": "CNNGB",
+          "los_angeles": "USLAX", "long_beach": "USLGB"}
+TRANSSHIP_HUBS = ["SGSIN", "KRPUS", "TWKHH"]
+CONTAINER_TYPES = ["40HC", "40GP", "20GP"]
+INCOTERMS = ["FOB"] * 6 + ["CIF"] * 3 + ["DDP"]  # 权重 60/30/10
 WAREHOUSES = ["LAX-DC1", "ONT-DC2", "RIV-DC3"]
 CARRIERS = ["COSCO", "OOCL", "Matson", "ZIM", "Evergreen"]
 CATEGORIES = ["charger", "cable", "earbuds", "phone_case"]
@@ -114,9 +121,11 @@ def build_world(cfg, rng):
         for j in range(1, n_lines + 1):
             lid = f"SOL-{i:04d}-{j}"
             promise = od + timedelta(days=rng.randint(*wc["promise_offset_days"]))
-            lines[lid] = {"so_line_id": lid, "so_id": soid,
-                          "sku_id": f"SKU-{rng.randint(1, c['skus']):04d}",
+            kid = f"SKU-{rng.randint(1, c['skus']):04d}"
+            lines[lid] = {"so_line_id": lid, "so_id": soid, "sku_id": kid,
                           "qty": rng.randint(*wc["qty_range"]),
+                          # 成交价 = 目录价 ±15%（真实 OMS 行价 ≠ 目录价）
+                          "unit_price_usd": round(skus[kid]["unit_price_usd"] * rng.uniform(0.85, 1.15), 2),
                           "promised_delivery_date": promise, "line_status": "open"}
 
     # --- purchase orders（跳过设计槽位）---
@@ -274,6 +283,40 @@ def build_timeline(sp, rng, wc, nr, as_of):
     return ev
 
 
+def enrich_shipments(world, rng):
+    """Tier 1 字段（D11）：单证号、SCAC、柜型、重量体积、贸易术语、UN/LOCODE。"""
+    for sid in sorted(world["shipments"]):
+        sp = world["shipments"][sid]
+        scac = SCAC.get(sp.get("carrier_name") or "") or rng.choice(sorted(SCAC.values()))
+        sp["carrier_scac"] = scac
+        sp["booking_no"] = f"{scac}{rng.randint(10**8, 10**9 - 1)}"
+        sp["mbl_no"] = f"{scac}{rng.randint(10**8, 10**9 - 1)}"
+        ct = rng.choice(CONTAINER_TYPES)
+        sp["container_type"] = ct
+        if ct == "20GP":
+            sp["gross_weight_kg"], sp["volume_cbm"] = rng.randint(8000, 24000), round(rng.uniform(18, 30), 1)
+        else:
+            sp["gross_weight_kg"], sp["volume_cbm"] = rng.randint(10000, 26000), round(rng.uniform(45, 67), 1)
+        sp["incoterm"] = rng.choice(INCOTERMS)
+        sp["origin_port_locode"] = LOCODE[sp["origin_port"]]
+        sp["destination_port_locode"] = LOCODE[sp["destination_port"]]
+
+
+def enrich_milestones(world, rng):
+    """Tier 1 字段（D11）：事件地点（UN/LOCODE）与 ACT/EST 分类（DCSA event_classifier）。"""
+    for m in world["milestones"]:
+        sp = world["shipments"][m["shipment_id"]]
+        et = m["event_type"]
+        m.setdefault("event_classifier", "EST" if et == "eta_change" else "ACT")
+        if "event_locode" not in m:
+            if et in ("booking_confirmed", "departed"):
+                m["event_locode"] = LOCODE[sp["origin_port"]]
+            elif et == "transshipment":
+                m["event_locode"] = rng.choice(TRANSSHIP_HUBS)
+            else:  # eta_change 是对 POD 到达时间的预估；到港/清关/妥投发生在 POD
+                m["event_locode"] = LOCODE[sp["destination_port"]]
+
+
 def ensure_multi_customer_breach(world, cfg, rng):
     """确定性补齐：保证"一票延误击穿多客户"案例数 ≥ 配置值（plan §9 人为设计要求）。
 
@@ -309,21 +352,28 @@ def ensure_multi_customer_breach(world, cfg, rng):
     ship_skus = {sp["shipment_id"]: {world["pos"][p]["sku_id"] for p in sp["po_ids"]}
                  for sp in world["shipments"].values()}
 
-    for sp in singles:
-        if n_multi >= target:
-            break
-        blocked = breach_custs(sp)
-        donors = [ln for ln in lines.values()
-                  if ln["line_status"] in ("open", "allocated")
-                  and ln["sku_id"] in ship_skus[sp["shipment_id"]]
-                  and cust(ln["so_line_id"]) not in blocked
-                  and not any(a["shipment_id"] in design for a in alloc_by_line.get(ln["so_line_id"], []))
-                  and (sp["eta_initial"] - ln["promised_delivery_date"]).days + buf <= 0   # 排船时可行
-                  and (sp["eta_current"] - ln["promised_delivery_date"]).days + buf > 0]   # 延误后击穿
-        if not donors:
-            continue
-        ln = sorted(donors, key=lambda x: x["so_line_id"])[0]
-        # 撤旧分配，改指本船
+    def line_breaches_elsewhere(ln):
+        """该行当前是否已在其他延误船上构成击穿（偷走会拆东墙补西墙）。"""
+        for a in alloc_by_line.get(ln["so_line_id"], []):
+            osp = world["shipments"][a["shipment_id"]]
+            if osp["status"] != "delivered" and \
+                    (osp["eta_current"] - ln["promised_delivery_date"]).days + buf > 0:
+                return True
+        return False
+
+    def find_donors(sp, blocked):
+        return sorted((ln for ln in lines.values()
+                       if ln["line_status"] in ("open", "allocated")
+                       and ln["sku_id"] in ship_skus[sp["shipment_id"]]
+                       and cust(ln["so_line_id"]) not in blocked
+                       and not any(a["shipment_id"] in design
+                                   for a in alloc_by_line.get(ln["so_line_id"], []))
+                       and not line_breaches_elsewhere(ln)
+                       and (sp["eta_initial"] - ln["promised_delivery_date"]).days + buf <= 0  # 排船时可行
+                       and (sp["eta_current"] - ln["promised_delivery_date"]).days + buf > 0),  # 延误后击穿
+                      key=lambda x: x["so_line_id"])
+
+    def repoint(sp, ln):
         old = alloc_by_line.get(ln["so_line_id"], [])
         world["allocations"] = [a for a in world["allocations"] if a["so_line_id"] != ln["so_line_id"]]
         for a in old:
@@ -335,7 +385,56 @@ def ensure_multi_customer_breach(world, cfg, rng):
         alloc_by_ship.setdefault(sp["shipment_id"], []).append(na)
         alloc_by_line[ln["so_line_id"]] = [na]
         ln["line_status"] = "allocated"
-        n_multi += 1
+
+    for sp in singles:
+        if n_multi >= target:
+            break
+        donors = find_donors(sp, breach_custs(sp))
+        if donors:
+            repoint(sp, donors[0])
+            if len(breach_custs(sp)) >= 2:  # 以重算结果为准，不凭假设计数
+                n_multi += 1
+    # 后备 1：donor 不足时，用零击穿的延误船注入两个不同客户的行
+    if n_multi < target:
+        zeros = [sp for sp in delayed if not breach_custs(sp) and sp["shipment_id"] not in design]
+        for sp in zeros:
+            if n_multi >= target:
+                break
+            for _ in range(2):
+                donors = find_donors(sp, breach_custs(sp))
+                if not donors:
+                    break
+                repoint(sp, donors[0])
+            if len(breach_custs(sp)) >= 2:
+                n_multi += 1
+    # 后备 2：收紧同船其他客户行的承诺日到击穿窗口 [eta_initial+buf, eta_current+buf)。
+    # 排船时仍可行（≥ eta_initial+buf），延误后被击穿——世界语义合法，且每条延误船几乎必然可行。
+    if n_multi < target:
+        for sp in delayed:
+            if n_multi >= target:
+                break
+            if sp["shipment_id"] in design or len(breach_custs(sp)) >= 2:
+                continue
+            for _ in range(2):  # 最多收紧两条（零击穿船需要两个客户）
+                blocked = breach_custs(sp)
+                if len(blocked) >= 2:
+                    break
+                cands = sorted((lines[a["so_line_id"]] for a in alloc_by_ship.get(sp["shipment_id"], [])
+                                if lines[a["so_line_id"]]["line_status"] in ("allocated", "open")
+                                and cust(a["so_line_id"]) not in blocked),
+                               key=lambda x: x["so_line_id"])
+                tightened = False
+                for ln in cands:
+                    new_promise = sp["eta_initial"] + timedelta(days=buf)  # 击穿幅度最大的合法值
+                    if new_promise <= sos[ln["so_id"]]["order_date"]:
+                        continue
+                    ln["promised_delivery_date"] = new_promise
+                    tightened = True
+                    break
+                if not tightened:
+                    break
+            if len(breach_custs(sp)) >= 2:
+                n_multi += 1
 
 
 def finalize_line_status(world):

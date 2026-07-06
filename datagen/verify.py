@@ -73,9 +73,8 @@ def main():
     check("shipments 数量", len(t["tms_shipments"]) == c["shipments"], f"got {len(t['tms_shipments'])}")
     check("so_lines 规模", 600 <= len(t["oms_so_lines"]) <= 1000, f"got {len(t['oms_so_lines'])}")
     check("allocations 规模", 500 <= len(t["tms_allocations"]) <= 1100, f"got {len(t['tms_allocations'])}")
-    # 注：plan §9 估算 1500-2500 基于含位置流水事件的假设，与事件枚举不符，
-    # 修订提案（600-1200，每票 5-10 条）待人批准 — 见 weekly-notes/W2
-    check("milestones 规模", 550 <= len(t["tms_milestones"]) <= 3200, f"got {len(t['tms_milestones'])}")
+    # plan §9（D10 修订后）：600-1200，每票 5-10 条业务事件
+    check("milestones 规模", 600 <= len(t["tms_milestones"]) <= 1200, f"got {len(t['tms_milestones'])}")
 
     so_ids = {r["so_id"] for r in t["oms_sales_orders"]}
     line_ids = {r["so_line_id"] for r in t["oms_so_lines"]}
@@ -83,6 +82,18 @@ def main():
     check("行引用 SO 完整", all(r["so_id"] in so_ids for r in t["oms_so_lines"]))
     check("分配引用完整", all(r["shipment_id"] in ship_ids and r["so_line_id"] in line_ids
                               for r in t["tms_allocations"]))
+    # D11 Tier 1 字段
+    check("booking_no 唯一", len({r["booking_no"] for r in t["tms_shipments"]}) == len(t["tms_shipments"]))
+    check("mbl_no 唯一", len({r["mbl_no"] for r in t["tms_shipments"]}) == len(t["tms_shipments"]))
+    check("locode 合法", all(r["origin_port_locode"] in ("CNYTN", "CNSHK", "CNNGB")
+                             and r["destination_port_locode"] in ("USLAX", "USLGB")
+                             for r in t["tms_shipments"]))
+    check("incoterm 合法", all(r["incoterm"] in ("FOB", "CIF", "DDP") for r in t["tms_shipments"]))
+    check("milestone classifier 合法（eta_change=EST 其余=ACT）",
+          all((r["event_classifier"] == "EST") == (r["event_type"] == "eta_change")
+              for r in t["tms_milestones"]))
+    check("milestone 均有事件地点", all(r["event_locode"] for r in t["tms_milestones"]))
+    check("行成交价为正", all(float(r["unit_price_usd"]) > 0 for r in t["oms_so_lines"]))
     po_ship = defaultdict(set)
     for r in t["tms_shipments"]:
         for p in r["po_ids"].split("|"):

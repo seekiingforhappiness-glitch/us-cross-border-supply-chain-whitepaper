@@ -109,6 +109,12 @@ Container→`shipment.container_no`；VesselVoyage→`shipment.vessel_voyage`；
 **D9 — W1 建模勘误与授权记录（2026-07-06，人已批准）。**
 C1：SOLine 改期后回迁 allocated 继续监控（rescheduled 不作终态），二次击穿再次报警；C2：加急简化为 expedite_flag + 解除行风险，不新建空运 shipment（v0.3 补真实流程）；C3：affected_so_line_ids 用 JSON 列表不建关联表；C4：单 RiskEvent 同时仅 1 个非终态 Task；C5：Shipment 取消 departed 独立状态（departed 事件触发 planned→in_transit）；C6：Task 取消 created 状态。C1、C2 为人直接裁决；C3-C6 为人授权 AI 决定。§5 状态机骨架已按此勘误。详见 ontology manual §8。
 
+**D10 — milestone 规模估算修订（2026-07-06，人已批准）。**
+§9 的 shipment_milestones 估算由 1,500-2,500（每票 8-15 条）修订为 600-1,200（每票 5-10 条）。原估算隐含船位流水类事件，与事件枚举（9 类业务事件）不符。理由详见 weekly-notes/W2。
+
+**D11 — 真实字段 Tier 1 采纳（2026-07-06，人已批准）。**
+依据 DCSA / EDI X12 315 / 可视化平台调研（docs/field-gap-analysis.md）：Shipment 增 booking_no、mbl_no、carrier_scac、container_type、gross_weight_kg、volume_cbm、incoterm、双港 UN/LOCODE；Milestone 增 event_classifier（ACT/EST）、event_locode；SalesOrderLine 增 unit_price_usd（成交价），影响金额口径由目录价改为成交价。结构性差距 G1（真实世界无全局 shipment_id）记录在案，v0.2 保留源表内部键，单证号级 ER 留 v0.3 决定。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。
@@ -200,7 +206,7 @@ ShipmentMilestone(eta_change) → Shipment → ShipmentAllocation
 | sales_orders / so_lines | 300 / 800 | |
 | purchase_orders | 250 | |
 | shipments | 120 | 覆盖 4 个月时间窗 |
-| shipment_milestones | 1,500-2,500 | 每票 8-15 条，事件流 |
+| shipment_milestones | 600-1,200 | 每票 5-10 条业务事件（D10 修订：原估含位置流水，与事件枚举不符） |
 | allocations | 900 | |
 | injected_noise_log | 与注入的数据质量噪声 1:1 | 重复/乱序/空值/名称不一致等，引擎**不应**为其创建 RiskEvent |
 | expected_risk_events | 与注入的应检风险 1:1 | 延误击穿、文件缺失、停滞等，引擎**必须**检出，KPI 只对这张表算（D6） |

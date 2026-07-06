@@ -17,9 +17,10 @@
 
 ## 阻塞 / 待人确认
 
-- [ ] **批准 plan §9 milestone 估算修订**：1,500-2,500 → 600-1,200（理由见 weekly-notes/W2）
-- [ ] 数据真实感抽查（10 分钟）：打开 data/raw/tms_shipments.csv 和 tms_milestones.csv
-      扫一眼日期、港口、延误是否像真的；重点看 SHP-2026-0099（DEMO-01 主案例）
+- [x] plan §9 milestone 估算修订已批准（D10）
+- [x] 真实字段调研完成，Tier 1 已采纳实施（D11，docs/field-gap-analysis.md）
+- [ ] 数据真实感抽查（10 分钟）：data/raw/tms_shipments.csv 现在含单证号/SCAC/柜型/LOCODE，
+      重点看 SHP-2026-0099（DEMO-01 主案例）
 - [ ] （随时可做）W1 走查：demo-assertions A 段对照 manual §3/§5
 
 ## 下一步（W3 管道与对象层）

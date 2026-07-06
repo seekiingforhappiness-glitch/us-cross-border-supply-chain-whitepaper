@@ -26,6 +26,8 @@ def build(cfg):
     w = W.build_world(cfg, rng)
     design_noise = apply_design_cases(w, rng)
     W.ensure_multi_customer_breach(w, cfg, rng)
+    W.enrich_shipments(w, rng)      # D11 Tier 1 字段
+    W.enrich_milestones(w, rng)
     W.finalize_line_status(w)
     expected = sweep(w, cfg)
     noise = apply_noise(w, design_noise, cfg, rng)
@@ -57,7 +59,8 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                   ["so_id", "customer_id", "order_date"])
     tables["oms_so_lines"] = ([{**l, "promised_delivery_date": l["promised_delivery_date"].isoformat()}
                                for l in sorted(w["lines"].values(), key=lambda x: x["so_line_id"])],
-                              ["so_line_id", "so_id", "sku_id", "qty", "promised_delivery_date"])
+                              ["so_line_id", "so_id", "sku_id", "qty", "unit_price_usd",
+                               "promised_delivery_date"])
     tables["srm_purchase_orders"] = ([{**p, "po_date": p["po_date"].isoformat(),
                                        "expected_ready_date": p["expected_ready_date"].isoformat()}
                                       for p in sorted(w["pos"].values(), key=lambda x: x["po_id"])],
@@ -72,10 +75,17 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                    w["suppliers"][w["pos"][p]["supplier_id"]]["supplier_name"])
                             for p in sp["po_ids"]})
         ship_rows.append({
-            "shipment_id": sid, "mode": sp["mode"], "container_no": sp["container_no"] or "",
+            "shipment_id": sid, "booking_no": sp["booking_no"], "mbl_no": sp["mbl_no"],
+            "mode": sp["mode"], "container_no": sp["container_no"] or "",
+            "container_type": sp["container_type"],
             "vessel_voyage": "" if nulled or not sp["vessel_voyage"] else sp["vessel_voyage"],
             "carrier_name": "" if nulled or not sp["carrier_name"] else sp["carrier_name"],
-            "origin_port": sp["origin_port"], "destination_port": sp["destination_port"],
+            "carrier_scac": sp["carrier_scac"],  # 真实形态：名字可缺，SCAC 常在
+            "incoterm": sp["incoterm"],
+            "gross_weight_kg": sp["gross_weight_kg"], "volume_cbm": sp["volume_cbm"],
+            "origin_port": sp["origin_port"], "origin_port_locode": sp["origin_port_locode"],
+            "destination_port": sp["destination_port"],
+            "destination_port_locode": sp["destination_port_locode"],
             "destination_warehouse": sp["destination_warehouse"],
             "etd": sp["etd"].isoformat(), "eta_initial": sp["eta_initial"].isoformat(),
             "status": noise["emit_status"].get(sid, sp["status"]),
@@ -83,12 +93,15 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
             "supplier_names": "|".join(sup_names), "po_ids": "|".join(sp["po_ids"]),
         })
     tables["tms_shipments"] = (ship_rows,
-                               ["shipment_id", "mode", "container_no", "vessel_voyage", "carrier_name",
-                                "origin_port", "destination_port", "destination_warehouse", "etd",
+                               ["shipment_id", "booking_no", "mbl_no", "mode", "container_no",
+                                "container_type", "vessel_voyage", "carrier_name", "carrier_scac",
+                                "incoterm", "gross_weight_kg", "volume_cbm",
+                                "origin_port", "origin_port_locode", "destination_port",
+                                "destination_port_locode", "destination_warehouse", "etd",
                                 "eta_initial", "status", "missing_docs", "supplier_names", "po_ids"])
     tables["tms_milestones"] = (sorted(noise["ms_rows"], key=lambda r: (r["ingested_at"], r["milestone_id"])),
-                                ["milestone_id", "shipment_id", "event_type", "event_time",
-                                 "new_eta", "source_system", "ingested_at"])
+                                ["milestone_id", "shipment_id", "event_type", "event_classifier",
+                                 "event_time", "event_locode", "new_eta", "source_system", "ingested_at"])
     tables["tms_allocations"] = (sorted(w["allocations"], key=lambda a: a["allocation_id"]),
                                  ["allocation_id", "shipment_id", "so_line_id", "allocated_qty"])
 

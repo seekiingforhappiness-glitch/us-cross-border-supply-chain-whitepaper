@@ -68,6 +68,7 @@ DQ 规则：id 唯一；至少 1 条行；status 不得被动作直接写。
 | so_id | string | 是 | → SalesOrder |
 | sku_id | string | 是 | → Sku |
 | qty | number | 是 | >0 |
+| unit_price_usd | number | 是 | 行成交价（D11，≠目录价；影响金额以此为口径） |
 | promised_delivery_date | date | 是 | 当前承诺日（可被改期动作更新） |
 | original_promised_date | date | 是 | 初始承诺日，创建后不可变 |
 | reschedule_count | number | 是 | 默认 0，每次批准改期 +1 |
@@ -94,12 +95,21 @@ DQ 规则：id 唯一；expected_ready_date ≥ po_date。
 | 属性 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | shipment_id | string | 是 | 稳定主键 |
+| booking_no | string | 是 | 订舱号（D11）：SCAC+9 位，真实跨系统 join 键 |
+| mbl_no | string | 是 | 海运提单号（D11）：SCAC+9 位 |
 | mode | enum | 是 | ocean_fcl / ocean_lcl |
 | container_no | string | 否 | 降级属性（D5），可空（噪声） |
+| container_type | enum | 是 | 40HC / 40GP / 20GP（D11） |
+| gross_weight_kg | number | 是 | 毛重（D11，对应 315 B4 段） |
+| volume_cbm | number | 是 | 体积（D11） |
+| incoterm | enum | 是 | FOB / CIF / DDP（D11，v0.3 成本闭环地基） |
 | vessel_voyage | string | 否 | 降级属性，可空（噪声） |
-| carrier_name | string | 否 | 降级属性，可空（噪声） |
+| carrier_name | string | 否 | 降级属性，可空（噪声：名可缺而 SCAC 常在） |
+| carrier_scac | enum | 是 | COSU / OOLU / MATS / ZIMU / EGLV（D11） |
 | origin_port | enum | 是 | yantian / shekou / ningbo |
+| origin_port_locode | enum | 是 | CNYTN / CNSHK / CNNGB（D11，UN/LOCODE） |
 | destination_port | enum | 是 | los_angeles / long_beach |
+| destination_port_locode | enum | 是 | USLAX / USLGB（D11） |
 | destination_warehouse | string | 是 | 美国仓名称（不对象化） |
 | etd | date | 是 | 预计/实际离港日 |
 | eta_initial | date | 是 | 首次 ETA，创建后不可变 |
@@ -120,7 +130,9 @@ DQ 规则：eta_initial ≥ etd；eta_current 只能由 A1 更新；delay_days �
 | milestone_id | string | 是 | 稳定主键 |
 | shipment_id | string | 是 | → Shipment |
 | event_type | enum | 是 | booking_confirmed / departed / eta_change / transshipment / arrived / customs_filed / customs_hold / customs_released / delivered |
+| event_classifier | enum | 是 | ACT / EST（D11，DCSA 语义：eta_change=EST 其余=ACT） |
 | event_time | datetime | 是 | 业务发生时间 |
+| event_locode | string | 是 | 事件发生地 UN/LOCODE（D11，中转事件为枢纽港如 SGSIN） |
 | new_eta | date | 否 | 仅 eta_change 必填 |
 | source_system | enum | 是 | carrier_edi / forwarder_portal / manual |
 | payload | json | 否 | 原始报文 |
@@ -360,6 +372,7 @@ W2 落定的规则澄清（oracle 与 W4 引擎必须一致）：
 - R1/R2 跳过 status=delivered 的 shipment；R1 跳过 fulfilled/cancelled 的行
 - R2 另跳过 customs_status=released（已放行则文件缺失已无意义）
 - R1 事件级 severity = 各受影响行 per-line severity（含 tier 升级）取最大
+- affected_value_usd = Σ(allocated_qty × 行成交价 unit_price_usd)，不用目录价（D11）
 
 ## 8. 非平凡设计选择（需人批准后生效）
 
