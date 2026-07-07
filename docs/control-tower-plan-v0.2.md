@@ -151,6 +151,13 @@ registry，并提供只读 graph traversal helper，让风险、费用和 AI 解
 不新增业务对象、风险规则、真实主数据治理、DQ issue 工作流或 outbox。M6+（DQ issue、outbox、
 AI/redaction、业务扩展等）仍须另行批准。
 
+**M6 — 数据质量停车记录升级为可运营 DQ issue（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 6：把模拟管道中的 unresolved / parking 记录转为 `dq_issues`
+运营队列，支持 assign / close 两个处置动作并写审计，使“数据断链”从 build-time 诊断升级为
+可分派、可解释、可关闭的运营工作。取舍：更接近成熟控制塔的数据质量运营，但仍保持
+simulation-first；不真实修复源系统、不回写外部系统、不新增噪声类型、风险规则、真实主数据合并、
+outbox 或 AI/redaction。M7+（outbox、AI/redaction、业务扩展等）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

@@ -74,6 +74,22 @@
 重复上报（同一事件收到两次）、乱序到达（旧消息后到）、状态打架（表里说在途，事件流显示已到港——
 信事件流）、字段空值（船名/船司缺失但 SCAC 在）、同一供应商三个系统三种写法。
 
+## 4.1 unresolved_milestones 和 dq_issues 怎么看
+
+v0.6-H3 开始，`tms_milestones` 源表不再带内部 `shipment_id`，管道先用 `booking_no` 或
+`container_no` 解析回 Shipment。解析失败的事件不会被丢弃，也不会被猜测归属，而是进入
+`unresolved_milestones` 停车表。
+
+M6 把这些停车记录升级为 `dq_issues` 运营队列：
+
+- `source_table/source_record_id` 指回原停车记录，例如 `unresolved_milestones.MS-...`
+- `issue_type=unresolved_reference` 表示单证号无法解析
+- `detail_json` 保留 milestone/source 信息，方便运营解释为什么停住
+- `status/assignee_user_id/resolution` 记录分派和关闭过程
+
+边界很重要：关闭 `dq_issues` **只记录处置说明**，例如“已确认 carrier 事件单证号有 typo，源修复待外部系统处理”。
+本原型不会真实修复源系统、不会回写承运商、不会重跑源数据，也不会因此改变 milestone 解析率目标。
+
 ## 5. 你怎么抽查（不需要经验的三个动作）
 
 1. 挑任意一票货，把它的 milestones 按 event_time 排序读一遍——像不像一个合理的故事？

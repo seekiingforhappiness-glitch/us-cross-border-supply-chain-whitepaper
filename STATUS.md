@@ -20,8 +20,9 @@
   真实 KPI 顶栏、深色表格、侧栏/Tab/Form/Button 统一样式；动作逻辑与数据层未改。
 - **成熟控制塔全面升级计划已进入逐 Task 审批执行**：计划路径
   `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
-  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M5 已完成，
-  M6+ 未获批前不改 ontology/规则/业务范围（MA 系列只是验收检查）。
+  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M6 已完成，
+  M7+ 未获批前不改 ontology/规则/业务范围
+  （MA 系列只是验收检查）。
 - **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
   已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
 - **M2 Task 2 已完成并通过 controller review**：Daniel 已批准 demo named owner + SLA state +
@@ -44,6 +45,13 @@
   RiskEvent 关系边与只读 AI 查询工具。不推进 M6+，不做 DQ issue、outbox、AI redaction、
   新业务对象或新风险规则。子代理规格/质量复审均已通过；验证：graph、datagen、pipeline、engine、
   app、agent 回归全绿，engine 仍为 Recall=1.000 / Precision=1.000。
+- **M6 Task 6 已完成并通过 controller review**：Daniel 已批准把模拟 pipeline 的 unresolved / parking
+  记录升级为可运营 `dq_issues` 队列；本次仅新增 deterministic DQ issue 创建、assign / close
+  两个处置动作、审计留痕、pipeline/evaluate 门禁、Streamlit “DQ 处置”入口和数据导读/断言同步。
+  不推进 outbox、AI redaction、M7+，不做真实源系统修复、外部回写、新风险规则或新噪声类型。
+  子代理规格/质量复审均已通过，质量复审指出的 DQ 幂等冲突、事务回滚、默认队列筛选和 detail
+  JSON 容错均已修复；验证：DQ loop、datagen、pipeline、engine、app、agent 回归全绿，engine 仍为
+  Recall=1.000 / Precision=1.000。
 
 ## v0.4 进度
 

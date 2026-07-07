@@ -285,6 +285,56 @@ def main():
           ],
           str([(e.relationship_id, e.relationship_type) for e in graph_path]))
 
+    print("== 8. DQ issue 运营队列（M6）==")
+    has_dq_issues = con.execute("""
+        SELECT count(*) FROM sqlite_master
+        WHERE type='table' AND name='dq_issues'""").fetchone()[0] == 1
+    check("dq_issues 表存在", has_dq_issues)
+    dq_issues = list(con.execute("SELECT * FROM dq_issues")) if has_dq_issues else []
+    invalid_unresolved_issues = list(con.execute("""
+        SELECT u.milestone_id, d.dq_issue_id, d.status, d.detail_json
+        FROM unresolved_milestones u
+        LEFT JOIN dq_issues d
+          ON d.source_table='unresolved_milestones'
+         AND d.source_record_id=u.milestone_id
+         AND d.issue_type='unresolved_reference'
+        WHERE d.dq_issue_id IS NULL OR d.status NOT IN ('open', 'assigned', 'closed')
+    """)) if has_dq_issues else []
+    check("每条 unresolved_milestones 都有一个状态合法的 unresolved_reference DQ issue",
+          has_dq_issues and not invalid_unresolved_issues,
+          str([dict(r) for r in invalid_unresolved_issues[:5]]))
+
+    issue_counts = Counter(r["issue_type"] for r in dq_issues)
+    source_counts = Counter(r["source_table"] for r in dq_issues)
+    dq_issue_report = dq.get("dq_issues", {})
+    check("dq_report dq_issues total/by_issue_type/by_source_table 与 SQL 一致",
+          dq_issue_report.get("total") == len(dq_issues)
+          and dq_issue_report.get("by_issue_type") == dict(sorted(issue_counts.items()))
+          and dq_issue_report.get("by_source_table") == dict(sorted(source_counts.items())),
+          f"dq={dq_issue_report} sql_total={len(dq_issues)}")
+    check("dq_report dq_issues open 记录 build-time 初始开放数",
+          0 <= int(dq_issue_report.get("open", -1)) <= len(dq_issues),
+          f"dq={dq_issue_report}")
+
+    issue_details = []
+    for issue in dq_issues:
+        if issue["source_table"] != "unresolved_milestones":
+            continue
+        try:
+            detail = json.loads(issue["detail_json"] or "{}")
+        except json.JSONDecodeError:
+            detail = {}
+        issue_details.append((issue, detail))
+    check("DQ issue detail 保留 milestone/source 信息",
+          bool(issue_details)
+          and all(detail.get("milestone_id") == issue["source_record_id"]
+                  and detail.get("source_system")
+                  and detail.get("event_type")
+                  and "booking_no" in detail
+                  and "container_no" in detail
+                  for issue, detail in issue_details),
+          str([(i["dq_issue_id"], d) for i, d in issue_details[:3]]))
+
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)
 

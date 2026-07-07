@@ -15,12 +15,14 @@ import streamlit as st
 try:
     from app.actions import (assign_task, propose_mitigation, approve_mitigation,
                              close_risk_event, ensure_task_work_queue_columns)
+    from app.dq_actions import assign_dq_issue, close_dq_issue
     from app.admission_actions import (create_admission_case, run_compliance_precheck,
                                        build_logistics_plan, calculate_cost_scenario,
                                        approve_quote_decision, reject_or_request_more_info)
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from actions import (assign_task, propose_mitigation, approve_mitigation,
                          close_risk_event, ensure_task_work_queue_columns)
+    from dq_actions import assign_dq_issue, close_dq_issue
     from admission_actions import (create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario,
                                    approve_quote_decision, reject_or_request_more_info)
@@ -450,6 +452,18 @@ def mask_cost(v, role):
     return v if role in ("finance", "manager") else "🔒无权查看"
 
 
+def detail_rows(raw_detail):
+    if not raw_detail:
+        return []
+    try:
+        detail = json.loads(raw_detail)
+    except (TypeError, json.JSONDecodeError):
+        return [{"字段": "detail_json", "值": raw_detail}]
+    if isinstance(detail, dict):
+        return [{"字段": k, "值": v} for k, v in detail.items()]
+    return [{"字段": "detail_json", "值": json.dumps(detail, ensure_ascii=False)}]
+
+
 def show_result(r):
     if r["ok"]:
         # 成功消息存入会话状态，rerun 后仍可见（否则被刷新冲掉，用户会误以为没成功而重复点击）
@@ -523,8 +537,8 @@ INV_STATUS_ICON = {"received": "IN ", "under_review": "REV ", "approved": "OK ",
 
 render_command_header(role, n_open)
 
-tab_risk, tab_task, tab_cost, tab_obj, tab_adm, tab_log = st.tabs(
-    ["风险队列", "任务处理台", "费用工作台", "对象详情", "准入工作台", "审计日志"])
+tab_risk, tab_task, tab_cost, tab_obj, tab_dq, tab_adm, tab_log = st.tabs(
+    ["风险队列", "任务处理台", "费用工作台", "对象详情", "DQ 处置", "准入工作台", "审计日志"])
 
 # ---------- 风险队列 ----------
 with tab_risk:
@@ -745,6 +759,46 @@ with tab_obj:
                    "承诺日": x["promised_delivery_date"], "改期次数": x["reschedule_count"],
                    "行状态": x["line_status"], "订单": x["so_id"], "客户": x["customer_name"],
                    "客户等级": mask_tier(x["tier"], role)} for x in chain])
+
+# ---------- DQ 处置（M6）----------
+with tab_dq:
+    show_closed_dq = st.checkbox("显示已关闭 DQ issue", value=False)
+    where_dq = "" if show_closed_dq else "WHERE d.status!='closed'"
+    dq_items = rows(f"""SELECT d.*, u.booking_no, u.container_no, u.event_type, u.source_system, u.reason
+                        FROM dq_issues d
+                        LEFT JOIN unresolved_milestones u
+                          ON d.source_table='unresolved_milestones'
+                         AND d.source_record_id=u.milestone_id
+                        {where_dq}
+                        ORDER BY CASE d.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                                      WHEN 'medium' THEN 2 ELSE 3 END,
+                                 d.created_at DESC, d.dq_issue_id""")
+    render_table([{"DQ issue": d["dq_issue_id"], "类型": d["issue_type"], "严重度": d["severity"],
+                   "状态": d["status"], "负责人": d["assignee_user_id"] or "-",
+                   "源表": d["source_table"], "源记录": d["source_record_id"],
+                   "booking": d["booking_no"] or "-", "container": d["container_no"] or "-",
+                   "事件": d["event_type"] or "-", "来源": d["source_system"] or "-",
+                   "原因": d["reason"] or "-"} for d in dq_items],
+                 height=280)
+    if dq_items:
+        dqsel = st.selectbox("处理 DQ issue", [d["dq_issue_id"] for d in dq_items])
+        issue = next(x for x in dq_items if x["dq_issue_id"] == dqsel)
+        st.markdown(f"**{dqsel}**　`{issue['issue_type']}`　状态 `{issue['status']}`　"
+                    f"源 `{issue['source_table']}.{issue['source_record_id']}`")
+        render_table(detail_rows(issue["detail_json"]))
+        c1, c2 = st.columns(2)
+        with c1, st.form(f"dq_assign_{dqsel}"):
+            st.markdown("**分派 DQ issue（运营/经理/系统）**")
+            assignee = st.text_input("负责人 user_id", issue["assignee_user_id"] or "u-ops-us")
+            if st.form_submit_button("分派"):
+                show_result(assign_dq_issue(db(), dqsel, assignee,
+                                            actor=actor, role=role, as_of=AS_OF))
+        with c2, st.form(f"dq_close_{dqsel}"):
+            st.markdown("**关闭 DQ issue（只记录处置，不修复源系统）**")
+            resolution = st.text_input("处置说明")
+            if st.form_submit_button("关闭 DQ"):
+                show_result(close_dq_issue(db(), dqsel, resolution,
+                                           actor=actor, role=role, as_of=AS_OF))
 
 # ---------- 准入工作台（v0.3）----------
 with tab_adm:
