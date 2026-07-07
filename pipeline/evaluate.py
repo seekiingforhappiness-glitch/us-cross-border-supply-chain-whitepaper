@@ -7,6 +7,7 @@ import csv
 import json
 import sqlite3
 import sys
+from collections import Counter
 
 FAILS = []
 
@@ -177,6 +178,48 @@ def main():
         SELECT count(*) total, count(distinct idempotency_key) distinct_keys
         FROM source_events""").fetchone()
     check("source_events idempotency_key 唯一", idem["total"] == idem["distinct_keys"])
+
+    print("== 6. MDM crosswalk（M4）==")
+    has_mdm = con.execute("""
+        SELECT count(*) FROM sqlite_master
+        WHERE type='table' AND name='mdm_crosswalk'""").fetchone()[0] == 1
+    check("mdm_crosswalk 表存在", has_mdm)
+    mdm_dq = dq.get("mdm_crosswalk", {})
+    mdm_rows = list(con.execute("SELECT * FROM mdm_crosswalk")) if has_mdm else []
+    allowed_statuses = {"resolved", "ambiguous", "unresolved"}
+    statuses = {r["status"] for r in mdm_rows}
+    check("mdm_crosswalk status 仅含 resolved/ambiguous/unresolved",
+          bool(mdm_rows) and statuses <= allowed_statuses, str(sorted(statuses)))
+
+    mdm_keys = list(con.execute("""
+        SELECT source_system, object_type, external_id, status,
+               count(*) candidate_rows,
+               count(distinct internal_id) distinct_internal_ids
+        FROM mdm_crosswalk
+        GROUP BY source_system, object_type, external_id, status
+    """)) if has_mdm else []
+    key_counts = Counter(r["status"] for r in mdm_keys)
+    check("MDM DQ 以 external_id key 计数且与 SQL 一致",
+          mdm_dq.get("total") == len(mdm_keys)
+          and mdm_dq.get("resolved") == key_counts.get("resolved", 0)
+          and mdm_dq.get("ambiguous") == key_counts.get("ambiguous", 0)
+          and mdm_dq.get("unresolved") == key_counts.get("unresolved", 0)
+          and mdm_dq.get("candidate_rows") == len(mdm_rows),
+          f"dq={mdm_dq} sql_keys={dict(key_counts)} rows={len(mdm_rows)}")
+
+    ambiguous_keys = [r for r in mdm_keys if r["status"] == "ambiguous"]
+    check("ambiguous external_id 保留多候选且不折成单一 resolved",
+          len(ambiguous_keys) == 1
+          and ambiguous_keys[0]["candidate_rows"] >= 2
+          and ambiguous_keys[0]["distinct_internal_ids"] >= 2,
+          f"ambiguous={[(r['external_id'], r['candidate_rows']) for r in ambiguous_keys]}")
+    unresolved_keys = [r for r in mdm_keys if r["status"] == "unresolved"]
+    unresolved_rows = [r for r in mdm_rows if r["status"] == "unresolved"]
+    check("unresolved external_id 可见且不猜 internal_id",
+          len(unresolved_keys) == 1
+          and len(unresolved_rows) == 1
+          and unresolved_rows[0]["internal_id"] == "",
+          f"unresolved_keys={len(unresolved_keys)} unresolved_rows={len(unresolved_rows)}")
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

@@ -6,15 +6,19 @@
 import csv
 import json
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+
+import yaml
 
 from .event_envelope import normalize_event
 from .er import resolve, resolve_milestones
+from .mdm import CrosswalkEntry, resolve_crosswalk
 
 RAW = Path("data/raw")
 DB = Path("data/ontology.sqlite")
 DQ = Path("data/dq_report.json")
+CFG = Path("config/datagen.yaml")
 
 PHASE = {"delivered": "delivered", "customs_released": "customs", "customs_hold": "customs",
          "customs_filed": "customs", "arrived": "arrived", "transshipment": "in_transit",
@@ -25,6 +29,93 @@ PHASE_RANK = {"planned": 0, "in_transit": 1, "arrived": 2, "customs": 3, "delive
 def load(name):
     with open(RAW / f"{name}.csv", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def load_config():
+    with open(CFG, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _alias(prefix, value):
+    slug = "".join(ch if ch.isalnum() else "-" for ch in value.upper())
+    slug = "-".join(part for part in slug.split("-") if part)
+    return f"{prefix}-{slug}"
+
+
+def build_mdm_crosswalk_rows(customers, skus, supplier_mapping, mdm_cfg):
+    """Build a simulation-only external-id crosswalk around existing deterministic IDs."""
+    updated_at = mdm_cfg["updated_at"]
+    entries = []
+
+    for r in sorted(customers, key=lambda x: x["customer_id"]):
+        entries.append(CrosswalkEntry("oms", "customer", r["customer_id"], r["customer_id"], 1.0))
+        entries.append(CrosswalkEntry(
+            "carrier_portal", "customer", _alias("CUST", r["customer_name"]),
+            r["customer_id"], 0.92))
+
+    for r in sorted(skus, key=lambda x: x["sku_id"]):
+        entries.append(CrosswalkEntry("catalog", "sku", r["sku_id"], r["sku_id"], 1.0))
+        entries.append(CrosswalkEntry("erp", "sku", f"ERP-{r['sku_id']}", r["sku_id"], 0.98))
+
+    for raw_name, supplier_id in sorted(supplier_mapping.items()):
+        if supplier_id:
+            entries.append(CrosswalkEntry("tms", "vendor", raw_name, supplier_id, 0.9))
+
+    first_two_skus = [r["sku_id"] for r in sorted(skus, key=lambda x: x["sku_id"])[:2]]
+    ambiguous_external_id = mdm_cfg["ambiguous_sku_external_id"]
+    for sku_id in first_two_skus:
+        entries.append(CrosswalkEntry("erp", "sku", ambiguous_external_id, sku_id, 0.7))
+
+    rows = []
+    keys = sorted({(e.source_system, e.object_type, e.external_id) for e in entries})
+    for source_system, object_type, external_id in keys:
+        result = resolve_crosswalk(entries, source_system, object_type, external_id)
+        group = [
+            e for e in entries
+            if (e.source_system, e.object_type, e.external_id)
+            == (source_system, object_type, external_id)
+        ]
+        for entry in sorted(group, key=lambda e: e.internal_id):
+            rows.append({
+                "source_system": source_system,
+                "object_type": object_type,
+                "external_id": external_id,
+                "internal_id": entry.internal_id,
+                "confidence": entry.confidence,
+                "status": result.status,
+                "updated_at": updated_at,
+            })
+
+    unresolved_result = resolve_crosswalk(
+        entries, "erp", "vendor", mdm_cfg["unresolved_vendor_external_id"])
+    rows.append({
+        "source_system": "erp",
+        "object_type": "vendor",
+        "external_id": mdm_cfg["unresolved_vendor_external_id"],
+        "internal_id": "",
+        "confidence": unresolved_result.confidence,
+        "status": unresolved_result.status,
+        "updated_at": updated_at,
+    })
+    return rows
+
+
+def summarize_mdm_crosswalk(rows):
+    """Summarize resolver outcomes by external-id lookup key, not candidate rows."""
+    status_by_key = {}
+    for row in rows:
+        key = (row["source_system"], row["object_type"], row["external_id"])
+        previous = status_by_key.setdefault(key, row["status"])
+        if previous != row["status"]:
+            raise ValueError(f"conflicting MDM statuses for {key}: {previous} vs {row['status']}")
+    status_counts = Counter(status_by_key.values())
+    return {
+        "total": len(status_by_key),
+        "resolved": status_counts.get("resolved", 0),
+        "ambiguous": status_counts.get("ambiguous", 0),
+        "unresolved": status_counts.get("unresolved", 0),
+        "candidate_rows": len(rows),
+    }
 
 
 def derive_shipment_state(sid, events, eta_initial):
@@ -86,6 +177,7 @@ def _ensure_unique_source_events(rows):
 
 
 def main():
+    cfg = load_config()
     t = {n: load(n) for n in ["srm_suppliers", "catalog_skus", "oms_customers", "oms_sales_orders",
                               "oms_so_lines", "srm_purchase_orders", "tms_shipments",
                               "tms_milestones", "tms_allocations",
@@ -106,8 +198,7 @@ def main():
                          for r in t["tms_containers"] if r["container_no"]}
     resolved_ms, unresolved_ms = resolve_milestones(
         t["tms_milestones"], ship_by_booking, ship_by_container)
-    from collections import Counter as _Counter
-    _reason_dist = dict(_Counter(r["reason"] for r in unresolved_ms))
+    _reason_dist = dict(Counter(r["reason"] for r in unresolved_ms))
     _n_in = len(t["tms_milestones"])
     dq["milestone_resolution"] = {
         "total": _n_in,
@@ -176,6 +267,9 @@ def main():
     dq["er_mapped"] = sum(1 for v in mapping.values() if v)
     dq["er_unmapped"] = sorted(k for k, v in mapping.items() if not v)
     dq["er_ambiguous_canonical"] = sorted(ambiguous)
+    mdm_rows = build_mdm_crosswalk_rows(
+        t["oms_customers"], t["catalog_skus"], mapping, cfg["mdm"])
+    dq["mdm_crosswalk"] = summarize_mdm_crosswalk(mdm_rows)
 
     # 4) 行/订单状态推导
     ship_status = {r["shipment_id"]: r["status"] for r in ship_rows}
@@ -377,6 +471,24 @@ def main():
     cur.execute("CREATE TABLE supplier_name_map (raw_name TEXT PRIMARY KEY, supplier_id TEXT)")
     cur.executemany("INSERT INTO supplier_name_map VALUES (?,?)",
                     [(k, v or "") for k, v in sorted(mapping.items())])
+    cur.execute("""create table if not exists mdm_crosswalk (
+        source_system text not null,
+        object_type text not null,
+        external_id text not null,
+        internal_id text not null,
+        confidence real not null,
+        status text not null,
+        updated_at text not null,
+        primary key (source_system, object_type, external_id, internal_id)
+    )""")
+    cur.executemany("""insert into mdm_crosswalk (
+        source_system, object_type, external_id, internal_id,
+        confidence, status, updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?)""", [
+        [r["source_system"], r["object_type"], r["external_id"], r["internal_id"],
+         r["confidence"], r["status"], r["updated_at"]]
+        for r in mdm_rows
+    ])
     # W4/W5 空表（schema 与 ontology JSON 一致）
     # P1：risk_events 增可空字段 affected_invoice_line_ids（费用场景专用，控制塔留空）
     cur.execute("""CREATE TABLE risk_events (risk_event_id TEXT PRIMARY KEY, type TEXT,

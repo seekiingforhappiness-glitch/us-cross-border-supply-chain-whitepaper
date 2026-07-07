@@ -59,6 +59,11 @@ scoring:                        # v0.6 专题一 Y1 风险评分模型（H1/H2�
   epochs: 3000                  # 迭代轮数
   auc_gate_early: 0.7           # 组 B（早警）测试集 AUC 硬门（H1 唯一硬门）
 
+mdm:                            # M4 simulated crosswalk，不接企业 MDM
+  updated_at: "2026-08-08T00:00:00Z"
+  ambiguous_sku_external_id: "ERP-SKU-AMBIG-USB-C-20W"
+  unresolved_vendor_external_id: "VENDOR-404"
+
 output:
   raw_dir: "data/raw"
   truth_dir: "data/truth"       # 仅 datagen/verify 与 W4 评估可读；pipeline/engine 禁读

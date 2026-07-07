@@ -14,6 +14,11 @@
 4. **派生属性显式标注**：标 `[derived]` 的属性由管道/引擎重算，任何动作不得直接写入。
 5. 乱序事件不回退状态：仅当 `event_time` 晚于该字段最近一次生效事件时间才更新状态（详见 Action A1）。
 
+M4 MDM crosswalk 只是一层可观察的模拟 external ID → internal ID 映射，用于解释 resolved/ambiguous/unresolved。
+它不新增业务对象，不改变对象重建结果，也不是企业 MDM、自动主数据合并或人工治理队列。
+DQ 头部计数按 external_id lookup key 统计；表内保留候选行便于查看 ambiguous 的多个候选。
+ambiguous 必须停在可见计数里，不得猜一个 internal_id。
+
 ## 2. 对象字典（11 个对象）
 
 ### 2.1 Supplier ｜ 主键 supplier_id ｜ Owner: 运营

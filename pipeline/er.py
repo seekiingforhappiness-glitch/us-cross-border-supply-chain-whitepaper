@@ -2,6 +2,7 @@
 
 输入：TMS 侧出现的供应商名（含变体） + SRM 规范名
 输出：raw_name → supplier_id 映射（None=未匹配），供 DQ 报告与 supplier_name_map 表。
+M4 的 simulated MDM crosswalk resolver 独立放在 pipeline.mdm；本模块继续只负责既有 ER。
 """
 
 ABBREV = {"sz": "shenzhen", "nb": "ningbo", "dg": "dongguan"}

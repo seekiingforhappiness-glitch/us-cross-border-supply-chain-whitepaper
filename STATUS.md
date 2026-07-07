@@ -18,10 +18,11 @@
   Codex 客户端，项目 Python 代码真实 LLM 调用仍需 `OPENAI_API_KEY`。
 - **控制塔 UI 视觉升级已完成**：基于生成概念图重做 Streamlit 设计系统，暗色未来感命令中心、
   真实 KPI 顶栏、深色表格、侧栏/Tab/Form/Button 统一样式；动作逻辑与数据层未改。
-- **成熟控制塔全面升级计划与 Task 0 approval pack 已立项但未批准执行**：计划路径
+- **成熟控制塔全面升级计划已进入逐 Task 审批执行**：计划路径
   `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
-  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；下一步是 Daniel
-  裁决 M 系列决策门槛（MA 系列只是验收检查），未获批前不改 ontology/规则/业务范围。
+  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M4 已完成，
+  下一步是 Daniel 裁决 M5 关系 registry / graph traversal（MA 系列只是验收检查），未获批前不改
+  ontology/规则/业务范围。
 - **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
   已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
 - **M2 Task 2 已完成并通过 controller review**：Daniel 已批准 demo named owner + SLA state +
@@ -33,6 +34,12 @@
   `source_events` 表、idempotency key 与 pipeline lineage 评估。不接真实 carrier/API、不做 DQ issue
   workflow、outbox、MDM crosswalk 或业务规则。子代理规格/质量复审均已通过；验证：event_envelope、
   datagen、pipeline、engine、app、agent 回归全绿，engine 仍为 Recall=1.000 / Precision=1.000。
+- **M4 Task 4 已完成并通过 controller review**：Daniel 已批准 simulated MDM crosswalk resolver；
+  本次仅新增 external ID → internal ID crosswalk resolver、`mdm_crosswalk` 表与 key-level DQ 可观测计数
+  （resolved=108 / ambiguous=1 / unresolved=1，candidate_rows=111）。
+  不接企业 MDM 平台，不做自动主数据合并、人工治理队列、真实主数据同步、M5 graph traversal、
+  relationship registry、DQ issue workflow 或 outbox。两轮子代理规格/质量复审均已通过；验证：
+  MDM、datagen、pipeline、engine、app、agent 回归全绿，engine 仍为 Recall=1.000 / Precision=1.000。
 
 ## v0.4 进度
 

@@ -137,6 +137,13 @@ M3+（事件信封/血缘、MDM、关系 registry、DQ issue、outbox、业务�
 不接真实 carrier/API，不新增真实生产集成、DQ issue 工作流、outbox、MDM crosswalk 或业务规则。
 M4+（MDM、关系 registry、DQ issue、outbox、AI/redaction 等）仍须另行批准。
 
+**M4 — 跨系统主数据 crosswalk 解析作为 inspectable MDM 基础能力（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 4：为 customer / sku / vendor 等模拟外部 ID 增加 deterministic
+crosswalk resolver、`mdm_crosswalk` 表与 unresolved / ambiguous 计数，使管道可显式暴露“能映射、不能映射、
+不能猜”的主数据状态。取舍：比临时名称匹配更接近成熟控制塔的主数据治理，但仍保持
+simulation-first；不接企业 MDM 平台，不做自动主数据合并、人工治理队列、真实主数据同步或 M5+
+graph traversal / relationship registry。M5+（关系 registry、DQ issue、outbox、AI/redaction 等）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。
