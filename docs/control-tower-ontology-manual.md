@@ -182,6 +182,11 @@ DQ 规则：同一 (shipment, type) 不允许并存两个非终态事件（A2 �
 | assignee_role | enum | 是 | 否 | ops / cs / manager |
 | priority | enum | 是 | 否 | P1 / P2 / P3 |
 | due_at | date | 是 | 否 | 任务处理截止日（要求处理人完成处置的期限，≠交付日期/客户承诺日） |
+| assignee_user_id | string | 否 | 否 | M2 demo named owner；由本地 roster 确定，不接真实用户目录 |
+| assignee_team_id | string | 否 | 否 | M2 demo team，例如 team-ops-us |
+| sla_state | enum | 否 | 否 | open / due_today / overdue，按显式 as_of_date 与 due_at 计算 |
+| escalation_level | number | 否 | 否 | M2 最小语义：未逾期 0，逾期 1；不触发真实通知/排班 |
+| policy_version | string | 否 | 否 | demo 分配/SLA 策略版本 |
 | proposed_action | enum | 否 | 否 | expedite / reschedule / accept_delay |
 | proposal_params | json | 否 | **est_cost_usd 仅 ops/manager 可见** | 按动作类型定 schema，见 A4 |
 | approval_status | enum | 否 | 否 | pending / approved / rejected |
@@ -191,6 +196,10 @@ DQ 规则：同一 (shipment, type) 不允许并存两个非终态事件（A2 �
 | proposal_actor_role | enum | 否 | 否 | ops / cs / finance |
 | action_taken | string | 否 | 否 | 最终执行的动作摘要 |
 | status | enum | 是 | 否 | 见状态机 §3.4 |
+
+M2 说明：当前数据不能可靠表达真实运营区域/人员目录，demo roster 采用确定性美国队列默认值；
+若 shipment.destination_port_locode 为 US*，优先分配 US roster。该字段只表达“任务有明确人负责”
+的控制塔语义，不代表真实员工、排班或通知系统。
 
 DQ 规则：一个 RiskEvent 同时最多 1 个非终态 Task（见 §8 选择 C4）。如记录了
 `proposal_actor_id`，A5 审批人不得与提案人为同一 `actor_id`（M1 demo maker-checker）。
@@ -297,9 +306,11 @@ assign_task(risk_event_id, assignee_role, priority, due_at, actor) -> Result
 
 - 执行者：系统、运营
 - 前置：RiskEvent ∈ {open}；无非终态 Task
-- 成功：Task=assigned；RiskEvent → acknowledged
+- 成功：Task=assigned；RiskEvent → acknowledged；写入 M2 demo named owner、team、SLA state、
+  escalation_level 与 policy_version
 - 失败：已有非终态 Task → 拒绝并返回其 id；RiskEvent 已终态 → 拒绝
-- 审计：assignee_role、priority
+- 审计：assignee_role、priority、assignee_user_id、assignee_team_id、sla_state、
+  escalation_level、policy_version
 
 ### A4 ProposeMitigation
 

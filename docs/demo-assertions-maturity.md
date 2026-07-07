@@ -1,6 +1,6 @@
 # Maturity Upgrade Demo Assertions
 
-当前状态：本清单未获批准执行；Daniel 批准前不改 ontology、规则或业务范围。
+当前状态：M1、M2 已完成；M3+ 未获批准前不改 ontology、规则或业务范围。
 
 这些条目是验收检查，不是批准决策。批准决策仍以 Daniel 批准后的 plan/control-tower decision log 为准。
 
@@ -18,8 +18,8 @@
 
 ## W9 Operations
 
-- [ ] MA7. Task 有 named owner、due_at、sla_state、escalation_level。
-- [ ] MA8. 逾期任务在指定 as_of_date 下被标为 overdue，并生成升级候选。
+- [x] MA7. Task 有 named owner、due_at、sla_state、escalation_level。
+- [x] MA8. 逾期任务在指定 as_of_date 下被标为 overdue，并以 escalation_level=1 生成升级候选。
 - [ ] MA9. DQ issue 能被分派、修复、关闭，并写审计。
 
 ## W10 AI

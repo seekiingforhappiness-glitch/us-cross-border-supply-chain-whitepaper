@@ -122,6 +122,14 @@ maker-checker 校验。取舍：比原 role-only 更接近成熟控制塔治理�
 真实身份目录、行级授权、审计不可篡改存储不在本决策范围内。M2+（MDM、关系 registry、
 DQ issue、outbox、业务扩展）仍须另行批准。
 
+**M2 — 任务队列升级为 named owner + SLA state + escalation_level（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 2：在不接真实用户目录、排班系统或通知系统的前提下，
+为 Task 增加演示用 `assignee_user_id`、`assignee_team_id`、`sla_state`、`escalation_level`、
+`policy_version` 字段，并提供基于角色/区域的 deterministic owner 选择 helper 与显式
+`as_of_date` 的 SLA 状态计算。取舍：比 role-only `assignee_role` 更接近运营队列，但仍保持
+simulation-first；真实人力排班、提醒发送、自动升级动作、工作量均衡不在本决策范围内。
+M3+（事件信封/血缘、MDM、关系 registry、DQ issue、outbox、业务扩展）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

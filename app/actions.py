@@ -10,8 +10,10 @@ import sqlite3
 
 try:
     from .action_context import Actor, ApprovalPolicy, next_stable_id, transaction
+    from .work_queue import Owner, assign_owner, sla_state
 except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上下文
     from action_context import Actor, ApprovalPolicy, next_stable_id, transaction
+    from work_queue import Owner, assign_owner, sla_state
 
 ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3）
     "AssignTask": {"ops", "system"},
@@ -43,6 +45,22 @@ TASK_GOVERNANCE_COLUMNS = {
     "proposal_actor_id": "TEXT",
     "proposal_actor_role": "TEXT",
 }
+TASK_WORK_QUEUE_COLUMNS = {
+    "assignee_user_id": "TEXT",
+    "assignee_team_id": "TEXT",
+    "sla_state": "TEXT",
+    "escalation_level": "INTEGER DEFAULT 0",
+    "policy_version": "TEXT",
+}
+WORK_QUEUE_POLICY_VERSION = "M2-demo-work-queue-v1"
+DEFAULT_DEMO_REGION = "US"
+DEMO_ROSTER = [
+    Owner(actor_id="u-ops-us", role="ops", region="US", active=True),
+    Owner(actor_id="u-cs-us", role="cs", region="US", active=True),
+    Owner(actor_id="u-manager-us", role="manager", region="US", active=True),
+    Owner(actor_id="u-fin-us", role="finance", region="US", active=True),
+    Owner(actor_id="u-ops-cn", role="ops", region="CN", active=True),
+]
 
 
 def _log(cur, actor, role, action, target, params, as_of, result):
@@ -63,11 +81,69 @@ def _table_columns(cur, table):
 def _ensure_task_governance_columns(con, cur):
     cols = _table_columns(cur, "tasks")
     changed = False
-    for name, ddl in TASK_GOVERNANCE_COLUMNS.items():
+    for name, ddl in {**TASK_GOVERNANCE_COLUMNS, **TASK_WORK_QUEUE_COLUMNS}.items():
         if name not in cols:
             cur.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
             changed = True
     if changed:
+        con.commit()
+
+
+def _demo_region_for_risk(cur, risk):
+    try:
+        row = cur.execute("""SELECT destination_port_locode FROM shipments
+                             WHERE shipment_id=?""", (risk["shipment_id"],)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table: shipments" not in str(exc):
+            raise
+        return DEFAULT_DEMO_REGION
+    if row and row["destination_port_locode"].startswith("US"):
+        return "US"
+    return DEFAULT_DEMO_REGION
+
+
+def _team_id_for(owner):
+    return f"team-{owner.role}-{owner.region.lower()}"
+
+
+def _escalation_level(due_at, as_of):
+    return 1 if sla_state(due_at, as_of) == "overdue" else 0
+
+
+def _work_queue_assignment(cur, risk, assignee_role, due_at, as_of):
+    region = _demo_region_for_risk(cur, risk)
+    owner = assign_owner(assignee_role, region, DEMO_ROSTER)
+    state = sla_state(due_at, as_of)
+    return {
+        "assignee_user_id": owner.actor_id,
+        "assignee_team_id": _team_id_for(owner),
+        "sla_state": state,
+        "escalation_level": _escalation_level(due_at, as_of),
+        "policy_version": WORK_QUEUE_POLICY_VERSION,
+    }
+
+
+def ensure_task_work_queue_columns(con, as_of_date):
+    """M2 runtime compatibility for old ontology.sqlite copies; uses explicit as_of_date."""
+    cur = con.cursor()
+    _ensure_task_governance_columns(con, cur)
+    rows = cur.execute("""SELECT * FROM tasks
+                          WHERE assignee_user_id IS NULL OR assignee_team_id IS NULL
+                             OR sla_state IS NULL OR policy_version IS NULL""").fetchall()
+    for task in rows:
+        risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
+                           (task["risk_event_id"],)).fetchone()
+        if not risk:
+            continue
+        assignment = _work_queue_assignment(cur, risk, task["assignee_role"],
+                                            task["due_at"], as_of_date)
+        cur.execute("""UPDATE tasks SET assignee_user_id=?, assignee_team_id=?,
+                       sla_state=?, escalation_level=?, policy_version=?
+                       WHERE task_id=?""",
+                    (assignment["assignee_user_id"], assignment["assignee_team_id"],
+                     assignment["sla_state"], assignment["escalation_level"],
+                     assignment["policy_version"], task["task_id"]))
+    if rows:
         con.commit()
 
 
@@ -135,22 +211,35 @@ def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role
         return _fail(con, "AssignTask", risk_event_id, actor, role, as_of,
                      f"风险状态为 {risk['status']}，仅 open 可派单")
     _ensure_task_governance_columns(con, cur)
+    try:
+        assignment = _work_queue_assignment(cur, risk, assignee_role, due_at, as_of)
+    except ValueError as exc:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, str(exc))
     tid = _next_task_id(cur, risk_event_id, as_of)
     with transaction(con):
         cur.execute("""INSERT INTO tasks
                        (task_id, risk_event_id, title, assignee_role, priority, due_at,
                         proposed_action, proposal_params, approval_status, approved_by_role,
-                        action_taken, status, assigned_by_actor_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        action_taken, status, assigned_by_actor_id, assignee_user_id,
+                        assignee_team_id, sla_state, escalation_level, policy_version)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
                      assignee_role, priority, due_at, None, None, None, None, None, "assigned",
-                     actor))
+                     actor, assignment["assignee_user_id"], assignment["assignee_team_id"],
+                     assignment["sla_state"], assignment["escalation_level"],
+                     assignment["policy_version"]))
         cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
                     (risk_event_id,))
         _log(cur, actor, role, "AssignTask", tid,
-             {"risk_event_id": risk_event_id, "assignee_role": assignee_role, "priority": priority},
+             {"risk_event_id": risk_event_id, "assignee_role": assignee_role,
+              "priority": priority, "assignee_user_id": assignment["assignee_user_id"],
+              "assignee_team_id": assignment["assignee_team_id"],
+              "sla_state": assignment["sla_state"],
+              "escalation_level": assignment["escalation_level"],
+              "policy_version": assignment["policy_version"]},
              as_of, "ok")
-    return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged", f"Task {tid} assigned"])
+    return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged",
+                            f"Task {tid} assigned to {assignment['assignee_user_id']}"])
 
 
 def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, role, as_of):

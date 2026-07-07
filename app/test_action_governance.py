@@ -171,10 +171,21 @@ def test_same_named_actor_cannot_approve_known_mitigation_proposal() -> None:
     conn.commit()
 
     assigned = assign_task(
-        conn, "RSK-1", "ops", "P1", "2026-07-07",
+        conn, "RSK-1", "ops", "P1", "2026-07-06",
         actor="u-ops-001", role="ops", as_of="2026-07-07",
     )
     assert assigned["ok"] is True
+    assigned_task = conn.execute(
+        """select assignee_user_id, assignee_team_id, sla_state, escalation_level,
+                  policy_version
+           from tasks where task_id=?""",
+        (assigned["object_id"],),
+    ).fetchone()
+    assert assigned_task["assignee_user_id"] == "u-ops-us"
+    assert assigned_task["assignee_team_id"] == "team-ops-us"
+    assert assigned_task["sla_state"] == "overdue"
+    assert assigned_task["escalation_level"] == 1
+    assert assigned_task["policy_version"] == "M2-demo-work-queue-v1"
     proposed = propose_mitigation(
         conn, assigned["object_id"], "accept_delay", {"reason": "test"},
         actor="u-ops-001", role="ops", as_of="2026-07-07",
@@ -201,6 +212,68 @@ def test_same_named_actor_cannot_approve_known_mitigation_proposal() -> None:
     assert rejected == 1
 
 
+def test_assign_task_does_not_hide_bad_shipment_schema() -> None:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""create table risk_events(
+        risk_event_id text primary key,
+        type text,
+        rule_id text,
+        severity text,
+        shipment_id text,
+        affected_so_line_ids text,
+        affected_value_usd real,
+        detected_at text,
+        root_cause text,
+        status text,
+        resolved_at text,
+        outcome text,
+        resolution_summary text,
+        affected_invoice_line_ids text
+    )""")
+    conn.execute("""create table tasks(
+        task_id text primary key,
+        risk_event_id text,
+        title text,
+        assignee_role text,
+        priority text,
+        due_at text,
+        proposed_action text,
+        proposal_params text,
+        approval_status text,
+        approved_by_role text,
+        action_taken text,
+        status text
+    )""")
+    conn.execute("""create table action_log(
+        log_id integer primary key autoincrement,
+        actor text,
+        role text,
+        action text,
+        target_object_id text,
+        params_json text,
+        as_of_date text,
+        timestamp text,
+        result text
+    )""")
+    conn.execute("create table shipments(shipment_id text primary key)")
+    conn.execute("""insert into risk_events values (
+        'RSK-1', 'delay_breach', 'R1', 'high', 'SHP-1', '[]', 0,
+        '2026-07-07', 'test risk', 'open', null, null, null, null
+    )""")
+    conn.commit()
+
+    try:
+        assign_task(
+            conn, "RSK-1", "ops", "P1", "2026-07-07",
+            actor="u-ops-001", role="ops", as_of="2026-07-07",
+        )
+    except sqlite3.OperationalError as exc:
+        assert "destination_port_locode" in str(exc)
+    else:
+        assert False, "bad shipments schema should not silently fall back to demo region"
+
+
 if __name__ == "__main__":
     test_manager_cannot_approve_own_proposal()
     test_different_manager_can_approve()
@@ -212,4 +285,5 @@ if __name__ == "__main__":
     test_can_approve_actor_helper_blocks_same_named_actor()
     test_can_approve_actor_helper_requires_manager_role()
     test_same_named_actor_cannot_approve_known_mitigation_proposal()
+    test_assign_task_does_not_hide_bad_shipment_schema()
     print("ok")

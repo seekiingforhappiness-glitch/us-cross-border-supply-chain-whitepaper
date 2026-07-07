@@ -14,13 +14,13 @@ import streamlit as st
 
 try:
     from app.actions import (assign_task, propose_mitigation, approve_mitigation,
-                             close_risk_event)
+                             close_risk_event, ensure_task_work_queue_columns)
     from app.admission_actions import (create_admission_case, run_compliance_precheck,
                                        build_logistics_plan, calculate_cost_scenario,
                                        approve_quote_decision, reject_or_request_more_info)
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from actions import (assign_task, propose_mitigation, approve_mitigation,
-                         close_risk_event)
+                         close_risk_event, ensure_task_work_queue_columns)
     from admission_actions import (create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario,
                                    approve_quote_decision, reject_or_request_more_info)
@@ -415,6 +415,7 @@ def db():
 
 def rows(sql, *a):
     with db() as con:
+        ensure_task_work_queue_columns(con, AS_OF)
         return [dict(r) for r in con.execute(sql, a)]
 
 
@@ -596,14 +597,19 @@ with tab_task:
                     ORDER BY t.task_id DESC""")
     render_table([{"任务": t["task_id"], "风险": t["risk_event_id"],
                    "级别": f"{SEV_ICON[t['severity']]}{t['severity']}", "货运": t["shipment_id"],
+                   "负责人": t["assignee_user_id"] or "-", "团队": t["assignee_team_id"] or "-",
                    "负责角色": t["assignee_role"], "优先级": t["priority"], "处理截止": t["due_at"],
+                   "SLA": t["sla_state"] or "-", "升级": t["escalation_level"],
                    "提案": t["proposed_action"] or "-", "审批": t["approval_status"] or "-",
                    "状态": t["status"]} for t in tasks],
                  height=230)
     if tasks:
         tsel = st.selectbox("处理任务", [t["task_id"] for t in tasks])
         t = next(x for x in tasks if x["task_id"] == tsel)
-        st.markdown(f"**{t['title']}**　|　任务状态 `{t['status']}`　风险状态 `{t['risk_status']}`")
+        st.markdown(f"**{t['title']}**　|　负责人 `{t['assignee_user_id'] or '-'}`　"
+                    f"团队 `{t['assignee_team_id'] or '-'}`　SLA `{t['sla_state'] or '-'}`　"
+                    f"升级 `{t['escalation_level']}`　任务状态 `{t['status']}`　"
+                    f"风险状态 `{t['risk_status']}`")
         if t["proposal_params"]:
             p = json.loads(t["proposal_params"])
             if role == "cs" and "est_cost_usd" in p:

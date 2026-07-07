@@ -241,6 +241,11 @@
         {"name": "assignee_role", "type": "enum", "required": true, "values": ["ops", "cs", "manager"]},
         {"name": "priority", "type": "enum", "required": true, "values": ["P1", "P2", "P3"]},
         {"name": "due_at", "type": "date", "required": true, "description": "Task handling deadline (when the handler must complete mitigation); NOT the delivery date or customer promise date."},
+        {"name": "assignee_user_id", "type": "string", "required": false, "description": "M2 demo named owner from local roster; simulation-only, no real identity directory."},
+        {"name": "assignee_team_id", "type": "string", "required": false, "description": "M2 demo team id such as team-ops-us."},
+        {"name": "sla_state", "type": "enum", "required": false, "values": ["open", "due_today", "overdue"], "description": "Computed from explicit as_of_date and due_at."},
+        {"name": "escalation_level", "type": "number", "required": false, "description": "M2 minimal semantics: 0 before/on due date, 1 after due date; no real notification or shift system."},
+        {"name": "policy_version", "type": "string", "required": false, "description": "Demo assignment/SLA policy version."},
         {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay"]},
         {"name": "proposal_params", "type": "json", "required": false, "sensitiveSubfields": ["est_cost_usd"]},
         {"name": "approval_status", "type": "enum", "required": false, "values": ["pending", "approved", "rejected"]},
@@ -251,7 +256,7 @@
         {"name": "action_taken", "type": "string", "required": false},
         {"name": "status", "type": "enum", "required": true, "values": ["assigned", "in_progress", "done", "cancelled"]}
       ],
-      "dataQualityRules": ["max 1 non-terminal task per risk_event (D9/C4)", "M1: if proposal_actor_id is known, approver actor_id must differ from proposer actor_id"]
+      "dataQualityRules": ["max 1 non-terminal task per risk_event (D9/C4)", "M1: if proposal_actor_id is known, approver actor_id must differ from proposer actor_id", "M2: demo named owner and SLA fields are deterministic simulation fields, not a real user directory"]
     },
     {
       "type": "AdmissionCase",
@@ -525,9 +530,9 @@
       "signature": "assign_task(risk_event_id, assignee_role, priority, due_at, actor) -> Result",
       "executors": ["system", "ops"],
       "preconditions": ["RiskEvent in {open}", "no non-terminal task for this risk"],
-      "successEffects": ["Task=assigned", "RiskEvent -> acknowledged"],
+      "successEffects": ["Task=assigned", "RiskEvent -> acknowledged", "M2 demo assignee_user_id/assignee_team_id/sla_state/escalation_level/policy_version written"],
       "failureHandling": ["existing non-terminal task -> reject, return its id", "terminal risk -> reject"],
-      "audit": ["assignee_role", "priority"]
+      "audit": ["assignee_role", "priority", "assignee_user_id", "assignee_team_id", "sla_state", "escalation_level", "policy_version"]
     },
     {
       "id": "A4",
