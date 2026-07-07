@@ -18,9 +18,10 @@
   Codex 客户端，项目 Python 代码真实 LLM 调用仍需 `OPENAI_API_KEY`。
 - **控制塔 UI 视觉升级已完成**：基于生成概念图重做 Streamlit 设计系统，暗色未来感命令中心、
   真实 KPI 顶栏、深色表格、侧栏/Tab/Form/Button 统一样式；动作逻辑与数据层未改。
-- **成熟控制塔全面升级计划已制定但未批准执行**：计划路径
-  `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；下一步是 Daniel 裁决
-  M 系列决策门槛，未获批前不改 ontology/规则/业务范围。
+- **成熟控制塔全面升级计划与 Task 0 approval pack 已立项但未批准执行**：计划路径
+  `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
+  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；下一步是 Daniel
+  裁决 M 系列决策门槛（MA 系列只是验收检查），未获批前不改 ontology/规则/业务范围。
 
 ## v0.4 进度
 
