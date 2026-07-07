@@ -30,7 +30,7 @@
 冲突时以上游为准，并向人报告冲突，不得自行调和：
 
 ```text
-执行期 plan（当前：docs/admission-plan-v0.3.md，决策 E1-E5）
+执行期 plan（当前：docs/cost-plan-v0.4.md，决策 F1-F5；历史：admission-plan-v0.3，E1-E5）
 >  docs/control-tower-plan-v0.2.md（决策 D1-D11，已收官仍具约束力）
 >  ontology/control-tower-ontology.json（v0.3 起为统一 ontology，含两场景）
 >  docs/cross-border-ontology-manual.md (v0.1 领域规格)  >  白皮书（领域常识参考）

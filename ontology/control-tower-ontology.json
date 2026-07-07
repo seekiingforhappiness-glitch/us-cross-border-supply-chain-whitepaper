@@ -1,9 +1,9 @@
 {
-  "version": "0.3.0",
+  "version": "0.4.0",
   "name": "cross_border_unified_ontology",
-  "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入报价，两场景共享）",
-  "scope": "Two scenarios on one ontology: (1) delay-risk control tower with closed-loop mitigation; (2) SKU admission & quote decision workflow. Shared objects: Supplier/Sku/Customer (zero duplication, decision E1/E2).",
-  "authority": "Human-readable sources: docs/control-tower-ontology-manual.md (v0.2 scenario) + docs/admission-manual-v0.3.md (v0.3 scenario). Decisions D1-D11 and E1-E5 govern changes. Filename kept for reference stability.",
+  "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账，三场景共享）",
+  "scope": "Three scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop REUSING the RiskEvent/Task closed loop (F1). Shared objects zero duplication.",
+  "authority": "Human-readable sources: control-tower-ontology-manual.md (v0.2) + admission-manual-v0.3.md + cost-manual-v0.4.md. Decisions D1-D11, E1-E5, F1-F5 govern changes. Filename kept for reference stability.",
   "asOfPolicy": {
     "rule": "All engine evaluation and UI rendering take an explicit as_of_date parameter. Implicit system time is forbidden (D8)."
   },
@@ -213,11 +213,12 @@
       "statusField": "status",
       "properties": [
         {"name": "risk_event_id", "type": "string", "required": true},
-        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled"]},
-        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3"]},
+        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge"], "description": "Cost anomaly types added in v0.4 (F1: same closed loop)."},
+        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6"]},
         {"name": "severity", "type": "enum", "required": true, "values": ["medium", "high", "critical"]},
         {"name": "shipment_id", "type": "string", "required": true},
-        {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3)."},
+        {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3). Empty list for cost anomalies."},
+        {"name": "affected_invoice_line_ids", "type": "json_list", "required": false, "description": "v0.4 (P1): affected invoice lines for cost anomalies; null for logistics risks."},
         {"name": "affected_value_usd", "type": "number", "derived": true},
         {"name": "detected_at", "type": "date", "required": true, "description": "as_of_date at detection."},
         {"name": "root_cause", "type": "string", "required": true},
@@ -335,6 +336,68 @@
         {"name": "gross_margin_rate", "type": "number", "derived": true, "sensitive": true}
       ],
       "dataQualityRules": ["DDP scenario requires duty_tax>0, customs_brokerage>0, risk_buffer>0 (gate, enforced by B4)"]
+    },
+    {
+      "type": "Container",
+      "primaryKey": "container_no",
+      "ownerRole": "ops",
+      "properties": [
+        {"name": "container_no", "type": "string", "required": true, "description": "ISO 6346 with check digit (F2, repays D5 debt)."},
+        {"name": "shipment_id", "type": "string", "required": true, "description": "Shipment 1:N containers."},
+        {"name": "container_type", "type": "enum", "required": true, "values": ["40HC", "40GP", "20GP"]},
+        {"name": "is_primary", "type": "boolean", "required": true, "description": "Migration marker: matches legacy shipment.container_no."},
+        {"name": "free_days", "type": "number", "required": true, "description": "Free time before detention; basis for DET attribution (F4)."},
+        {"name": "gross_weight_kg", "type": "number", "required": true},
+        {"name": "volume_cbm", "type": "number", "required": true}
+      ],
+      "dataQualityRules": ["valid ISO 6346 check digit", "every shipment has >=1 container with exactly one primary"]
+    },
+    {
+      "type": "Invoice",
+      "primaryKey": "invoice_id",
+      "ownerRole": "finance",
+      "statusField": "status",
+      "properties": [
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "vendor_type", "type": "enum", "required": true, "values": ["carrier", "forwarder", "warehouse", "last_mile"]},
+        {"name": "vendor_name", "type": "string", "required": true},
+        {"name": "vendor_invoice_no", "type": "string", "required": true, "description": "Vendor's own number; real-world reconciliation key."},
+        {"name": "shipment_id", "type": "string", "required": true},
+        {"name": "issue_date", "type": "date", "required": true},
+        {"name": "currency", "type": "enum", "required": true, "values": ["USD"]},
+        {"name": "total_usd", "type": "number", "required": true, "description": "Must equal sum of line amounts (DQ)."},
+        {"name": "status", "type": "enum", "required": true, "values": ["received", "under_review", "disputed", "approved"]}
+      ],
+      "dataQualityRules": ["total_usd == sum(lines.amount_usd)"]
+    },
+    {
+      "type": "InvoiceLine",
+      "primaryKey": "invoice_line_id",
+      "ownerRole": "finance",
+      "properties": [
+        {"name": "invoice_line_id", "type": "string", "required": true},
+        {"name": "invoice_id", "type": "string", "required": true},
+        {"name": "charge_code", "type": "enum", "required": true, "values": ["OFT", "THC", "DOC", "FSC", "CUS", "DTY", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC"]},
+        {"name": "container_no", "type": "string", "required": false, "description": "Required for container-level charges (THC/DET/DEM/CHS)."},
+        {"name": "qty", "type": "number", "required": true},
+        {"name": "unit_price_usd", "type": "number", "required": true},
+        {"name": "amount_usd", "type": "number", "required": true, "description": "qty x unit_price (DQ)."}
+      ],
+      "dataQualityRules": ["amount = qty * unit_price", "container-level charge codes require container_no"]
+    },
+    {
+      "type": "ExpectedCost",
+      "primaryKey": "expected_cost_id",
+      "ownerRole": "system",
+      "properties": [
+        {"name": "expected_cost_id", "type": "string", "required": true},
+        {"name": "shipment_id", "type": "string", "required": true},
+        {"name": "charge_code", "type": "enum", "required": true, "values": ["OFT", "THC", "DOC", "FSC", "CUS", "DTY", "WHS", "STO", "LMD"], "description": "DET/DEM/ACC/CHS deliberately absent = unplanned (R6 basis, F3)."},
+        {"name": "container_no", "type": "string", "required": false},
+        {"name": "baseline_usd", "type": "number", "required": true},
+        {"name": "source", "type": "string", "required": true, "description": "rate_card (only source in v0.4)."}
+      ],
+      "dataQualityRules": ["baseline_usd > 0"]
     }
   ],
   "links": [
@@ -354,7 +417,13 @@
     {"linkType": "case_for_customer", "source": "AdmissionCase", "target": "Customer", "cardinality": "N:1", "rule": "SAME Customer object as control tower (reuse proof, E2)"},
     {"linkType": "case_has_finding", "source": "AdmissionCase", "target": "ComplianceFinding", "cardinality": "1:N"},
     {"linkType": "case_has_plan", "source": "AdmissionCase", "target": "LogisticsPlan", "cardinality": "1:N"},
-    {"linkType": "plan_has_scenario", "source": "LogisticsPlan", "target": "CostScenario", "cardinality": "1:N"}
+    {"linkType": "plan_has_scenario", "source": "LogisticsPlan", "target": "CostScenario", "cardinality": "1:N"},
+    {"linkType": "shipment_has_container", "source": "Shipment", "target": "Container", "cardinality": "1:N", "rule": "F2: one primary per shipment"},
+    {"linkType": "invoice_for_shipment", "source": "Invoice", "target": "Shipment", "cardinality": "N:1"},
+    {"linkType": "invoice_has_line", "source": "Invoice", "target": "InvoiceLine", "cardinality": "1:N"},
+    {"linkType": "line_bills_container", "source": "InvoiceLine", "target": "Container", "cardinality": "N:1", "rule": "nullable for shipment-level charges"},
+    {"linkType": "expected_cost_of_shipment", "source": "ExpectedCost", "target": "Shipment", "cardinality": "N:1"},
+    {"linkType": "risk_affects_invoice_line", "source": "RiskEvent", "target": "InvoiceLine", "cardinality": "N:M", "via": "affected_invoice_line_ids (P1)"}
   ],
   "stateMachines": {
     "Shipment": {
@@ -414,6 +483,16 @@
         {"from": "needs_more_info", "to": "in_precheck", "trigger": "B2", "notes": "补资料回流，非终态（同 C1 思想）"}
       ],
       "notes": "Terminal: approved / quote_with_conditions / rejected. quote_with_conditions promoted to a status (N3)."
+    },
+    "Invoice": {
+      "states": ["received", "under_review", "disputed", "approved"],
+      "transitions": [
+        {"from": "received", "to": "approved", "trigger": "MatchInvoice (no anomaly)"},
+        {"from": "received", "to": "under_review", "trigger": "MatchInvoice (anomaly found)"},
+        {"from": "under_review", "to": "disputed", "trigger": "A5(approved dispute)"},
+        {"from": "under_review", "to": "approved", "trigger": "A5(approved accept_charge | rebill_customer)"}
+      ],
+      "notes": "Terminal: disputed (handed to claims process) / approved (pay as billed)."
     }
   },
   "actions": [
@@ -455,8 +534,12 @@
       "paramsSchema": {
         "expedite": {"new_mode": "air", "est_cost_usd": "number", "expected_new_eta": "date"},
         "reschedule": {"new_promise_date": "date", "notify_customer": true},
-        "accept_delay": {"reason": "string"}
+        "accept_delay": {"reason": "string"},
+        "dispute": {"reason": "string", "disputed_amount_usd": "number"},
+        "accept_charge": {"reason": "string"},
+        "rebill_customer": {"rebill_amount_usd": "number", "incoterm_basis": "string"}
       },
+      "executorsNote": "v0.4 (P3): executors extended to ops/cs/finance; cost proposals belong to finance.",
       "preconditions": ["Task=assigned", "params match schema", "reschedule: new_promise_date > current promise"],
       "successEffects": ["Task -> in_progress, approval_status=pending", "RiskEvent -> mitigating"],
       "failureHandling": ["schema validation fails -> reject, task unchanged"],
@@ -549,13 +632,24 @@
   "riskRules": [
     {"id": "R1", "type": "delay_breach", "logic": "shipment.eta_current + config.customs_buffer_days + config.lastmile_buffer_days > line.promised_delivery_date (via allocations); skip delivered shipments and fulfilled/cancelled lines", "severity": "per-line: breach<=3d medium, >3d high, tier=A +1 level; event severity = max over affected lines"},
     {"id": "R2", "type": "docs_missing", "logic": "missing_docs non-empty AND (eta_current - as_of_date) < 7d; skip delivered shipments and customs_status=released", "severity": "high"},
-    {"id": "R3", "type": "stalled", "logic": "status=in_transit AND as_of_date - latest milestone.event_time >= config.stall_days", "severity": "medium"}
+    {"id": "R3", "type": "stalled", "logic": "status=in_transit AND as_of_date - latest milestone.event_time >= config.stall_days", "severity": "medium"},
+    {"id": "R4", "type": "rate_overbilling", "logic": "invoice_line.amount > expected_cost.baseline * (1 + config.rate_tolerance); affected_value = overbilled portion", "severity": "overbilling >20%: high; else medium"},
+    {"id": "R5", "type": "duplicate_charge", "logic": "same (shipment, charge_code, container_no) billed on >1 line across/within invoices; lines beyond first are duplicates", "severity": "high"},
+    {"id": "R6", "type": "unplanned_charge", "logic": "line whose charge_code has no ExpectedCost baseline (DET/DEM/ACC/CHS); DET/DEM on delayed shipments must cite delay attribution in root_cause (F4)", "severity": "amount > 500: high; else medium"}
   ],
   "config": {
     "customs_buffer_days": 3,
     "lastmile_buffer_days": 2,
     "stall_days": 5,
+    "rate_tolerance": 0.05,
+    "unplanned_high_threshold_usd": 500,
     "note": "Values live in config/*.yaml; these are defaults, not hardcoded constants."
+  },
+  "incotermRebillMatrix": {
+    "DDP": [],
+    "DAP": ["DTY", "CUS"],
+    "FOB": ["OFT", "FSC", "THC", "DET", "DEM", "CHS", "DOC"],
+    "note": "G4 gate (F5): rebill_customer approval requires affected charge codes within matrix of shipment incoterm."
   },
   "auditLog": {
     "table": "action_log",
