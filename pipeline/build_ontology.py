@@ -9,7 +9,7 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
-from .er import resolve
+from .er import resolve, resolve_milestones
 
 RAW = Path("data/raw")
 DB = Path("data/ontology.sqlite")
@@ -60,10 +60,32 @@ def main():
                               "ap_invoice_lines", "ap_expected_costs"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
 
+    # 0) 单证号级 ER（v0.6-H3）：源表 milestone 无内部 shipment_id，先按 booking_no/
+    #    container_no 反查 shipment，补回 shipment_id；解析失败进 unresolved 停车表。
+    #    booking_no 在 tms_shipments 唯一；container 经 tms_containers 反查。
+    ship_by_booking = {r["booking_no"]: r["shipment_id"]
+                       for r in t["tms_shipments"] if r["booking_no"]}
+    ship_by_container = {r["container_no"]: r["shipment_id"]
+                         for r in t["tms_containers"] if r["container_no"]}
+    resolved_ms, unresolved_ms = resolve_milestones(
+        t["tms_milestones"], ship_by_booking, ship_by_container)
+    from collections import Counter as _Counter
+    _reason_dist = dict(_Counter(r["reason"] for r in unresolved_ms))
+    _n_in = len(t["tms_milestones"])
+    dq["milestone_resolution"] = {
+        "total": _n_in,
+        "resolved": len(resolved_ms),
+        "unresolved": len(unresolved_ms),
+        "resolution_rate": round(len(resolved_ms) / _n_in, 4) if _n_in else 1.0,
+        "resolved_by_booking": sum(1 for r in resolved_ms if r["resolved_by"] == "booking_no"),
+        "resolved_by_container": sum(1 for r in resolved_ms if r["resolved_by"] == "container_no"),
+        "unresolved_by_reason": _reason_dist,
+    }
+
     # 1) milestone 判重（四元组保首条，重复标记保留——事件不可变，只标不删）
     seen, dup_count = {}, 0
     ms_rows = []
-    for r in sorted(t["tms_milestones"], key=lambda x: (x["ingested_at"], x["milestone_id"])):
+    for r in sorted(resolved_ms, key=lambda x: (x["ingested_at"], x["milestone_id"])):
         key = (r["shipment_id"], r["event_type"], r["event_time"], r["source_system"])
         r = dict(r)
         r["is_duplicate"] = key in seen
@@ -206,6 +228,12 @@ def main():
           ["milestone_id TEXT", "shipment_id TEXT", "event_type TEXT", "event_classifier TEXT",
            "event_time TEXT", "event_locode TEXT", "new_eta TEXT", "source_system TEXT",
            "ingested_at TEXT", "is_duplicate INTEGER"], "milestone_id")
+    # v0.6-H3 unresolved 停车表：单证号无法解析的 milestone 原行全列保留 + reason
+    # （不丢弃、不猜；下游控制塔不消费，仅供 DQ / evaluate 审计）
+    table("unresolved_milestones", unresolved_ms,
+          ["milestone_id TEXT", "booking_no TEXT", "container_no TEXT", "event_type TEXT",
+           "event_classifier TEXT", "event_time TEXT", "event_locode TEXT", "new_eta TEXT",
+           "source_system TEXT", "ingested_at TEXT", "reason TEXT"], "milestone_id")
     table("shipment_allocations", sorted(t["tms_allocations"], key=lambda x: x["allocation_id"]),
           ["allocation_id TEXT", "shipment_id TEXT", "so_line_id TEXT", "allocated_qty INTEGER"],
           "allocation_id")

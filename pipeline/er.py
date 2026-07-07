@@ -35,3 +35,43 @@ def resolve(raw_names, canonical):
                     break
         mapping[raw] = sid
     return mapping, ambiguous
+
+
+def resolve_milestones(ms_rows, ship_by_booking, ship_by_container):
+    """单证号级 ER（v0.6-H3）：milestone 无内部 shipment_id，按单证号反查所属 shipment。
+
+    真实承运商 EDI 事件带 booking_no / container_no，需映射回客户内部 shipment_id：
+      1. booking_no 非空 → 查 tms_shipments.booking_no 唯一映射；
+      2. 否则 container_no 非空 → 经 tms_containers 反查 shipment；
+      3. 都失败 → unresolved（不丢弃、不猜），记 reason。
+
+    返回 (resolved, unresolved)：
+      resolved   = [dict(原行) + shipment_id + resolved_by]
+      unresolved = [dict(原行) + reason]（原行全列保留）
+    reason 取值：no_doc_ref / booking_not_found / container_not_found
+    """
+    resolved, unresolved = [], []
+    for r in ms_rows:
+        booking = r.get("booking_no", "")
+        container = r.get("container_no", "")
+        sid, by = None, None
+        if booking:
+            sid = ship_by_booking.get(booking)
+            if sid:
+                by = "booking_no"
+        if sid is None and container:
+            sid = ship_by_container.get(container)
+            if sid:
+                by = "container_no"
+        if sid is not None:
+            resolved.append({**r, "shipment_id": sid, "resolved_by": by})
+        else:
+            if not booking and not container:
+                reason = "no_doc_ref"
+            elif booking:
+                # booking 非空但未命中（typo 场景）；若还带柜号也未命中一并归此因
+                reason = "booking_not_found"
+            else:
+                reason = "container_not_found"
+            unresolved.append({**r, "reason": reason})
+    return resolved, unresolved

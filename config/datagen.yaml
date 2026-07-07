@@ -41,6 +41,10 @@ noise_rates:                    # 数据质量噪声（进 injected_noise_log，
   status_conflict: 0.08
   null_vessel_carrier: 0.10
   supplier_name_variant: 0.20
+  # v0.6 专题二 H3：milestone 单证号形态（作用于非设计船行）
+  doc_ref_container_only: 0.10  # 只有 container_no（booking 留空）
+  doc_ref_booking_only: 0.05    # 只有 booking_no（柜号留空）；其余 85% 两者齐备
+  doc_ref_typo: 0.02            # 坏单证号：booking 末位篡改 + 柜号置空 → 必然不可解析
 
 cost:                           # v0.4 费用闭环（X2）参数
   rate_tolerance: 0.05          # R4 费率超收容差（>基准×1.05 判超收）

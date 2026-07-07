@@ -63,6 +63,15 @@ def main():
     exp = load(truth_dir, "expected_risk_events")
     noi = load(truth_dir, "injected_noise_log")
     c = cfg["counts"]
+    # H3：源表 tms_milestones 已无 shipment_id，改带 booking_no/container_no。
+    # 直接用 milestone 的 shipment_id 的断言，一律经 booking_no→shipment 映射还原。
+    ship_by_booking = {r["booking_no"]: r["shipment_id"] for r in t["tms_shipments"]}
+    ship_by_container = {r["container_no"]: r["shipment_id"]
+                         for r in t["tms_shipments"] if r["container_no"]}
+
+    def ms_ship(r):
+        """从 milestone 行还原所属 shipment（booking 优先，其次 container，否则 None）。"""
+        return ship_by_booking.get(r["booking_no"]) or ship_by_container.get(r["container_no"])
     check("suppliers 数量", len(t["srm_suppliers"]) == c["suppliers"])
     check("skus 数量（目录+候选）", len(t["catalog_skus"]) == c["skus"] + 15)  # 15=准入候选（v0.3）
     check("customers 数量", len(t["oms_customers"]) == c["customers"])
@@ -150,8 +159,9 @@ def main():
     check("DEMO-07 仅 R3 medium", bool(e) and e["severity"] == "medium" and len(by_ship["SHP-2026-0080"]) == 1)
     check("DEMO-08 无风险（arrived 不触发 R3）", not by_ship["SHP-2026-0085"])
     e = one("SHP-2026-0090", "R1")
+    # H3：设计船行两者齐备，booking→shipment 映射还原（源表已无 shipment_id）
     dup_rows = [r for r in t["tms_milestones"]
-                if r["shipment_id"] == "SHP-2026-0090" and r["event_type"] == "eta_change"]
+                if ms_ship(r) == "SHP-2026-0090" and r["event_type"] == "eta_change"]
     check("DEMO-09 重复上报存在但只 1 个 R1", bool(e) and len(by_ship["SHP-2026-0090"]) == 1 and len(dup_rows) == 2)
     check("DEMO-10 乱序不产生风险", not by_ship["SHP-2026-0095"]
           and any(r["case_id"] == "DEMO-10" for r in noi))
@@ -334,6 +344,46 @@ def main():
           all((not l["container_no"]) or l["container_no"] in cno_all for l in inv_lines))
     print(f"  柜数={len(containers)} 发票={len(invoices)} 发票行={len(inv_lines)} "
           f"基准={len(expected_costs)} gt={len(anom)} 多柜票={multi}")
+
+    print("== 8. 单证号级 ER（v0.6-H3）==")
+    from .world import DESIGN_SHIP_NUMS
+    ms = t["tms_milestones"]
+    # 源表已删 shipment_id、改带 booking_no + container_no
+    check("H3 tms_milestones 无 shipment_id 列，含 booking_no + container_no",
+          "shipment_id" not in ms[0] and "booking_no" in ms[0] and "container_no" in ms[0])
+    # 设计船集合：控制塔预留槽位 ∪ 费用设计案例船（CD-A..F）
+    design_ships = {f"SHP-2026-{n:04d}" for n in DESIGN_SHIP_NUMS}
+    design_ships |= {v for v in w2["cost"]["design_cases"].values() if v}
+    # 设计船行一律两者齐备
+    design_rows = [r for r in ms if ms_ship(r) in design_ships]
+    design_full = all(r["booking_no"] and r["container_no"] for r in design_rows)
+    check("H3 设计船行全齐备（booking_no 且 container_no 非空）", design_full,
+          f"{sum(1 for r in design_rows if not (r['booking_no'] and r['container_no']))} 行不齐备")
+    # 比例合规（±3pp，作用于非设计船行）——排除 typo 行（typo 单独占空）
+    typo_mids = {r["target_id"] for r in noi if r["noise_type"] == "doc_ref_typo"}
+    nd = [r for r in ms if ms_ship(r) not in design_ships and r["milestone_id"] not in typo_mids]
+    n_nd = len(nd)
+    both = sum(1 for r in nd if r["booking_no"] and r["container_no"])
+    conly = sum(1 for r in nd if not r["booking_no"] and r["container_no"])
+    bonly = sum(1 for r in nd if r["booking_no"] and not r["container_no"])
+    nr = cfg["noise_rates"]
+    exp_conly = nr["doc_ref_container_only"]
+    exp_bonly = nr["doc_ref_booking_only"]
+    check(f"H3 仅柜号比例≈{exp_conly:.0%}（±3pp）", abs(conly / n_nd - exp_conly) <= 0.03,
+          f"got {conly/n_nd:.3f}")
+    check(f"H3 仅订舱号比例≈{exp_bonly:.0%}（±3pp）", abs(bonly / n_nd - exp_bonly) <= 0.03,
+          f"got {bonly/n_nd:.3f}")
+    check("H3 每行至少含一个单证号（非 typo 行）", both + conly + bonly == n_nd)
+    # doc_ref_typo：行数=噪声日志数；每行必然不可解析（booking 篡改不在册 + 柜号空）
+    typo_rows = [r for r in ms if r["milestone_id"] in typo_mids]
+    check("H3 doc_ref_typo 行数=噪声日志数", len(typo_rows) == len(typo_mids) and len(typo_mids) > 0,
+          f"rows={len(typo_rows)} log={len(typo_mids)}")
+    unresolvable = all((not r["container_no"])
+                       and r["booking_no"] not in ship_by_booking for r in typo_rows)
+    check("H3 doc_ref_typo 行必然不可解析（柜号空 + booking 不在册）", unresolvable)
+    # typo 只打在非设计船：设计船行全齐备（上已校验）即隐含 typo 不落在设计船
+    check("H3 doc_ref_typo 未打在任何设计船（设计船行全齐备已隐含）", design_full)
+    print(f"  非设计行 {n_nd}：both={both} 仅柜={conly} 仅订舱={bonly}；typo={len(typo_rows)}")
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

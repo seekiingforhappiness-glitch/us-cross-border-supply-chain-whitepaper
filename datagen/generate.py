@@ -19,7 +19,7 @@ from . import world as W
 from . import admission as ADM
 from . import cost as COST
 from .design_cases import apply_design_cases
-from .noise import apply_noise
+from .noise import apply_noise, apply_doc_refs
 from .oracle import sweep
 
 
@@ -41,6 +41,10 @@ def build(cfg):
     # v0.4 费用对账：独立随机流（seed+2000），既有数据零扰动（X2 决策）
     cost_rng = random.Random(cfg["seed"] + 2000)
     COST.build_cost_world(w, cfg, cost_rng)
+    # v0.6 专题二 H3：milestone 单证号（booking_no/container_no）填充 + doc_ref_typo。
+    # 独立随机流（seed+3000），须在 cost 建柜之后（primary 柜号已就位）。
+    doc_rng = random.Random(cfg["seed"] + 3000)
+    apply_doc_refs(noise["ms_rows"], w, cfg, doc_rng, noise["noise_log"])
     return w, expected, noise
 
 
@@ -117,9 +121,12 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                 "origin_port", "origin_port_locode", "destination_port",
                                 "destination_port_locode", "destination_warehouse", "etd",
                                 "eta_initial", "status", "missing_docs", "supplier_names", "po_ids"])
+    # H3：源表删除 shipment_id，改带 booking_no + container_no（真实 EDI 形态）。
+    # 列白名单不含 shipment_id → DictWriter(extrasaction="ignore") 自动不输出。
     tables["tms_milestones"] = (sorted(noise["ms_rows"], key=lambda r: (r["ingested_at"], r["milestone_id"])),
-                                ["milestone_id", "shipment_id", "event_type", "event_classifier",
-                                 "event_time", "event_locode", "new_eta", "source_system", "ingested_at"])
+                                ["milestone_id", "booking_no", "container_no", "event_type",
+                                 "event_classifier", "event_time", "event_locode", "new_eta",
+                                 "source_system", "ingested_at"])
     tables["tms_allocations"] = (sorted(w["allocations"], key=lambda a: a["allocation_id"]),
                                  ["allocation_id", "shipment_id", "so_line_id", "allocated_qty"])
     # v0.3 准入四表（qms_ = 报价管理系统）
