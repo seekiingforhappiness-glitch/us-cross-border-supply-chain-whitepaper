@@ -49,6 +49,16 @@ python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理�
 | 运营应用 | `app/` | 动作层（权限+审计）与 UI 分离；控制塔四视图 + 角色切换 |
 | AI 协同 | `agent/` | 工具注册（审批/关闭永不暴露）；确定性简报保证溯源；LLM 可插拔 |
 
+## 作品集导航（v0.5）
+
+| 想…… | 看 |
+| --- | --- |
+| 30 秒了解项目 | `docs/one-pager.md` |
+| 看架构（Mermaid 图） | `docs/architecture.md` |
+| 给别人演示（10 分钟台本） | `docs/demo-script.md` |
+| 读完整故事（含失败的 KPI） | `docs/article.md` |
+| 查全部决策与复盘 | `docs/retrospective.md` + 各 plan 决策日志 |
+
 ## 治理文件（AI 协作项目的宪法）
 
 - `AGENTS.md`——协作规则与禁止清单（任何 AI 会话从这里开始）
