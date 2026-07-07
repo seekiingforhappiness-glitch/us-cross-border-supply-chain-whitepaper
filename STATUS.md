@@ -72,6 +72,11 @@ python3 -m agent.evaluate
 streamlit run app/streamlit_app.py
 ```
 
-## 会话交接备注
+## 会话交接备注（任何模型接管的启动路径）
 
-任何模型接手：读 AGENTS.md §0。项目已收官，后续工作（v0.3）须先立新 plan 文档并经人批准。
+1. 读 AGENTS.md（§0 启动协议 + §4 软知识——与 Daniel 协作的方式）
+2. 读本文件（唯一状态源）；深入某场景再读对应 plan/manual
+3. 自检接管质量：跑一遍复现命令（十个评估器应全绿），然后向 Daniel 用三句话
+   复述项目现状——复述与现实一致即交接成功
+4. 新工作一律先立 plan 经 Daniel 批准（候选清单已清空，无遗留承诺）
+5. 剩余人工事项（无需模型）：LLM 实测、录屏、git push、article.md 个人化
