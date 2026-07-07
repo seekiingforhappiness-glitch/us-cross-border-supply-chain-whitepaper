@@ -20,9 +20,8 @@
   真实 KPI 顶栏、深色表格、侧栏/Tab/Form/Button 统一样式；动作逻辑与数据层未改。
 - **成熟控制塔全面升级计划已进入逐 Task 审批执行**：计划路径
   `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
-  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M4 已完成，
-  下一步是 Daniel 裁决 M5 关系 registry / graph traversal（MA 系列只是验收检查），未获批前不改
-  ontology/规则/业务范围。
+  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M5 已完成，
+  M6+ 未获批前不改 ontology/规则/业务范围（MA 系列只是验收检查）。
 - **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
   已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
 - **M2 Task 2 已完成并通过 controller review**：Daniel 已批准 demo named owner + SLA state +
@@ -40,6 +39,11 @@
   不接企业 MDM 平台，不做自动主数据合并、人工治理队列、真实主数据同步、M5 graph traversal、
   relationship registry、DQ issue workflow 或 outbox。两轮子代理规格/质量复审均已通过；验证：
   MDM、datagen、pipeline、engine、app、agent 回归全绿，engine 仍为 Recall=1.000 / Precision=1.000。
+- **M5 Task 5 已完成并通过 controller review**：Daniel 已批准 SQLite `object_relationships` registry +
+  可解释 graph traversal；本次仅新增通用关系表、`engine.graph.explain_path`、既有对象关系投影、
+  RiskEvent 关系边与只读 AI 查询工具。不推进 M6+，不做 DQ issue、outbox、AI redaction、
+  新业务对象或新风险规则。子代理规格/质量复审均已通过；验证：graph、datagen、pipeline、engine、
+  app、agent 回归全绿，engine 仍为 Recall=1.000 / Precision=1.000。
 
 ## v0.4 进度
 

@@ -18,6 +18,7 @@ flowchart TB
     end
     subgraph L3["③ 统一 Ontology（data/ontology.sqlite）"]
         C1["19 对象 · 23 关系 · 6 状态机<br/>12 动作五要素 · 6 角色权限"]
+        C2["object_relationships registry<br/>可解释对象路径"]
     end
     subgraph L4["④ 规则引擎 engine/"]
         D1["R1-R3 物流风险 + R4-R6 费用异常<br/>（as_of 时间旅行安全）"]
@@ -63,6 +64,13 @@ flowchart LR
 
 关键设计：`RiskEvent→Task` 闭环被三个场景共用——延误、缺文件、停滞、超收、重复计费、
 计划外费用六种规则的事件流动在**同一张风险队列**，走同一套派单/提案/审批/关闭/审计。
+
+M5 关系 registry：`object_relationships` 把 Customer、Order、Shipment、Invoice、RiskEvent 等既有对象投影成通用有向边，
+`engine.graph.explain_path` 用 BFS 返回可审计路径，供 pipeline 评估与 AI 解释共用。
+它是解释图，不是 ontology linkType 的逐字镜像；能复用正式 linkType 的边沿用原名，
+为演示路径而跨中间对象或反向投影的边统一加 `derived_*` 前缀。
+为什么这样建：成熟控制塔需要能解释“从这个对象影响到哪个对象”的路径；SQLite registry 比分散 SQL/JSON list 更统一；
+但当前数据规模和学习目标不需要图数据库，避免引入新存储、查询语言和运维复杂度。
 
 ## 3. 闭环时序（以延误为例）
 

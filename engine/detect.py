@@ -13,8 +13,51 @@ import yaml
 
 from .rules import detect_risks, SEV_ORDER
 from .cost_rules import detect_cost_anomalies
+from .graph import upsert_relationship
 
 DB = "data/ontology.sqlite"
+
+
+def _relationship_id(relationship_type, *parts):
+    return "REL-" + relationship_type + "-" + "-".join(str(p) for p in parts)
+
+
+def _upsert_risk_relationships(con, risk_event_id, shipment_id, so_line_ids, invoice_line_ids):
+    upsert_relationship(
+        con,
+        _relationship_id("risk_on_shipment", risk_event_id, shipment_id),
+        "RiskEvent",
+        risk_event_id,
+        "Shipment",
+        shipment_id,
+        "risk_on_shipment",
+        1.0,
+        "engine.detect",
+    )
+    for so_line_id in sorted(so_line_ids):
+        upsert_relationship(
+            con,
+            _relationship_id("risk_affects_line", risk_event_id, so_line_id),
+            "RiskEvent",
+            risk_event_id,
+            "SalesOrderLine",
+            so_line_id,
+            "risk_affects_line",
+            1.0,
+            "engine.detect",
+        )
+    for invoice_line_id in sorted(invoice_line_ids):
+        upsert_relationship(
+            con,
+            _relationship_id("risk_affects_invoice_line", risk_event_id, invoice_line_id),
+            "RiskEvent",
+            risk_event_id,
+            "InvoiceLine",
+            invoice_line_id,
+            "risk_affects_invoice_line",
+            1.0,
+            "engine.detect",
+        )
 
 
 def apply_candidates(con, cands, as_of):
@@ -45,6 +88,7 @@ def apply_candidates(con, cands, as_of):
                         (json.dumps(aff), sev, c["affected_value_usd"], c["root_cause"],
                          inv_val, ex["risk_event_id"]))
             rid, result = ex["risk_event_id"], "merged"
+            invoice_line_ids = inv_merged
             merged += 1
         else:
             seq += 1
@@ -54,7 +98,10 @@ def apply_candidates(con, cands, as_of):
                          c["affected_so_line_ids"], c["affected_value_usd"], c["detected_at"],
                          c["root_cause"], "open", None, None, None, c_inv))
             result = "created"
+            aff = sorted(json.loads(c["affected_so_line_ids"]))
+            invoice_line_ids = sorted(json.loads(c_inv)) if c_inv else []
             created += 1
+        _upsert_risk_relationships(con, rid, c["shipment_id"], aff, invoice_line_ids)
         # 受影响行 → at_risk（A2 副作用）
         for lid in json.loads(c["affected_so_line_ids"]):
             cur.execute("""UPDATE sales_order_lines SET line_status='at_risk'

@@ -144,6 +144,13 @@ crosswalk resolver、`mdm_crosswalk` 表与 unresolved / ambiguous 计数，使�
 simulation-first；不接企业 MDM 平台，不做自动主数据合并、人工治理队列、真实主数据同步或 M5+
 graph traversal / relationship registry。M5+（关系 registry、DQ issue、outbox、AI/redaction 等）仍须另行批准。
 
+**M5 — 通用关系 registry + 可解释 graph traversal（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 5：在 SQLite 内增加 simulation-first 的 `object_relationships`
+registry，并提供只读 graph traversal helper，让风险、费用和 AI 解释可复用同一层对象关系路径。
+取舍：比分散 SQL / JSON list 更接近成熟控制塔的可解释对象图，但仍保持轻量；不上图数据库，
+不新增业务对象、风险规则、真实主数据治理、DQ issue 工作流或 outbox。M6+（DQ issue、outbox、
+AI/redaction、业务扩展等）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

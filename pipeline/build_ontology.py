@@ -14,6 +14,7 @@ import yaml
 from .event_envelope import normalize_event
 from .er import resolve, resolve_milestones
 from .mdm import CrosswalkEntry, resolve_crosswalk
+from engine.graph import upsert_relationship
 
 RAW = Path("data/raw")
 DB = Path("data/ontology.sqlite")
@@ -116,6 +117,80 @@ def summarize_mdm_crosswalk(rows):
         "unresolved": status_counts.get("unresolved", 0),
         "candidate_rows": len(rows),
     }
+
+
+def _relationship_id(relationship_type, *parts):
+    return "REL-" + relationship_type + "-" + "-".join(str(p) for p in parts)
+
+
+def build_object_relationship_rows(t, so_rows, line_rows, ship_rows, ms_rows):
+    so_customer = {r["so_id"]: r["customer_id"] for r in so_rows}
+    rows = []
+
+    def add(source_type, source_id, target_type, target_id, relationship_type, source, rel_key=None):
+        key = rel_key or (source_id, target_id)
+        rows.append({
+            "relationship_id": _relationship_id(relationship_type, *key),
+            "source_type": source_type,
+            "source_id": source_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "relationship_type": relationship_type,
+            "confidence": 1.0,
+            "source": source,
+        })
+
+    for so in sorted(so_rows, key=lambda r: r["so_id"]):
+        add("Customer", so["customer_id"], "SalesOrder", so["so_id"], "customer_places",
+            "pipeline.build_ontology:sales_orders")
+
+    for line in sorted(line_rows, key=lambda r: r["so_line_id"]):
+        add("SalesOrder", line["so_id"], "SalesOrderLine", line["so_line_id"], "so_has_line",
+            "pipeline.build_ontology:sales_order_lines")
+        add("SalesOrderLine", line["so_line_id"], "Sku", line["sku_id"], "line_for_sku",
+            "pipeline.build_ontology:sales_order_lines")
+        customer_id = so_customer[line["so_id"]]
+        add("SalesOrderLine", line["so_line_id"], "Customer", customer_id,
+            "derived_line_belongs_to_customer",
+            "pipeline.build_ontology:sales_order_lines")
+
+    for po in sorted(t["srm_purchase_orders"], key=lambda r: r["po_id"]):
+        add("Supplier", po["supplier_id"], "PurchaseOrder", po["po_id"], "derived_supplier_has_po",
+            "pipeline.build_ontology:purchase_orders")
+
+    for ship in sorted(ship_rows, key=lambda r: r["shipment_id"]):
+        for po_id in sorted(pid for pid in ship["po_ids"].split("|") if pid):
+            add("PurchaseOrder", po_id, "Shipment", ship["shipment_id"], "po_shipped_by",
+                "pipeline.build_ontology:shipments")
+
+    for milestone in sorted(ms_rows, key=lambda r: r["milestone_id"]):
+        add("Shipment", milestone["shipment_id"], "ShipmentMilestone", milestone["milestone_id"],
+            "shipment_has_milestone", "pipeline.build_ontology:shipment_milestones",
+            rel_key=(milestone["milestone_id"],))
+
+    for allocation in sorted(t["tms_allocations"], key=lambda r: r["allocation_id"]):
+        add("Shipment", allocation["shipment_id"], "SalesOrderLine", allocation["so_line_id"],
+            "derived_shipment_allocates_line", "pipeline.build_ontology:shipment_allocations",
+            rel_key=(allocation["allocation_id"],))
+
+    for container in sorted(t["tms_containers"], key=lambda r: r["container_no"]):
+        add("Shipment", container["shipment_id"], "Container", container["container_no"],
+            "shipment_has_container", "pipeline.build_ontology:containers")
+
+    for invoice in sorted(t["ap_invoices"], key=lambda r: r["invoice_id"]):
+        add("Shipment", invoice["shipment_id"], "Invoice", invoice["invoice_id"],
+            "derived_shipment_has_invoice", "pipeline.build_ontology:invoices")
+
+    for invoice_line in sorted(t["ap_invoice_lines"], key=lambda r: r["invoice_line_id"]):
+        add("Invoice", invoice_line["invoice_id"], "InvoiceLine", invoice_line["invoice_line_id"],
+            "invoice_has_line", "pipeline.build_ontology:invoice_lines")
+
+    for expected_cost in sorted(t["ap_expected_costs"], key=lambda r: r["expected_cost_id"]):
+        add("Shipment", expected_cost["shipment_id"], "ExpectedCost",
+            expected_cost["expected_cost_id"], "derived_shipment_has_expected_cost",
+            "pipeline.build_ontology:expected_costs")
+
+    return sorted(rows, key=lambda r: r["relationship_id"])
 
 
 def derive_shipment_state(sid, events, eta_initial):
@@ -447,6 +522,17 @@ def main():
     table("expected_costs", sorted(t["ap_expected_costs"], key=lambda x: x["expected_cost_id"]),
           ["expected_cost_id TEXT", "shipment_id TEXT", "charge_code TEXT", "container_no TEXT",
            "baseline_usd REAL", "source TEXT"], "expected_cost_id")
+
+    relationship_rows = build_object_relationship_rows(t, so_rows, line_rows, ship_rows, ms_rows)
+    for r in relationship_rows:
+        upsert_relationship(con, r["relationship_id"], r["source_type"], r["source_id"],
+                            r["target_type"], r["target_id"], r["relationship_type"],
+                            r["confidence"], r["source"])
+    relationship_type_counts = Counter(r["relationship_type"] for r in relationship_rows)
+    dq["object_relationships"] = {
+        "total": len(relationship_rows),
+        "by_type": dict(sorted(relationship_type_counts.items())),
+    }
 
     # 费用侧 DQ（P1 附近）：孤儿行、total 不平、柜孤儿——应全为 0
     ship_id_set = {r["shipment_id"] for r in t["tms_shipments"]}

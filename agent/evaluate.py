@@ -120,6 +120,26 @@ def main():
     denied = session._rows("""SELECT count(*) c FROM action_log
                               WHERE actor='ai-agent' AND result LIKE 'denied%'""")[0]["c"]
     check("越权尝试已写审计", denied >= 1, f"denied 记录 {denied} 条")
+    graph = session.dispatch("explain_relationship_path", {
+        "source_type": "Shipment",
+        "source_id": "SHP-2026-0099",
+        "target_type": "Customer",
+        "target_id": "CUS-0007",
+        "max_depth": 3,
+    })
+    graph_types = [edge["relationship_type"] for edge in graph.get("edges", [])]
+    check("M5 graph path 工具可返回 Shipment→Customer 路径",
+          graph_types == ["derived_shipment_allocates_line", "derived_line_belongs_to_customer"],
+          str(graph_types))
+    bad_depth = session.dispatch("explain_relationship_path", {
+        "source_type": "Shipment",
+        "source_id": "SHP-2026-0099",
+        "target_type": "Customer",
+        "target_id": "CUS-0007",
+        "max_depth": "bad",
+    })
+    check("M5 graph path 工具拒绝非法 max_depth",
+          "error" in bad_depth, str(bad_depth))
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     print("（临时副本评估，工作库未被污染）")

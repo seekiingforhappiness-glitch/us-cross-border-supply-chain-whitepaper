@@ -9,6 +9,8 @@ import sqlite3
 import sys
 from collections import Counter
 
+from engine.graph import explain_path
+
 FAILS = []
 
 
@@ -220,6 +222,68 @@ def main():
           and len(unresolved_rows) == 1
           and unresolved_rows[0]["internal_id"] == "",
           f"unresolved_keys={len(unresolved_keys)} unresolved_rows={len(unresolved_rows)}")
+
+    print("== 7. object_relationships graph registry（M5）==")
+    has_relationships = con.execute("""
+        SELECT count(*) FROM sqlite_master
+        WHERE type='table' AND name='object_relationships'""").fetchone()[0] == 1
+    check("object_relationships 表存在", has_relationships)
+    rel_rows = list(con.execute("""
+        SELECT * FROM object_relationships
+        WHERE source LIKE 'pipeline.build_ontology:%'
+    """)) if has_relationships else []
+    rel_dq = dq.get("object_relationships", {})
+    rel_counts = Counter(r["relationship_type"] for r in rel_rows)
+    check("object_relationships DQ total 与 pipeline relationship SQL count 一致",
+          rel_dq.get("total") == len(rel_rows),
+          f"dq={rel_dq.get('total')} sql={len(rel_rows)}")
+    main_types = [
+        "derived_shipment_allocates_line",
+        "derived_line_belongs_to_customer",
+        "derived_shipment_has_invoice",
+        "derived_shipment_has_expected_cost",
+    ]
+    check("主要 relationship_type 计数与 DQ 一致",
+          all(rel_dq.get("by_type", {}).get(t) == rel_counts.get(t, 0) for t in main_types),
+          f"dq={rel_dq.get('by_type', {})} sql={dict(rel_counts)}")
+    object_tables = {
+        "Customer": ("customers", "customer_id"),
+        "SalesOrder": ("sales_orders", "so_id"),
+        "SalesOrderLine": ("sales_order_lines", "so_line_id"),
+        "Sku": ("skus", "sku_id"),
+        "Supplier": ("suppliers", "supplier_id"),
+        "PurchaseOrder": ("purchase_orders", "po_id"),
+        "Shipment": ("shipments", "shipment_id"),
+        "ShipmentMilestone": ("shipment_milestones", "milestone_id"),
+        "Container": ("containers", "container_no"),
+        "Invoice": ("invoices", "invoice_id"),
+        "InvoiceLine": ("invoice_lines", "invoice_line_id"),
+        "ExpectedCost": ("expected_costs", "expected_cost_id"),
+        "RiskEvent": ("risk_events", "risk_event_id"),
+    }
+    dangling = []
+    for rel in con.execute("""SELECT relationship_id, source_type, source_id, target_type, target_id
+                              FROM object_relationships"""):
+        for type_field, id_field in (("source_type", "source_id"), ("target_type", "target_id")):
+            table_info = object_tables.get(rel[type_field])
+            if not table_info:
+                dangling.append((rel["relationship_id"], rel[type_field], rel[id_field], "unknown_type"))
+                continue
+            table, pk = table_info
+            found = con.execute(f"SELECT count(*) FROM {table} WHERE {pk}=?",
+                                (rel[id_field],)).fetchone()[0]
+            if not found:
+                dangling.append((rel["relationship_id"], rel[type_field], rel[id_field]))
+    check("object_relationships source/target 均引用已建对象",
+          not dangling, str(dangling[:10]))
+    graph_path = explain_path(con, "Shipment", "SHP-2026-0099",
+                              "Customer", "CUS-0007", max_depth=3)
+    check("Shipment -> Customer 可由 explain_path 找到",
+          [e.relationship_type for e in graph_path] == [
+              "derived_shipment_allocates_line",
+              "derived_line_belongs_to_customer",
+          ],
+          str([(e.relationship_id, e.relationship_type) for e in graph_path]))
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

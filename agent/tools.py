@@ -12,6 +12,7 @@ import sqlite3
 import yaml
 
 from app.actions import assign_task, propose_mitigation, _log
+from engine.graph import explain_path
 
 AI_ACTOR = "ai-agent"
 AI_ROLE = "ops"
@@ -62,6 +63,15 @@ TOOL_DEFS = [
                     "（对账数据非敏感，区别于 CostScenario 脱敏规则）",
      "input_schema": {"type": "object", "properties": {
          "invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
+    {"name": "explain_relationship_path",
+     "description": "只读查询 object_relationships：解释两个对象之间的有向关系路径",
+         "input_schema": {"type": "object", "properties": {
+             "source_type": {"type": "string"},
+             "source_id": {"type": "string"},
+             "target_type": {"type": "string"},
+             "target_id": {"type": "string"},
+             "max_depth": {"type": "integer", "minimum": 1, "maximum": 6}},
+             "required": ["source_type", "source_id", "target_type", "target_id", "max_depth"]}},
     {"name": "assign_task",
      "description": "为 open 状态的风险派发处置任务（A3）。这是允许 AI 执行的写动作之一",
      "input_schema": {"type": "object", "properties": {
@@ -216,6 +226,21 @@ class AgentSession:
                 "shipment": sp[0] if sp else None,
                 "note": "invoice amounts visible to AI (对账数据非敏感)"}
 
+    def explain_relationship_path(self, source_type, source_id, target_type, target_id, max_depth):
+        try:
+            depth = int(max_depth)
+        except (TypeError, ValueError):
+            return {"error": "max_depth must be an integer between 1 and 6"}
+        if depth < 1 or depth > 6:
+            return {"error": "max_depth must be between 1 and 6"}
+        path = explain_path(self.con, source_type, source_id, target_type, target_id, depth)
+        return {
+            "source": {"type": source_type, "id": source_id},
+            "target": {"type": target_type, "id": target_id},
+            "max_depth": depth,
+            "edges": [edge.__dict__ for edge in path],
+        }
+
     # ---------- 写动作（仅 proposal-only 白名单） ----------
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
         return assign_task(self.con, risk_event_id, assignee_role, priority, due_at,
@@ -244,6 +269,7 @@ class AgentSession:
                     "get_admission_context": self.get_admission_context,
                     "list_invoices": self.list_invoices,
                     "get_invoice_context": self.get_invoice_context,
+                    "explain_relationship_path": self.explain_relationship_path,
                     "assign_task": self._assign_task,
                     "propose_mitigation": self._propose_mitigation}
         if tool_name not in handlers:
