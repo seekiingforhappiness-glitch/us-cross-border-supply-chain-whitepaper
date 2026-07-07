@@ -49,6 +49,12 @@ cost:                           # v0.4 费用闭环（X2）参数
   overbilling_rate: 0.08        # 随机超收注入比例（→R4）
   duplicate_rate: 0.04          # 随机重复计费注入比例（→R5）
 
+scoring:                        # v0.6 专题一 Y1 风险评分模型（H1/H2）
+  split_ratio: 0.7              # 按 shipment_id 的 sha256 十六进制排序取前 70% 训练
+  lr: 0.5                       # 全批量梯度下降步长
+  epochs: 3000                  # 迭代轮数
+  auc_gate_early: 0.7           # 组 B（早警）测试集 AUC 硬门（H1 唯一硬门）
+
 output:
   raw_dir: "data/raw"
   truth_dir: "data/truth"       # 仅 datagen/verify 与 W4 评估可读；pipeline/engine 禁读
