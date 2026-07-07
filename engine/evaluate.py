@@ -28,7 +28,9 @@ def main():
     detected = [dict(r) for r in con.execute("SELECT * FROM risk_events")]
 
     exp_map = {(r["shipment_id"], r["rule_id"]): r for r in expected}
-    det_map = {(r["shipment_id"], r["rule_id"]): r for r in detected}
+    # R4-R6 由 evaluate_cost 评估（X3 主会话授权的范围澄清，非判定逻辑变更）
+    det_map = {(r["shipment_id"], r["rule_id"]): r for r in detected
+               if r["rule_id"] in ("R1", "R2", "R3")}
     matched = set(exp_map) & set(det_map)
     missed = set(exp_map) - set(det_map)
     false_pos = set(det_map) - set(exp_map)

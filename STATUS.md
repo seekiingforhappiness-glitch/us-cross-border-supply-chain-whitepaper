@@ -16,7 +16,9 @@
 - [x] X2：datagen/cost.py（Opus 子代理执行，Fable 评审通过）：柜 147（18 票多柜）、
       发票 296/行 824、基准 1161、gt 25 行（R4×5/R5×2/R6×18）、设计案例 CD-A..F；
       verify 第 7 段全绿；六评估器零回归；勘误 P4（G4 矩阵对齐 FOB/CIF/DDP）
-- [ ] X3：R4-R6 引擎 + 提案/门禁扩展 + 费用工作台 + 无头闭环测试
+- [x] X3（Opus 执行/Fable 评审通过）：cost_rules R4-R6（as_of 安全）+ MatchInvoice +
+      dispute/accept/rebill 提案 + G4 门禁 + 费用工作台 + evaluate_cost（R/P 1.000）
+      + test_cost_loop 全绿；八评估器零回归；断言 XB/XC 12 条关闭（累计 17/24）
 - [ ] X4：AI 费用简报（F4 归因叙事）+ 评估 +5 题 + 复盘收官
 
 ## 全程里程碑

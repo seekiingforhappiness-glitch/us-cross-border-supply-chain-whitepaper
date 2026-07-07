@@ -8,9 +8,9 @@
 import json
 import sqlite3
 
-ROLE_PERMS = {  # manual §6 权限矩阵
+ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3）
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs"},
+    "ProposeMitigation": {"ops", "cs", "finance"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }
@@ -18,6 +18,18 @@ PARAM_SCHEMAS = {
     "expedite": {"new_mode", "est_cost_usd", "expected_new_eta"},
     "reschedule": {"new_promise_date", "notify_customer"},
     "accept_delay": {"reason"},
+    # cost-manual §4 A4 提案类型扩展（费用异常处置）
+    "dispute": {"reason", "disputed_amount_usd"},
+    "accept_charge": {"reason"},
+    "rebill_customer": {"rebill_amount_usd", "incoterm_basis"},
+}
+# cost-manual §4 A5 G4 incoterm 责任门禁矩阵（与 ontology JSON incotermRebillMatrix 同步）：
+# rebill_customer 仅当受影响行费种 ⊆ 该票 incoterm 的可转嫁集合。
+REBILL_MATRIX = {
+    "DDP": set(),  # 门到门全我方，rebill 一律拒绝
+    "CIF": {"DTY", "CUS", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC"},
+    "FOB": {"OFT", "FSC", "THC", "DOC", "DTY", "CUS", "WHS", "STO", "LMD",
+            "DET", "DEM", "CHS", "ACC"},
 }
 RISK_TERMINAL = ("resolved", "escalated")
 TASK_TERMINAL = ("done", "cancelled")
@@ -130,13 +142,31 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                        (task["risk_event_id"],)).fetchone()
     affected = json.loads(risk["affected_so_line_ids"])
     params = json.loads(task["proposal_params"] or "{}")
+    act = task["proposed_action"]
+    # G4 incoterm 责任门禁（仅 rebill_customer）：审批前置校验，越界即拒绝并审计（A5/XC4）。
+    if decision == "approved" and act == "rebill_customer":
+        inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
+        codes = set()
+        if inv_lids:
+            ph = ",".join("?" * len(inv_lids))
+            codes = {r["charge_code"] for r in cur.execute(
+                f"SELECT DISTINCT charge_code FROM invoice_lines WHERE invoice_line_id IN ({ph})",
+                inv_lids)}
+        ship = cur.execute("SELECT incoterm FROM shipments WHERE shipment_id=?",
+                           (risk["shipment_id"],)).fetchone()
+        incoterm = ship["incoterm"] if ship else ""
+        allowed = REBILL_MATRIX.get(incoterm, set())
+        overflow = codes - allowed
+        if overflow:
+            return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                         f"G4 门禁未过：incoterm={incoterm} 下费种 {sorted(overflow)} 不可转嫁客户",
+                         {"decision": decision, "proposal": params})
     effects = []
     if decision == "rejected":
         cur.execute("""UPDATE tasks SET status='assigned', approval_status='rejected',
                        proposed_action=NULL, proposal_params=NULL WHERE task_id=?""", (task_id,))
         effects.append(f"Task {task_id}: →assigned（提案已驳回，参数留痕于审计）")
     elif decision == "approved":
-        act = task["proposed_action"]
         if act == "reschedule":
             for lid in affected:
                 cur.execute("""UPDATE sales_order_lines SET promised_delivery_date=?,
@@ -153,6 +183,21 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
             effects.append(f"Shipment {risk['shipment_id']} expedite_flag=1，行风险解除（D9/C2 简化）")
         elif act == "accept_delay":
             effects.append("接受延误：行保持 at_risk 至交付")
+        elif act in ("dispute", "accept_charge", "rebill_customer"):
+            # 费用提案：无行级副作用（affected_so_line_ids 空）；按 §2 状态机回写发票。
+            # dispute → 受影响行所属发票 disputed；accept_charge / rebill_customer → approved。
+            inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
+            new_inv_status = "disputed" if act == "dispute" else "approved"
+            inv_ids = []
+            if inv_lids:
+                ph = ",".join("?" * len(inv_lids))
+                inv_ids = [r["invoice_id"] for r in cur.execute(
+                    f"SELECT DISTINCT invoice_id FROM invoice_lines WHERE invoice_line_id IN ({ph})",
+                    inv_lids)]
+                for iid in inv_ids:
+                    cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
+                                (new_inv_status, iid))
+            effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
         cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
                        approved_by_role=?, action_taken=? WHERE task_id=?""",
                     (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))

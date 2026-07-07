@@ -12,6 +12,7 @@ from datetime import date
 import yaml
 
 from .rules import detect_risks, SEV_ORDER
+from .cost_rules import detect_cost_anomalies
 
 DB = "data/ontology.sqlite"
 
@@ -26,26 +27,32 @@ def apply_candidates(con, cands, as_of):
         ex = cur.execute("""SELECT * FROM risk_events WHERE shipment_id=? AND type=?
                             AND status NOT IN ('resolved','escalated')""",
                          (c["shipment_id"], c["type"])).fetchone()
+        # affected_invoice_line_ids（P1 新列）：R1-R3 无此键留 None；R4-R6 由 cost_rules 填充。
+        c_inv = c.get("affected_invoice_line_ids")
         if ex:
             aff = sorted(set(json.loads(ex["affected_so_line_ids"]))
                          | set(json.loads(c["affected_so_line_ids"])))
             sev = ex["severity"] if SEV_ORDER[ex["severity"]] >= SEV_ORDER[c["severity"]] \
                 else c["severity"]
+            # A2 合并：invoice 行取并集（既有与本候选皆可能非空）
+            ex_inv = json.loads(ex["affected_invoice_line_ids"]) if ex["affected_invoice_line_ids"] else []
+            new_inv = json.loads(c_inv) if c_inv else []
+            inv_merged = sorted(set(ex_inv) | set(new_inv))
+            inv_val = json.dumps(inv_merged) if inv_merged else None
             cur.execute("""UPDATE risk_events SET affected_so_line_ids=?, severity=?,
-                           affected_value_usd=?, root_cause=? WHERE risk_event_id=?""",
+                           affected_value_usd=?, root_cause=?, affected_invoice_line_ids=?
+                           WHERE risk_event_id=?""",
                         (json.dumps(aff), sev, c["affected_value_usd"], c["root_cause"],
-                         ex["risk_event_id"]))
+                         inv_val, ex["risk_event_id"]))
             rid, result = ex["risk_event_id"], "merged"
             merged += 1
         else:
             seq += 1
             rid = f"RSK-{seq:04d}"
-            # 末列 affected_invoice_line_ids（P1 新列）：R1-R3 为控制塔风险，留 NULL；
-            # R4-R6 的费用行归因由 X3 引擎填充（本阶段不实现）。
             cur.execute("""INSERT INTO risk_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (rid, c["type"], c["rule_id"], c["severity"], c["shipment_id"],
                          c["affected_so_line_ids"], c["affected_value_usd"], c["detected_at"],
-                         c["root_cause"], "open", None, None, None, None))
+                         c["root_cause"], "open", None, None, None, c_inv))
             result = "created"
             created += 1
         # 受影响行 → at_risk（A2 副作用）
@@ -62,6 +69,39 @@ def apply_candidates(con, cands, as_of):
     return created, merged
 
 
+def match_invoices(con, cost_cands, as_of):
+    """MatchInvoice（系统，manual §2 状态机 + §4）：对每张 issue_date ≤ as_of 且
+    status='received' 的发票执行 match。行涉及任一费用异常 → under_review，否则 → approved。
+    每张写一条 action_log（actor=engine, role=system, action=MatchInvoice, target=invoice_id）。
+    issue_date > as_of 的发票保持 received 不动（XB6 as_of 纪律）。返回状态分布 dict。"""
+    cur = con.cursor()
+    ts = f"{as_of.isoformat()}T00:00:00Z"
+    # 异常涉及的全部账单行（来自本轮费用候选，as_of 已由 cost_rules 过滤）
+    anomaly_ils = set()
+    for c in cost_cands:
+        anomaly_ils |= set(json.loads(c.get("affected_invoice_line_ids") or "[]"))
+
+    invs = cur.execute("""SELECT invoice_id, issue_date FROM invoices
+                          WHERE status='received' AND issue_date <= ?
+                          ORDER BY invoice_id""", (as_of.isoformat(),)).fetchall()
+    dist = {"approved": 0, "under_review": 0}
+    for inv in invs:
+        line_ids = [r["invoice_line_id"] for r in cur.execute(
+            "SELECT invoice_line_id FROM invoice_lines WHERE invoice_id=?", (inv["invoice_id"],))]
+        has_anom = any(lid in anomaly_ils for lid in line_ids)
+        new_status = "under_review" if has_anom else "approved"
+        cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
+                    (new_status, inv["invoice_id"]))
+        dist[new_status] += 1
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
+                       params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    ("engine", "system", "MatchInvoice", inv["invoice_id"],
+                     json.dumps({"result": new_status, "has_anomaly": has_anom}, ensure_ascii=False),
+                     as_of.isoformat(), ts, "ok"))
+    con.commit()
+    return dist
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/datagen.yaml")
@@ -72,13 +112,18 @@ def main():
 
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
+    # R1-R3 控制塔风险，随后 R4-R6 费用异常，合并走同一 apply_candidates（A2 合并语义）
     cands = detect_risks(con, as_of, cfg)
-    created, merged = apply_candidates(con, cands, as_of)
+    cost_cands = detect_cost_anomalies(con, as_of, cfg)
+    # MatchInvoice 先于 CreateRiskEvent：对账匹配暴露异常，异常再生成风险事件（§2 状态机因果）。
+    inv_dist = match_invoices(con, cost_cands, as_of)
+    created, merged = apply_candidates(con, cands + cost_cands, as_of)
     by_rule = {}
-    for c in cands:
+    for c in cands + cost_cands:
         by_rule[c["rule_id"]] = by_rule.get(c["rule_id"], 0) + 1
-    print(json.dumps({"as_of": as_of.isoformat(), "candidates": len(cands),
-                      "created": created, "merged": merged, "by_rule": by_rule},
+    print(json.dumps({"as_of": as_of.isoformat(), "candidates": len(cands) + len(cost_cands),
+                      "created": created, "merged": merged, "by_rule": by_rule,
+                      "invoice_status": inv_dist},
                      ensure_ascii=False))
 
 

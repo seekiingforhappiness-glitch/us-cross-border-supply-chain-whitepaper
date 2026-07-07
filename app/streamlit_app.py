@@ -74,8 +74,11 @@ with st.sidebar:
 if "flash" in st.session_state:  # 上一动作的成功回执
     st.success(st.session_state.pop("flash"))
 
-tab_risk, tab_task, tab_obj, tab_adm, tab_log = st.tabs(
-    ["🚨 风险队列", "🛠 任务处理台", "🔍 对象详情", "📋 准入工作台", "📜 审计日志"])
+COST_TYPES = {"rate_overbilling", "duplicate_charge", "unplanned_charge"}
+INV_STATUS_ICON = {"received": "📥", "under_review": "🔍", "approved": "✅", "disputed": "⚖️"}
+
+tab_risk, tab_task, tab_cost, tab_obj, tab_adm, tab_log = st.tabs(
+    ["🚨 风险队列", "🛠 任务处理台", "💰 费用工作台", "🔍 对象详情", "📋 准入工作台", "📜 审计日志"])
 
 # ---------- 风险队列 ----------
 with tab_risk:
@@ -107,6 +110,19 @@ with tab_risk:
                            "承诺日": x["promised_delivery_date"], "行状态": x["line_status"],
                            "客户": x["customer_name"], "客户等级": mask_tier(x["tier"], role)}
                           for x in lines], width="stretch")
+        ilids = json.loads(r["affected_invoice_line_ids"]) if r["affected_invoice_line_ids"] else []
+        if ilids:  # 费用异常：受影响账单行（行/费种/柜/金额/所属发票/vendor）
+            ph = ",".join("?" * len(ilids))
+            ilines = rows(f"""SELECT il.invoice_line_id, il.charge_code, il.container_no,
+                              il.amount_usd, iv.invoice_id, iv.vendor_name, iv.status
+                              FROM invoice_lines il JOIN invoices iv ON iv.invoice_id=il.invoice_id
+                              WHERE il.invoice_line_id IN ({ph}) ORDER BY il.invoice_line_id""", *ilids)
+            st.markdown("**受影响账单行**")
+            st.dataframe([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+                           "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
+                           "所属发票": x["invoice_id"], "vendor": x["vendor_name"],
+                           "发票状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"}
+                          for x in ilines], width="stretch")
         c1, c2 = st.columns(2)
         with c1, st.form(f"assign_{sel}"):
             st.markdown("**派发任务（A3，运营）**")
@@ -128,7 +144,8 @@ with tab_risk:
 
 # ---------- 任务处理台 ----------
 with tab_task:
-    tasks = rows("""SELECT t.*, r.severity, r.shipment_id, r.status risk_status
+    tasks = rows("""SELECT t.*, r.severity, r.shipment_id, r.status risk_status, r.type risk_type,
+                    r.affected_invoice_line_ids
                     FROM tasks t JOIN risk_events r ON r.risk_event_id=t.risk_event_id
                     ORDER BY t.task_id DESC""")
     st.dataframe([{"任务": t["task_id"], "风险": t["risk_event_id"],
@@ -146,7 +163,30 @@ with tab_task:
             if role == "cs" and "est_cost_usd" in p:
                 p["est_cost_usd"] = "🔒无权查看"
             st.markdown(f"当前提案：`{t['proposed_action']}` {p}")
-        if t["status"] == "assigned":
+        if t["status"] == "assigned" and t["risk_type"] in COST_TYPES:
+            # 费用异常处置：方案改为 dispute/accept_charge/rebill_customer（finance 可提，P3）
+            rinfo = rows("""SELECT s.incoterm, r.affected_value_usd FROM risk_events r
+                            JOIN shipments s ON s.shipment_id=r.shipment_id
+                            WHERE r.risk_event_id=?""", t["risk_event_id"])
+            incoterm = rinfo[0]["incoterm"] if rinfo else "-"
+            anom_val = float(rinfo[0]["affected_value_usd"]) if rinfo else 0.0
+            with st.form(f"cprop_{tsel}"):
+                st.markdown("**提交费用处置方案（A4，运营/财务）**")
+                st.caption(f"该票 incoterm = **{incoterm}**（rebill 是否放行由 G4 责任矩阵判定）"
+                           f"　异常金额 ${anom_val}")
+                cact = st.selectbox("方案", ["dispute", "accept_charge", "rebill_customer"])
+                creason = st.text_input("理由（dispute / accept_charge）")
+                disputed = st.number_input("争议金额 $（dispute）", 0.0, step=50.0, value=anom_val)
+                rebill_amt = st.number_input("转嫁金额 $（rebill_customer）", 0.0, step=50.0,
+                                             value=anom_val)
+                if st.form_submit_button("提交提案"):
+                    cparams = {"dispute": {"reason": creason, "disputed_amount_usd": disputed},
+                               "accept_charge": {"reason": creason},
+                               "rebill_customer": {"rebill_amount_usd": rebill_amt,
+                                                   "incoterm_basis": incoterm}}[cact]
+                    show_result(propose_mitigation(db(), tsel, cact, cparams,
+                                                   actor=actor, role=role, as_of=AS_OF))
+        elif t["status"] == "assigned":
             with st.form(f"prop_{tsel}"):
                 st.markdown("**提交处置方案（A4，运营/客户成功）**")
                 opts = ["reschedule", "accept_delay"] + ([] if role == "cs" else ["expedite"])
@@ -174,6 +214,47 @@ with tab_task:
                 if st.form_submit_button("提交审批"):
                     show_result(approve_mitigation(db(), tsel, decision, comment,
                                                    actor=actor, role=role, as_of=AS_OF))
+
+# ---------- 费用工作台（v0.4）----------
+with tab_cost:
+    st.caption("发票对账工作台：状态由 MatchInvoice（系统）与 A5 审批门径驱动，UI 只读呈现。")
+    stat_filter = st.selectbox("发票状态筛选", ["全部", "received", "under_review", "approved", "disputed"])
+    where_inv = "" if stat_filter == "全部" else f"WHERE iv.status='{stat_filter}'"
+    invs = rows(f"""SELECT iv.invoice_id, iv.vendor_name, iv.vendor_type, iv.shipment_id,
+                    iv.total_usd, iv.status, iv.issue_date
+                    FROM invoices iv {where_inv} ORDER BY iv.invoice_id""")
+    st.dataframe([{"发票": x["invoice_id"], "vendor": x["vendor_name"], "类型": x["vendor_type"],
+                   "货运": x["shipment_id"], "金额$": x["total_usd"], "开票日": x["issue_date"],
+                   "状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"} for x in invs],
+                 width="stretch", height=300)
+    if invs:
+        isel = st.selectbox("查看发票明细", [x["invoice_id"] for x in invs])
+        iv = next(x for x in invs if x["invoice_id"] == isel)
+        st.markdown(f"**{isel}**　{iv['vendor_name']}　货运 `{iv['shipment_id']}`　"
+                    f"金额 ${iv['total_usd']}　状态 `{iv['status']}`")
+        # 行明细 join expected_costs（基准列 + 差异列 + 行级异常标记）
+        ilines = rows("""SELECT il.invoice_line_id, il.charge_code, il.container_no, il.amount_usd,
+                         ec.baseline_usd
+                         FROM invoice_lines il
+                         LEFT JOIN expected_costs ec
+                           ON ec.shipment_id=? AND ec.charge_code=il.charge_code
+                           AND ec.container_no=COALESCE(il.container_no,'')
+                         WHERE il.invoice_id=? ORDER BY il.invoice_line_id""",
+                      iv["shipment_id"], isel)
+        # 行级异常：来自本票所属风险的 affected_invoice_line_ids（并集）
+        anom_ils = set()
+        for rr in rows("SELECT affected_invoice_line_ids FROM risk_events WHERE shipment_id=?",
+                       iv["shipment_id"]):
+            if rr["affected_invoice_line_ids"]:
+                anom_ils |= set(json.loads(rr["affected_invoice_line_ids"]))
+        def diff(a, b):
+            return round(a - b, 2) if b is not None else None
+        st.dataframe([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+                       "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
+                       "基准$": x["baseline_usd"] if x["baseline_usd"] is not None else "无基准",
+                       "差异$": diff(x["amount_usd"], x["baseline_usd"]),
+                       "异常": "⚠️" if x["invoice_line_id"] in anom_ils else ""}
+                      for x in ilines], width="stretch")
 
 # ---------- 对象详情 ----------
 with tab_obj:

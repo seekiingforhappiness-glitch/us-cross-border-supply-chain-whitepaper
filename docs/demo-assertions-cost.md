@@ -25,21 +25,21 @@ CD-F 同票重复 ：同一发票内同费种同柜两行 → R5
 
 ## B. 引擎（X3）
 
-- [ ] XB1. R4-R6 对 ground truth：Recall≥95%（高额漏判=0）、Precision≥85%
-- [ ] XB2. CD-A：R4 检出，affected_value=超收部分（非全额）
-- [ ] XB3. CD-B/CD-F：R5 检出跨票与同票重复，首行不计入
-- [ ] XB4. CD-C：R6 检出且 root_cause 含"延误"与天数（F4 归因）
-- [ ] XB5. CD-E：干净发票零异常、状态直接 approved（不误报）
-- [ ] XB6. as_of 安全：issue_date > as_of 的发票不参与检测
+- [x] XB1. R4-R6 对 ground truth：Recall≥95%（高额漏判=0）、Precision≥85%
+- [x] XB2. CD-A：R4 检出，affected_value=超收部分（非全额）
+- [x] XB3. CD-B/CD-F：R5 检出跨票与同票重复，首行不计入
+- [x] XB4. CD-C：R6 检出且 root_cause 含"延误"与天数（F4 归因）
+- [x] XB5. CD-E：干净发票零异常、状态直接 approved（不误报）
+- [x] XB6. as_of 安全：issue_date > as_of 的发票不参与检测
 
 ## C. 动作与闭环（X3）
 
-- [ ] XC1. 费用异常出现在**同一个风险队列**，AssignTask/审批/关闭全程复用（F1）
-- [ ] XC2. dispute 提案批准 → invoice.status=disputed；accept → approved
-- [ ] XC3. CD-C rebill（FOB, DET∈可转嫁集）→ G4 放行，审批通过
-- [ ] XC4. CD-D rebill（DDP）→ G4 拒绝且审计留痕
-- [ ] XC5. finance 可提费用提案（P3）；sales 提案被拒且审计
-- [ ] XC6. 全链审计：Match→CreateRisk→Assign→Propose(dispute)→Approve→Close 单查询可取
+- [x] XC1. 费用异常出现在**同一个风险队列**，AssignTask/审批/关闭全程复用（F1）
+- [x] XC2. dispute 提案批准 → invoice.status=disputed；accept → approved
+- [x] XC3. CD-C rebill（FOB, DET∈可转嫁集）→ G4 放行，审批通过
+- [x] XC4. CD-D rebill（DDP）→ G4 拒绝且审计留痕
+- [x] XC5. finance 可提费用提案（P3）；sales 提案被拒且审计
+- [x] XC6. 全链审计：Match→CreateRisk→Assign→Propose(dispute)→Approve→Close 单查询可取
 
 ## D. AI（X4）
 
