@@ -32,10 +32,21 @@ streamlit run app/streamlit_app.py                                  # 8. UI（�
 
 演示走查脚本见 `docs/demo-assertions.md`（24 条断言）；看不懂数据先读 `docs/data-guide.md`。
 
-AI 对话模式（可选，需 `pip install anthropic` 并设置 `ANTHROPIC_API_KEY`）：
+AI 对话模式（可选，默认 OpenAI）：
 
 ```bash
+# OpenAI API 通道（默认）：ChatGPT Plus/Pro/Business 订阅不包含 API 额度
+pip install openai
+export OPENAI_API_KEY=...
+export AGENT_PROVIDER=openai
+export AGENT_MODEL=gpt-5.5
 python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理？"
+
+# Anthropic 仍保留为可选 provider
+pip install anthropic
+export ANTHROPIC_API_KEY=...
+AGENT_PROVIDER=anthropic AGENT_MODEL=claude-sonnet-4-5 \
+  python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理？"
 ```
 
 ## 架构（六层，对应 plan §四）

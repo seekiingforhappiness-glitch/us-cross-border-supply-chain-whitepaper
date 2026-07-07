@@ -2,7 +2,7 @@
 
 scripted 模式（默认，无需 API key）：用确定性简报与工具输出作答，
 验证溯源机制、越权拒绝、编造防护——这些由架构保证，不靠模型自觉。
---llm 模式：同一评估集喂给真实 LLM（需 ANTHROPIC_API_KEY），同一标准判分。
+--llm 模式：同一评估集喂给真实 LLM（默认 OpenAI；AGENT_PROVIDER 可切换），同一标准判分。
 
 在 ontology.sqlite 的临时副本上运行，不污染工作库。
 判定逻辑受 AGENTS.md §5 保护。

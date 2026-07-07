@@ -1,10 +1,8 @@
 """W6 可插拔 LLM 层：python3 -m agent.llm_agent "你的问题"
 
-把 TOOL_DEFS 注册给任何支持 tool-use 的 LLM（默认 Anthropic API），模型只能通过
-AgentSession.dispatch 接触数据。没有 ANTHROPIC_API_KEY 时本模块不可用——
+把 TOOL_DEFS 注册给任何支持 tool-use 的 LLM，模型只能通过 AgentSession.dispatch
+接触数据。默认 provider 为 OpenAI API（AGENT_PROVIDER=openai，AGENT_MODEL=gpt-5.5）。
 确定性简报（agent/explain.py）与评估（agent/evaluate.py）不依赖本模块。
-
-模型无关性（AGENTS.md 会话交接原则的延伸）：换任何厂商的模型，只需改 _call_llm。
 """
 import json
 import os
@@ -22,7 +20,48 @@ SYSTEM_PROMPT = """你是跨境供应链控制塔的 AI 协同助手，服务物
 """
 
 
-def _call_llm(messages, tools):
+def _openai_tools(tools):
+    return [{"type": "function",
+             "name": t["name"],
+             "description": t["description"],
+             "parameters": t["input_schema"]}
+            for t in tools]
+
+
+def _run_openai(question, session, max_turns, verbose):
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise SystemExit("需要 pip install openai（可选依赖，仅 OpenAI LLM 模式）")
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise SystemExit("未设置 OPENAI_API_KEY。ChatGPT 订阅不等于 API 额度；"
+                         "确定性简报请用：python3 -m agent.evaluate")
+
+    client = OpenAI()
+    model = os.environ.get("AGENT_MODEL", "gpt-5.5")
+    messages = [{"role": "user", "content": question}]
+    tools = _openai_tools(TOOL_DEFS)
+
+    for _ in range(max_turns):
+        resp = client.responses.create(model=model, instructions=SYSTEM_PROMPT,
+                                       input=messages, tools=tools, max_output_tokens=1500)
+        tool_calls = [item for item in resp.output if item.type == "function_call"]
+        if not tool_calls:
+            return resp.output_text
+
+        for tc in tool_calls:
+            args = json.loads(tc.arguments or "{}")
+            out = session.dispatch(tc.name, args)
+            if verbose:
+                print(f"  [tool] {tc.name}({json.dumps(args, ensure_ascii=False)[:120]})")
+            messages.append({"type": "function_call", "call_id": tc.call_id,
+                             "name": tc.name, "arguments": tc.arguments})
+            messages.append({"type": "function_call_output", "call_id": tc.call_id,
+                             "output": json.dumps(out, ensure_ascii=False, default=str)})
+    return "（达到最大工具轮数）"
+
+
+def _call_anthropic(messages, tools):
     try:
         import anthropic
     except ImportError:
@@ -36,11 +75,11 @@ def _call_llm(messages, tools):
                                   messages=messages, tools=tools)
 
 
-def run_agent(question, session=None, max_turns=8, verbose=True):
+def _run_anthropic(question, session, max_turns, verbose):
     session = session or AgentSession()
     messages = [{"role": "user", "content": question}]
     for _ in range(max_turns):
-        resp = _call_llm(messages, TOOL_DEFS)
+        resp = _call_anthropic(messages, TOOL_DEFS)
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
         if not tool_uses:
             return "".join(b.text for b in resp.content if b.type == "text")
@@ -54,6 +93,16 @@ def run_agent(question, session=None, max_turns=8, verbose=True):
                             "content": json.dumps(out, ensure_ascii=False, default=str)})
         messages.append({"role": "user", "content": results})
     return "（达到最大工具轮数）"
+
+
+def run_agent(question, session=None, max_turns=8, verbose=True):
+    session = session or AgentSession()
+    provider = os.environ.get("AGENT_PROVIDER", "openai").lower()
+    if provider == "openai":
+        return _run_openai(question, session, max_turns, verbose)
+    if provider == "anthropic":
+        return _run_anthropic(question, session, max_turns, verbose)
+    raise SystemExit(f"不支持的 AGENT_PROVIDER={provider}（可选：openai / anthropic）")
 
 
 if __name__ == "__main__":
