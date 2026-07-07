@@ -4,6 +4,7 @@
 动作全部经 app/actions.py（权限、前置校验、审计在动作层，UI 只是壳）。
 字段级权限（manual §6）：ops 不可见 Customer.tier；cs 不可见 est_cost_usd。
 """
+import html
 import json
 import sqlite3
 from datetime import date, timedelta
@@ -27,7 +28,383 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
 AS_OF = CFG["window"]["as_of"]
-SEV_ICON = {"critical": "🔴", "high": "🟠", "medium": "🟡"}
+SEV_ICON = {"critical": "CRIT ", "high": "HIGH ", "medium": "MED "}
+
+
+def inject_design_system():
+    st.markdown("""
+    <style>
+    :root {
+        --bg: #061012;
+        --bg-2: #0a1518;
+        --panel: rgba(16, 28, 32, 0.88);
+        --panel-2: rgba(20, 35, 39, 0.92);
+        --line: rgba(117, 226, 235, 0.16);
+        --line-strong: rgba(117, 226, 235, 0.34);
+        --text: #e8f4f3;
+        --muted: #91a8a9;
+        --cyan: #22d7e6;
+        --amber: #ffb454;
+        --red: #ff5d66;
+        --green: #78d47d;
+    }
+
+    html, body, [data-testid="stAppViewContainer"] {
+        background:
+            linear-gradient(135deg, rgba(34, 215, 230, 0.07), transparent 34%),
+            linear-gradient(180deg, #061012 0%, #081417 52%, #05090b 100%);
+        color: var(--text);
+        letter-spacing: 0;
+    }
+
+    [data-testid="stAppViewContainer"]::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+            linear-gradient(rgba(117, 226, 235, 0.035) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(117, 226, 235, 0.028) 1px, transparent 1px);
+        background-size: 42px 42px;
+        mask-image: linear-gradient(180deg, rgba(0,0,0,0.7), transparent 78%);
+    }
+
+    .block-container {
+        max-width: 1500px;
+        padding-top: 1.05rem;
+        padding-bottom: 2.4rem;
+    }
+
+    header[data-testid="stHeader"],
+    div[data-testid="stToolbar"],
+    div[data-testid="stDecoration"],
+    #MainMenu,
+    footer {
+        display: none !important;
+        visibility: hidden !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, rgba(8, 17, 20, 0.98), rgba(5, 10, 12, 0.98));
+        border-right: 1px solid var(--line);
+    }
+
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+        gap: 0.85rem;
+    }
+
+    h1, h2, h3, p, label, span, div {
+        font-family: Inter, "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    h1, h2, h3 {
+        color: var(--text);
+        letter-spacing: 0;
+    }
+
+    .side-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.15rem 0 0.55rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .side-mark {
+        display: grid;
+        place-items: center;
+        width: 2.15rem;
+        height: 2.15rem;
+        border: 1px solid var(--line-strong);
+        color: var(--cyan);
+        background: rgba(34, 215, 230, 0.08);
+        font-size: 0.82rem;
+        font-weight: 760;
+    }
+
+    .side-title {
+        font-size: 1.05rem;
+        font-weight: 760;
+        line-height: 1.2;
+    }
+
+    .side-subtitle {
+        color: var(--muted);
+        font-size: 0.72rem;
+        margin-top: 0.14rem;
+    }
+
+    .command-header {
+        display: flex;
+        align-items: stretch;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1.05rem 1.15rem;
+        margin-bottom: 0.85rem;
+        border: 1px solid var(--line);
+        background:
+            linear-gradient(135deg, rgba(34, 215, 230, 0.14), transparent 38%),
+            linear-gradient(180deg, rgba(18, 31, 36, 0.92), rgba(10, 18, 21, 0.92));
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .command-title h1 {
+        margin: 0;
+        font-size: clamp(1.55rem, 2.5vw, 2.2rem);
+        line-height: 1.08;
+        font-weight: 780;
+    }
+
+    .command-title p {
+        margin: 0.42rem 0 0;
+        color: var(--muted);
+        font-size: 0.86rem;
+    }
+
+    .command-clock {
+        min-width: 13rem;
+        padding: 0.75rem 0.9rem;
+        border-left: 2px solid var(--cyan);
+        background: rgba(5, 12, 15, 0.6);
+        color: var(--muted);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+    }
+
+    .command-clock strong {
+        display: block;
+        color: var(--text);
+        font-size: 1.1rem;
+        margin-top: 0.25rem;
+    }
+
+    .signal-strip {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 0.75rem;
+        margin-bottom: 1rem;
+    }
+
+    .signal-card {
+        border: 1px solid var(--line);
+        background: rgba(12, 24, 28, 0.82);
+        padding: 0.78rem 0.85rem;
+        min-height: 5.25rem;
+    }
+
+    .signal-card span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.72rem;
+        margin-bottom: 0.3rem;
+    }
+
+    .signal-card strong {
+        display: block;
+        color: var(--text);
+        font-size: 1.7rem;
+        line-height: 1;
+        font-weight: 780;
+    }
+
+    .signal-card em {
+        display: block;
+        margin-top: 0.38rem;
+        color: var(--cyan);
+        font-size: 0.72rem;
+        font-style: normal;
+    }
+
+    div[data-testid="stMetric"] {
+        border: 1px solid var(--line);
+        background: rgba(13, 24, 27, 0.78);
+        padding: 0.78rem 0.85rem;
+    }
+
+    div[data-testid="stMetric"] label,
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+        color: var(--muted) !important;
+    }
+
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        color: var(--text);
+        font-weight: 760;
+    }
+
+    div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+        gap: 0;
+        padding: 0.25rem;
+        border: 1px solid var(--line);
+        background: rgba(6, 14, 17, 0.78);
+    }
+
+    div[data-testid="stTabs"] [data-baseweb="tab"] {
+        min-height: 2.55rem;
+        padding: 0.25rem 1rem;
+        color: var(--muted);
+        border-bottom: 2px solid transparent;
+        font-weight: 650;
+    }
+
+    div[data-testid="stTabs"] [aria-selected="true"] {
+        color: var(--cyan);
+        border-bottom-color: var(--cyan);
+        background: rgba(34, 215, 230, 0.08);
+    }
+
+    div[data-testid="stDataFrame"],
+    div[data-testid="stForm"],
+    div[data-testid="stExpander"] {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+    }
+
+    .dark-table-wrap {
+        overflow: auto;
+        border: 1px solid var(--line-strong);
+        background: rgba(10, 22, 25, 0.92);
+        box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+    }
+
+    .dark-table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 720px;
+        font-size: 0.82rem;
+    }
+
+    .dark-table th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #101f23;
+        color: rgba(232, 244, 243, 0.72);
+        text-align: left;
+        font-weight: 660;
+        padding: 0.64rem 0.7rem;
+        border-bottom: 1px solid var(--line-strong);
+        white-space: nowrap;
+    }
+
+    .dark-table td {
+        color: rgba(232, 244, 243, 0.9);
+        padding: 0.58rem 0.7rem;
+        border-bottom: 1px solid rgba(117, 226, 235, 0.11);
+        border-right: 1px solid rgba(117, 226, 235, 0.08);
+        white-space: nowrap;
+    }
+
+    .dark-table tr:nth-child(even) td {
+        background: rgba(255, 255, 255, 0.018);
+    }
+
+    .dark-table tr:hover td {
+        background: rgba(34, 215, 230, 0.08);
+    }
+
+    .dark-table-empty {
+        border: 1px solid var(--line);
+        background: rgba(10, 22, 25, 0.72);
+        padding: 0.8rem;
+        color: var(--muted);
+        font-size: 0.82rem;
+    }
+
+    div[data-testid="stDataFrameResizable"] {
+        border: 1px solid var(--line-strong) !important;
+        border-radius: 4px !important;
+        background: rgba(10, 22, 25, 0.96) !important;
+    }
+
+    .stDataFrameGlideDataEditor {
+        --gdg-accent-color: #22d7e6 !important;
+        --gdg-accent-fg: #041012 !important;
+        --gdg-accent-light: rgba(34, 215, 230, 0.16) !important;
+        --gdg-text-dark: #e8f4f3 !important;
+        --gdg-text-medium: rgba(232, 244, 243, 0.82) !important;
+        --gdg-text-light: rgba(232, 244, 243, 0.48) !important;
+        --gdg-text-header: rgba(232, 244, 243, 0.72) !important;
+        --gdg-bg-cell: #0a1518 !important;
+        --gdg-bg-cell-medium: #0d1b1f !important;
+        --gdg-bg-header: #101f23 !important;
+        --gdg-bg-header-hovered: rgba(34, 215, 230, 0.1) !important;
+        --gdg-bg-header-has-focus: rgba(34, 215, 230, 0.14) !important;
+        --gdg-bg-group-header: #101f23 !important;
+        --gdg-bg-group-header-hovered: rgba(34, 215, 230, 0.1) !important;
+        --gdg-bg-bubble: rgba(34, 215, 230, 0.1) !important;
+        --gdg-bg-bubble-selected: rgba(34, 215, 230, 0.18) !important;
+        --gdg-border-color: rgba(117, 226, 235, 0.16) !important;
+        --gdg-horizontal-border-color: rgba(117, 226, 235, 0.12) !important;
+        --gdg-link-color: #22d7e6 !important;
+        --gdg-resize-indicator-color: #22d7e6 !important;
+        --gdg-header-font-style: 600 13px !important;
+        --gdg-base-font-style: 400 13px !important;
+        --gdg-font-family: Inter, "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+    }
+
+    div[data-testid="stForm"] {
+        padding: 0.75rem 0.85rem;
+    }
+
+    .stMarkdown strong {
+        color: var(--text);
+    }
+
+    .stMarkdown p,
+    [data-testid="stCaptionContainer"] {
+        color: var(--muted);
+    }
+
+    div[data-baseweb="select"] > div,
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stNumberInput"] input,
+    div[data-testid="stDateInput"] input,
+    textarea {
+        background: rgba(8, 18, 21, 0.98) !important;
+        border-color: var(--line-strong) !important;
+        color: var(--text) !important;
+        border-radius: 4px !important;
+    }
+
+    .stButton > button,
+    button[kind="primaryFormSubmit"],
+    button[kind="secondaryFormSubmit"],
+    button[data-testid="baseButton-secondary"] {
+        border-radius: 4px !important;
+        border: 1px solid rgba(34, 215, 230, 0.55) !important;
+        background: linear-gradient(180deg, rgba(34, 215, 230, 0.22), rgba(34, 215, 230, 0.08)) !important;
+        color: var(--text) !important;
+        font-weight: 720 !important;
+        min-height: 2.35rem;
+    }
+
+    .stButton > button:hover,
+    button[kind="primaryFormSubmit"]:hover,
+    button[kind="secondaryFormSubmit"]:hover {
+        border-color: var(--cyan) !important;
+        box-shadow: 0 0 0 2px rgba(34, 215, 230, 0.12) !important;
+    }
+
+    hr {
+        border-color: var(--line);
+    }
+
+    @media (max-width: 900px) {
+        .command-header {
+            flex-direction: column;
+        }
+        .command-clock {
+            min-width: 0;
+            border-left: 0;
+            border-top: 2px solid var(--cyan);
+        }
+        .signal-strip {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 
 def db():
@@ -39,6 +416,29 @@ def db():
 def rows(sql, *a):
     with db() as con:
         return [dict(r) for r in con.execute(sql, a)]
+
+
+def render_table(records, height=None):
+    """Render Streamlit-friendly dark HTML tables so the app theme stays coherent."""
+    if not records:
+        st.markdown('<div class="dark-table-empty">无数据</div>', unsafe_allow_html=True)
+        return
+    columns = list(records[0].keys())
+    style = f' style="max-height:{height}px"' if height else ""
+    header = "".join(f"<th>{html.escape(str(c))}</th>" for c in columns)
+    body = []
+    for rec in records:
+        cells = "".join("<td>{}</td>".format(html.escape("" if rec.get(c) is None else str(rec.get(c))))
+                        for c in columns)
+        body.append(f"<tr>{cells}</tr>")
+    st.markdown(f"""
+    <div class="dark-table-wrap"{style}>
+        <table class="dark-table">
+            <thead><tr>{header}</tr></thead>
+            <tbody>{''.join(body)}</tbody>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def mask_tier(tier, role):
@@ -58,9 +458,52 @@ def show_result(r):
         st.error(r["error"])
 
 
+def render_command_header(role, n_open):
+    critical = rows("""SELECT count(*) c FROM risk_events
+                       WHERE severity='critical' AND status NOT IN ('resolved','escalated')""")[0]["c"]
+    pending_tasks = rows("""SELECT count(*) c FROM tasks
+                            WHERE status IN ('assigned','in_progress')
+                               OR approval_status='pending'""")[0]["c"]
+    review_invoices = rows("SELECT count(*) c FROM invoices WHERE status='under_review'")[0]["c"]
+    priced_cases = rows("SELECT count(*) c FROM admission_cases WHERE status='priced'")[0]["c"]
+    role_label = {"ops": "物流运营", "cs": "客户成功", "manager": "经理", "sales": "销售",
+                  "compliance": "合规", "finance": "财务"}[role]
+    st.markdown(f"""
+    <div class="command-header">
+        <div class="command-title">
+            <h1>跨境供应链控制塔</h1>
+            <p>角色 {role_label} / 数据域 Global / 对象层 ontology.sqlite</p>
+        </div>
+        <div class="command-clock">
+            simulation clock
+            <strong>{AS_OF}</strong>
+            <span>UTC+8 operational snapshot</span>
+        </div>
+    </div>
+    <div class="signal-strip">
+        <div class="signal-card"><span>未结风险</span><strong>{n_open}</strong><em>open risk events</em></div>
+        <div class="signal-card"><span>Critical 队列</span><strong>{critical}</strong><em>priority lane</em></div>
+        <div class="signal-card"><span>待处理任务</span><strong>{pending_tasks}</strong><em>human actions</em></div>
+        <div class="signal-card"><span>对账复核</span><strong>{review_invoices}</strong><em>invoices under review</em></div>
+        <div class="signal-card"><span>准入待批</span><strong>{priced_cases}</strong><em>priced cases</em></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+inject_design_system()
+
+
 # ---------- 侧边栏 ----------
 with st.sidebar:
-    st.title("🚢 控制塔")
+    st.markdown("""
+    <div class="side-brand">
+        <div class="side-mark">CT</div>
+        <div>
+            <div class="side-title">控制塔</div>
+            <div class="side-subtitle">Ontology OS</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     role = st.selectbox("当前角色", ["ops", "cs", "manager", "sales", "compliance", "finance"],
                         format_func=lambda r: {"ops": "物流运营 ops", "cs": "客户成功 cs",
                                                "manager": "经理 manager", "sales": "销售 sales",
@@ -75,10 +518,12 @@ if "flash" in st.session_state:  # 上一动作的成功回执
     st.success(st.session_state.pop("flash"))
 
 COST_TYPES = {"rate_overbilling", "duplicate_charge", "unplanned_charge"}
-INV_STATUS_ICON = {"received": "📥", "under_review": "🔍", "approved": "✅", "disputed": "⚖️"}
+INV_STATUS_ICON = {"received": "IN ", "under_review": "REV ", "approved": "OK ", "disputed": "DSP "}
+
+render_command_header(role, n_open)
 
 tab_risk, tab_task, tab_cost, tab_obj, tab_adm, tab_log = st.tabs(
-    ["🚨 风险队列", "🛠 任务处理台", "💰 费用工作台", "🔍 对象详情", "📋 准入工作台", "📜 审计日志"])
+    ["风险队列", "任务处理台", "费用工作台", "对象详情", "准入工作台", "审计日志"])
 
 # ---------- 风险队列 ----------
 with tab_risk:
@@ -88,13 +533,14 @@ with tab_risk:
                      FROM risk_events r JOIN shipments s ON s.shipment_id=r.shipment_id {where}
                      ORDER BY CASE r.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
                               r.affected_value_usd DESC""")
-    st.dataframe([{"风险": r["risk_event_id"], "级别": f"{SEV_ICON[r['severity']]}{r['severity']}",
+    render_table([{"风险": r["risk_event_id"], "级别": f"{SEV_ICON[r['severity']]}{r['severity']}",
                    "类型": r["type"], "规则": r["rule_id"], "货运": r["shipment_id"],
                    "延误(天)": r["delay_days"], "影响金额($)": r["affected_value_usd"],
                    "状态": r["status"]} for r in risks],
-                 width="stretch", height=260)
+                 height=260)
     if risks:
-        sel = st.selectbox("查看风险", [r["risk_event_id"] for r in risks])
+        demo_idx = next((i for i, r in enumerate(risks) if r["shipment_id"] == "SHP-2026-0099"), 0)
+        sel = st.selectbox("查看风险", [r["risk_event_id"] for r in risks], index=demo_idx)
         r = next(x for x in risks if x["risk_event_id"] == sel)
         st.markdown(f"**根因**：{r['root_cause']}　|　ETA {r['eta_initial']} → **{r['eta_current']}**")
         lids = json.loads(r["affected_so_line_ids"])
@@ -106,10 +552,10 @@ with tab_risk:
                              JOIN customers c ON c.customer_id=so.customer_id
                              JOIN skus k ON k.sku_id=l.sku_id WHERE l.so_line_id IN ({ph})""", *lids)
             st.markdown("**受影响订单行**")
-            st.dataframe([{"行": x["so_line_id"], "商品": x["sku_name"], "数量": x["qty"],
+            render_table([{"行": x["so_line_id"], "商品": x["sku_name"], "数量": x["qty"],
                            "承诺日": x["promised_delivery_date"], "行状态": x["line_status"],
                            "客户": x["customer_name"], "客户等级": mask_tier(x["tier"], role)}
-                          for x in lines], width="stretch")
+                          for x in lines])
         ilids = json.loads(r["affected_invoice_line_ids"]) if r["affected_invoice_line_ids"] else []
         if ilids:  # 费用异常：受影响账单行（行/费种/柜/金额/所属发票/vendor）
             ph = ",".join("?" * len(ilids))
@@ -118,11 +564,11 @@ with tab_risk:
                               FROM invoice_lines il JOIN invoices iv ON iv.invoice_id=il.invoice_id
                               WHERE il.invoice_line_id IN ({ph}) ORDER BY il.invoice_line_id""", *ilids)
             st.markdown("**受影响账单行**")
-            st.dataframe([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+            render_table([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
                            "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
                            "所属发票": x["invoice_id"], "vendor": x["vendor_name"],
                            "发票状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"}
-                          for x in ilines], width="stretch")
+                          for x in ilines])
         c1, c2 = st.columns(2)
         with c1, st.form(f"assign_{sel}"):
             st.markdown("**派发任务（A3，运营）**")
@@ -148,12 +594,12 @@ with tab_task:
                     r.affected_invoice_line_ids
                     FROM tasks t JOIN risk_events r ON r.risk_event_id=t.risk_event_id
                     ORDER BY t.task_id DESC""")
-    st.dataframe([{"任务": t["task_id"], "风险": t["risk_event_id"],
+    render_table([{"任务": t["task_id"], "风险": t["risk_event_id"],
                    "级别": f"{SEV_ICON[t['severity']]}{t['severity']}", "货运": t["shipment_id"],
                    "负责角色": t["assignee_role"], "优先级": t["priority"], "处理截止": t["due_at"],
                    "提案": t["proposed_action"] or "-", "审批": t["approval_status"] or "-",
                    "状态": t["status"]} for t in tasks],
-                 width="stretch", height=230)
+                 height=230)
     if tasks:
         tsel = st.selectbox("处理任务", [t["task_id"] for t in tasks])
         t = next(x for x in tasks if x["task_id"] == tsel)
@@ -223,10 +669,10 @@ with tab_cost:
     invs = rows(f"""SELECT iv.invoice_id, iv.vendor_name, iv.vendor_type, iv.shipment_id,
                     iv.total_usd, iv.status, iv.issue_date
                     FROM invoices iv {where_inv} ORDER BY iv.invoice_id""")
-    st.dataframe([{"发票": x["invoice_id"], "vendor": x["vendor_name"], "类型": x["vendor_type"],
+    render_table([{"发票": x["invoice_id"], "vendor": x["vendor_name"], "类型": x["vendor_type"],
                    "货运": x["shipment_id"], "金额$": x["total_usd"], "开票日": x["issue_date"],
                    "状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"} for x in invs],
-                 width="stretch", height=300)
+                 height=300)
     if invs:
         isel = st.selectbox("查看发票明细", [x["invoice_id"] for x in invs])
         iv = next(x for x in invs if x["invoice_id"] == isel)
@@ -249,12 +695,12 @@ with tab_cost:
                 anom_ils |= set(json.loads(rr["affected_invoice_line_ids"]))
         def diff(a, b):
             return round(a - b, 2) if b is not None else None
-        st.dataframe([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+        render_table([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
                        "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
                        "基准$": x["baseline_usd"] if x["baseline_usd"] is not None else "无基准",
                        "差异$": diff(x["amount_usd"], x["baseline_usd"]),
-                       "异常": "⚠️" if x["invoice_line_id"] in anom_ils else ""}
-                      for x in ilines], width="stretch")
+                       "异常": "!" if x["invoice_line_id"] in anom_ils else ""}
+                      for x in ilines])
 
 # ---------- 对象详情 ----------
 with tab_obj:
@@ -277,11 +723,10 @@ with tab_obj:
     ms = rows("""SELECT event_time, event_type, event_classifier, event_locode, new_eta,
                  source_system, is_duplicate FROM shipment_milestones
                  WHERE shipment_id=? ORDER BY event_time""", ssel)
-    st.dataframe([{"时间": m["event_time"], "事件": m["event_type"],
+    render_table([{"时间": m["event_time"], "事件": m["event_type"],
                    "ACT/EST": m["event_classifier"], "地点": m["event_locode"],
                    "新ETA": m["new_eta"] or "-", "来源": m["source_system"],
-                   "重复?": "⚠️" if m["is_duplicate"] else ""} for m in ms],
-                 width="stretch")
+                   "重复?": "!" if m["is_duplicate"] else ""} for m in ms])
     st.markdown("**影响链：船上货 → 订单行 → 客户**")
     chain = rows("""SELECT a.so_line_id, a.allocated_qty, l.promised_delivery_date, l.line_status,
                     l.reschedule_count, so.so_id, c.customer_name, c.tier, k.sku_name
@@ -290,11 +735,10 @@ with tab_obj:
                     JOIN sales_orders so ON so.so_id=l.so_id
                     JOIN customers c ON c.customer_id=so.customer_id
                     JOIN skus k ON k.sku_id=l.sku_id WHERE a.shipment_id=?""", ssel)
-    st.dataframe([{"订单行": x["so_line_id"], "商品": x["sku_name"], "分配量": x["allocated_qty"],
+    render_table([{"订单行": x["so_line_id"], "商品": x["sku_name"], "分配量": x["allocated_qty"],
                    "承诺日": x["promised_delivery_date"], "改期次数": x["reschedule_count"],
                    "行状态": x["line_status"], "订单": x["so_id"], "客户": x["customer_name"],
-                   "客户等级": mask_tier(x["tier"], role)} for x in chain],
-                 width="stretch")
+                   "客户等级": mask_tier(x["tier"], role)} for x in chain])
 
 # ---------- 准入工作台（v0.3）----------
 with tab_adm:
@@ -318,10 +762,10 @@ with tab_adm:
     acs = rows("""SELECT a.*, c.customer_name, k.sku_name FROM admission_cases a
                   JOIN customers c ON c.customer_id=a.customer_id
                   JOIN skus k ON k.sku_id=a.sku_id ORDER BY a.admission_case_id""")
-    st.dataframe([{"案件": a["admission_case_id"], "标题": a["case_title"],
+    render_table([{"案件": a["admission_case_id"], "标题": a["case_title"],
                    "术语": a["incoterm_candidate"], "风险": a["risk_level"] or "-",
                    "状态": a["status"], "决定": a["decision"] or "-"} for a in acs],
-                 width="stretch", height=240)
+                 height=240)
     asel = st.selectbox("查看案件", [a["admission_case_id"] for a in acs],
                         index=[a["admission_case_id"] for a in acs].index("AC-2026-0031"))
     ac = next(x for x in acs if x["admission_case_id"] == asel)
@@ -330,29 +774,29 @@ with tab_adm:
     finds = rows("SELECT * FROM compliance_findings WHERE admission_case_id=?", asel)
     if finds:
         st.markdown("**合规发现**")
-        st.dataframe([{"发现": f["compliance_finding_id"], "类型": f["finding_type"],
+        render_table([{"发现": f["compliance_finding_id"], "类型": f["finding_type"],
                        "级别": f["severity"], "HTS": f["hts_candidate"] or "-",
                        "机构": f["pga_agency"], "证据": f["evidence_status"],
-                       "建议": f["recommendation"]} for f in finds], width="stretch")
+                       "建议": f["recommendation"]} for f in finds])
     aplans = rows("SELECT * FROM logistics_plans WHERE admission_case_id=?", asel)
     if aplans:
         st.markdown("**物流方案**")
-        st.dataframe([{"方案": p["logistics_plan_id"], "路线": p["route_type"],
+        render_table([{"方案": p["logistics_plan_id"], "路线": p["route_type"],
                        "术语": p["incoterm"],
                        "港口": f"{p['origin_port_locode']}→{p['destination_port_locode']}",
                        "时效(天)": p["estimated_transit_days"], "SLA风险": p["sla_risk"]}
-                      for p in aplans], width="stretch")
+                      for p in aplans])
         pids = [p["logistics_plan_id"] for p in aplans]
         scens = rows(f"""SELECT * FROM cost_scenarios
                          WHERE logistics_plan_id IN ({','.join('?' * len(pids))})""", *pids)
         if scens:
             st.markdown("**成本情景（成本与毛利仅财务/经理可见）**")
-            st.dataframe([{"情景": s["cost_scenario_id"], "方案": s["logistics_plan_id"],
+            render_table([{"情景": s["cost_scenario_id"], "方案": s["logistics_plan_id"],
                            "类型": s["scenario_type"],
                            "报价$": mask_cost(s["quote_price_usd"], role),
                            "毛利$": mask_cost(s["gross_margin_usd"], role),
                            "毛利率": mask_cost(s["gross_margin_rate"], role)}
-                          for s in scens], width="stretch")
+                          for s in scens])
     c1, c2 = st.columns(2)
     with c1:
         if role == "compliance":
@@ -436,7 +880,7 @@ with tab_log:
     only_bad = st.checkbox("只看被拒/越权", value=False)
     logs = rows(f"""SELECT * FROM action_log {"WHERE result != 'ok' AND result NOT IN ('created','merged')" if only_bad else ""}
                     ORDER BY log_id DESC LIMIT 200""")
-    st.dataframe([{"#": x["log_id"], "操作人": x["actor"], "角色": x["role"], "动作": x["action"],
+    render_table([{"#": x["log_id"], "操作人": x["actor"], "角色": x["role"], "动作": x["action"],
                    "对象": x["target_object_id"], "参数": x["params_json"],
                    "as_of": x["as_of_date"], "结果": x["result"]} for x in logs],
-                 width="stretch", height=420)
+                 height=420)

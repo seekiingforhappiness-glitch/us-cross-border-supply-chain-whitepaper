@@ -11,11 +11,13 @@
 - **v0.6 收尾双专题已完成**（final-plan-v0.6，H1-H3）：
   Y1 风险评分模型——手写 LR 零依赖，早警 AUC 0.969；静态 0.75 诊断为快照删失混杂（H1 勘误）
   Y2 单证号级 ER——milestone 源表去内部 ID，解析率 98.3%，typo 停车表 1:1，known-loss 如实计数
-- **候选清单已清空。项目全部完成**：十评估器全绿，~5,700 行，27 次提交。
+- **候选清单已清空。项目全部完成**：十评估器全绿，~6,000 行，28 次提交。
   剩余事项全部只有人能做：LLM 实测（配 OpenAI API key）、录屏、git push、通读并个人化 article.md。
 - **OpenAI LLM provider 已配置**：`agent.llm_agent` 默认 `AGENT_PROVIDER=openai` +
   `AGENT_MODEL=gpt-5.5`；Anthropic provider 保留。注意：ChatGPT/Codex 订阅通道只适用于
   Codex 客户端，项目 Python 代码真实 LLM 调用仍需 `OPENAI_API_KEY`。
+- **控制塔 UI 视觉升级已完成**：基于生成概念图重做 Streamlit 设计系统，暗色未来感命令中心、
+  真实 KPI 顶栏、深色表格、侧栏/Tab/Form/Button 统一样式；动作逻辑与数据层未改。
 
 ## v0.4 进度
 
