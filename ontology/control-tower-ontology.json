@@ -245,10 +245,13 @@
         {"name": "proposal_params", "type": "json", "required": false, "sensitiveSubfields": ["est_cost_usd"]},
         {"name": "approval_status", "type": "enum", "required": false, "values": ["pending", "approved", "rejected"]},
         {"name": "approved_by_role", "type": "enum", "required": false},
+        {"name": "assigned_by_actor_id", "type": "string", "required": false, "description": "M1 demo named actor; simulation-only, no real identity directory."},
+        {"name": "proposal_actor_id", "type": "string", "required": false, "description": "M1 maker-checker proposer actor id."},
+        {"name": "proposal_actor_role", "type": "enum", "required": false, "values": ["ops", "cs", "finance"]},
         {"name": "action_taken", "type": "string", "required": false},
         {"name": "status", "type": "enum", "required": true, "values": ["assigned", "in_progress", "done", "cancelled"]}
       ],
-      "dataQualityRules": ["max 1 non-terminal task per risk_event (D9/C4)"]
+      "dataQualityRules": ["max 1 non-terminal task per risk_event (D9/C4)", "M1: if proposal_actor_id is known, approver actor_id must differ from proposer actor_id"]
     },
     {
       "type": "AdmissionCase",
@@ -529,8 +532,8 @@
     {
       "id": "A4",
       "name": "ProposeMitigation",
-      "signature": "propose_mitigation(task_id, proposed_action, proposal_params, actor_role) -> Result",
-      "executors": ["ops", "cs"],
+      "signature": "propose_mitigation(task_id, proposed_action, proposal_params, actor, role) -> Result",
+      "executors": ["ops", "cs", "finance"],
       "paramsSchema": {
         "expedite": {"new_mode": "air", "est_cost_usd": "number", "expected_new_eta": "date"},
         "reschedule": {"new_promise_date": "date", "notify_customer": true},
@@ -541,16 +544,16 @@
       },
       "executorsNote": "v0.4 (P3): executors extended to ops/cs/finance; cost proposals belong to finance.",
       "preconditions": ["Task=assigned", "params match schema", "reschedule: new_promise_date > current promise"],
-      "successEffects": ["Task -> in_progress, approval_status=pending", "RiskEvent -> mitigating"],
+      "successEffects": ["Task -> in_progress, approval_status=pending", "proposal_actor_id/proposal_actor_role recorded", "RiskEvent -> mitigating"],
       "failureHandling": ["schema validation fails -> reject, task unchanged"],
-      "audit": ["proposed_action", "params (est_cost_usd masked per sensitiveFieldRules)"]
+      "audit": ["proposed_action", "params (est_cost_usd masked per sensitiveFieldRules)", "actor", "role"]
     },
     {
       "id": "A5",
       "name": "ApproveMitigation",
-      "signature": "approve_mitigation(task_id, decision, comment, actor_role='manager') -> Result",
+      "signature": "approve_mitigation(task_id, decision, comment, actor, role='manager') -> Result",
       "executors": ["manager"],
-      "preconditions": ["approval_status=pending"],
+      "preconditions": ["approval_status=pending", "M1 maker-checker: if proposer actor is known, approver actor_id must differ from proposal_actor_id"],
       "successEffects": {
         "approved.reschedule": ["affected SOLines: promised_delivery_date=new_promise_date, reschedule_count+1, at_risk->allocated"],
         "approved.expedite": ["shipment.expedite_flag=true", "affected SOLines: at_risk->allocated (D9/C2 simplification)"],
@@ -558,8 +561,8 @@
         "approved.common": ["Task->done", "action_taken summary"],
         "rejected": ["Task->assigned", "approval_status=rejected", "proposal retained in action_log"]
       },
-      "failureHandling": ["non-manager caller -> reject AND audit the violation attempt"],
-      "audit": ["decision", "comment", "approved_by_role"]
+      "failureHandling": ["non-manager caller -> reject AND audit the violation attempt", "same proposer/approver actor -> reject AND audit maker-checker violation"],
+      "audit": ["decision", "comment", "approved_by_role", "approver actor; maker-checker failures include proposer/approver actor ids"]
     },
     {
       "id": "A6",
@@ -614,9 +617,10 @@
       "preconditions": [
         "G1: no unresolved critical finding (severity=critical AND evidence_status!=verified)",
         "G2: if approved plan is DDP then customer.ior_capability=has_ior",
-        "G3: case=priced AND referenced plan/scenario exist"],
+        "G3: case=priced AND referenced plan/scenario exist",
+        "M1 maker-checker: if selected quote proposer can be inferred, approver actor_id must differ from proposer actor_id"],
       "successEffects": ["case -> approved | quote_with_conditions", "decision/reason/conditions written", "if approve: sku_status candidate->active (E1/N5)"],
-      "failureHandling": ["any gate -> reject AND audit (admission-side guardrail assertions)"],
+      "failureHandling": ["any gate -> reject AND audit (admission-side guardrail assertions)", "same inferred proposer/approver actor -> reject AND audit maker-checker violation"],
       "audit": ["decision", "decision_reason", "gates_checked"]
     },
     {

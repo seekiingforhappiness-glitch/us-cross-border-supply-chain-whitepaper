@@ -186,10 +186,14 @@ DQ 规则：同一 (shipment, type) 不允许并存两个非终态事件（A2 �
 | proposal_params | json | 否 | **est_cost_usd 仅 ops/manager 可见** | 按动作类型定 schema，见 A4 |
 | approval_status | enum | 否 | 否 | pending / approved / rejected |
 | approved_by_role | enum | 否 | 否 | |
+| assigned_by_actor_id | string | 否 | 否 | M1 demo 实名 actor；仅演示身份语义，不接真实身份目录 |
+| proposal_actor_id | string | 否 | 否 | M1 maker-checker 使用；记录提交提案的人 |
+| proposal_actor_role | enum | 否 | 否 | ops / cs / finance |
 | action_taken | string | 否 | 否 | 最终执行的动作摘要 |
 | status | enum | 是 | 否 | 见状态机 §3.4 |
 
-DQ 规则：一个 RiskEvent 同时最多 1 个非终态 Task（见 §8 选择 C4）。
+DQ 规则：一个 RiskEvent 同时最多 1 个非终态 Task（见 §8 选择 C4）。如记录了
+`proposal_actor_id`，A5 审批人不得与提案人为同一 `actor_id`（M1 demo maker-checker）。
 
 ## 3. 状态机
 
@@ -300,35 +304,36 @@ assign_task(risk_event_id, assignee_role, priority, due_at, actor) -> Result
 ### A4 ProposeMitigation
 
 ```python
-propose_mitigation(task_id, proposed_action, proposal_params, actor_role) -> Result
+propose_mitigation(task_id, proposed_action, proposal_params, actor, actor_role) -> Result
 # params schema:
 #   expedite:     {new_mode:"air", est_cost_usd, expected_new_eta}
 #   reschedule:   {new_promise_date, notify_customer:true}
 #   accept_delay: {reason}
 ```
 
-- 执行者：运营、客户成功
+- 执行者：运营、客户成功、财务（费用异常提案由 finance 执行）
 - 前置：Task=assigned；params 满足对应 schema；reschedule 的 new_promise_date > 原承诺日
-- 成功：Task → in_progress，approval_status=pending；RiskEvent → mitigating
+- 成功：Task → in_progress，approval_status=pending；记录 `proposal_actor_id` /
+  `proposal_actor_role`；RiskEvent → mitigating
 - 失败：schema 校验不过 → 拒绝，Task 状态不变
 - 审计：proposed_action、params（est_cost_usd 按 §6 脱敏规则记录）
 
 ### A5 ApproveMitigation
 
 ```python
-approve_mitigation(task_id, decision, comment, actor_role="manager") -> Result
+approve_mitigation(task_id, decision, comment, actor, actor_role="manager") -> Result
 ```
 
 - 执行者：**仅经理**
-- 前置：approval_status=pending
+- 前置：approval_status=pending；如能取得 proposer actor，审批人 actor 不得与 proposer actor 相同（M1 maker-checker）
 - 成功（approved）按动作类型回写：
   - reschedule：受影响 SOLine 的 promised_delivery_date=new_promise_date，reschedule_count+1，at_risk→allocated
   - expedite：shipment.expedite_flag=true，受影响 SOLine at_risk→allocated（简化，见 §8 选择 C2）
   - accept_delay：行保持 at_risk，等待交付；风险可以 accepted_delay 关闭
   - 共同：Task→done，action_taken 写摘要
 - 成功（rejected）：Task→assigned，approval_status=rejected，提案参数保留在 action_log
-- 失败：非 manager 调用 → 拒绝并审计越权尝试
-- 审计：decision、comment、approved_by_role
+- 失败：非 manager 调用或 maker-checker 违规 → 拒绝并审计越权尝试
+- 审计：decision、comment、approved_by_role；maker-checker 拒绝时记录 proposer/approver actor
 
 ### A6 CloseRiskEvent
 

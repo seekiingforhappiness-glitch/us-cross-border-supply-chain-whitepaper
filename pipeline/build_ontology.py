@@ -320,7 +320,8 @@ def main():
     cur.execute("""CREATE TABLE tasks (task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT,
         assignee_role TEXT, priority TEXT, due_at TEXT, proposed_action TEXT,
         proposal_params TEXT, approval_status TEXT, approved_by_role TEXT,
-        action_taken TEXT, status TEXT)""")
+        action_taken TEXT, status TEXT, assigned_by_actor_id TEXT,
+        proposal_actor_id TEXT, proposal_actor_role TEXT)""")
     cur.execute("""CREATE TABLE action_log (log_id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT,
         role TEXT, action TEXT, target_object_id TEXT, params_json TEXT, as_of_date TEXT,
         timestamp TEXT, result TEXT)""")

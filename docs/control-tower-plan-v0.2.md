@@ -115,6 +115,13 @@ C1：SOLine 改期后回迁 allocated 继续监控（rescheduled 不作终态）
 **D11 — 真实字段 Tier 1 采纳（2026-07-06，人已批准）。**
 依据 DCSA / EDI X12 315 / 可视化平台调研（docs/field-gap-analysis.md）：Shipment 增 booking_no、mbl_no、carrier_scac、container_type、gross_weight_kg、volume_cbm、incoterm、双港 UN/LOCODE；Milestone 增 event_classifier（ACT/EST）、event_locode；SalesOrderLine 增 unit_price_usd（成交价），影响金额口径由目录价改为成交价。结构性差距 G1（真实世界无全局 shipment_id）记录在案，v0.2 保留源表内部键，单证号级 ER 留 v0.3 决定。
 
+**M1 — 动作边界升级为 demo 实名 actor + maker-checker（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 1：在不接真实 SSO/权限系统的前提下，为动作层引入 demo
+`actor_id` 语义、稳定 ID helper、事务 helper、以及 proposer 与 approver 不得为同一人的
+maker-checker 校验。取舍：比原 role-only 更接近成熟控制塔治理，但仍保持 simulation-first；
+真实身份目录、行级授权、审计不可篡改存储不在本决策范围内。M2+（MDM、关系 registry、
+DQ issue、outbox、业务扩展）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

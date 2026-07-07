@@ -8,6 +8,11 @@
 import json
 import sqlite3
 
+try:
+    from .action_context import Actor, ApprovalPolicy, next_stable_id, transaction
+except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上下文
+    from action_context import Actor, ApprovalPolicy, next_stable_id, transaction
+
 ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3）
     "AssignTask": {"ops", "system"},
     "ProposeMitigation": {"ops", "cs", "finance"},
@@ -33,6 +38,11 @@ REBILL_MATRIX = {
 }
 RISK_TERMINAL = ("resolved", "escalated")
 TASK_TERMINAL = ("done", "cancelled")
+TASK_GOVERNANCE_COLUMNS = {
+    "assigned_by_actor_id": "TEXT",
+    "proposal_actor_id": "TEXT",
+    "proposal_actor_role": "TEXT",
+}
 
 
 def _log(cur, actor, role, action, target, params, as_of, result):
@@ -44,6 +54,53 @@ def _log(cur, actor, role, action, target, params, as_of, result):
 
 def _res(ok, object_id=None, side_effects=None, error=None):
     return {"ok": ok, "object_id": object_id, "side_effects": side_effects or [], "error": error}
+
+
+def _table_columns(cur, table):
+    return {row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_task_governance_columns(con, cur):
+    cols = _table_columns(cur, "tasks")
+    changed = False
+    for name, ddl in TASK_GOVERNANCE_COLUMNS.items():
+        if name not in cols:
+            cur.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
+            changed = True
+    if changed:
+        con.commit()
+
+
+def _next_task_id(cur, risk_event_id, as_of):
+    base = next_stable_id("TSK", f"{risk_event_id}|assign|{as_of}")
+    candidate = base
+    suffix = 2
+    while cur.execute("SELECT 1 FROM tasks WHERE task_id=?", (candidate,)).fetchone():
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _proposal_actor_from_log(cur, task_id):
+    row = cur.execute("""SELECT actor, role FROM action_log
+                         WHERE action='ProposeMitigation' AND target_object_id=?
+                         AND result='ok'
+                         ORDER BY log_id DESC LIMIT 1""", (task_id,)).fetchone()
+    if row:
+        return row["actor"], row["role"]
+    return None, None
+
+
+def can_approve_actor(proposer_actor_id, approver_actor_id, approver_role):
+    """M1 maker-checker helper; legacy unknown proposer keeps role-only behavior."""
+    if approver_role not in ROLE_PERMS["ApproveMitigation"]:
+        return False, "manager_role_required"
+    if not proposer_actor_id:
+        return True, "legacy_role_only"
+    return ApprovalPolicy(policy_version="M1").can_approve(
+        proposer=Actor(actor_id=proposer_actor_id, role="proposer"),
+        approver=Actor(actor_id=approver_actor_id, role=approver_role),
+    )
 
 
 def _denied(con, action, target, actor, role, as_of):
@@ -77,17 +134,22 @@ def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role
     if risk["status"] != "open":
         return _fail(con, "AssignTask", risk_event_id, actor, role, as_of,
                      f"风险状态为 {risk['status']}，仅 open 可派单")
-    seq = cur.execute("SELECT count(*) FROM tasks").fetchone()[0] + 1
-    tid = f"TSK-{seq:04d}"
-    cur.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
-                 assignee_role, priority, due_at, None, None, None, None, None, "assigned"))
-    cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
-                (risk_event_id,))
-    _log(cur, actor, role, "AssignTask", tid,
-         {"risk_event_id": risk_event_id, "assignee_role": assignee_role, "priority": priority},
-         as_of, "ok")
-    con.commit()
+    _ensure_task_governance_columns(con, cur)
+    tid = _next_task_id(cur, risk_event_id, as_of)
+    with transaction(con):
+        cur.execute("""INSERT INTO tasks
+                       (task_id, risk_event_id, title, assignee_role, priority, due_at,
+                        proposed_action, proposal_params, approval_status, approved_by_role,
+                        action_taken, status, assigned_by_actor_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
+                     assignee_role, priority, due_at, None, None, None, None, None, "assigned",
+                     actor))
+        cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
+                    (risk_event_id,))
+        _log(cur, actor, role, "AssignTask", tid,
+             {"risk_event_id": risk_event_id, "assignee_role": assignee_role, "priority": priority},
+             as_of, "ok")
     return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged", f"Task {tid} assigned"])
 
 
@@ -117,14 +179,17 @@ def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, ro
         if rows["m"] and proposal_params["new_promise_date"] <= rows["m"]:
             return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
                          f"新承诺日必须晚于受影响行当前承诺日（最晚 {rows['m']}）", proposal_params)
-    cur.execute("""UPDATE tasks SET status='in_progress', proposed_action=?, proposal_params=?,
-                   approval_status='pending' WHERE task_id=?""",
-                (proposed_action, json.dumps(proposal_params, ensure_ascii=False), task_id))
-    cur.execute("UPDATE risk_events SET status='mitigating' WHERE risk_event_id=?",
-                (task["risk_event_id"],))
-    _log(cur, actor, role, "ProposeMitigation", task_id,
-         {"proposed_action": proposed_action, **proposal_params}, as_of, "ok")
-    con.commit()
+    _ensure_task_governance_columns(con, cur)
+    with transaction(con):
+        cur.execute("""UPDATE tasks SET status='in_progress', proposed_action=?, proposal_params=?,
+                       approval_status='pending', proposal_actor_id=?, proposal_actor_role=?
+                       WHERE task_id=?""",
+                    (proposed_action, json.dumps(proposal_params, ensure_ascii=False),
+                     actor, role, task_id))
+        cur.execute("UPDATE risk_events SET status='mitigating' WHERE risk_event_id=?",
+                    (task["risk_event_id"],))
+        _log(cur, actor, role, "ProposeMitigation", task_id,
+             {"proposed_action": proposed_action, **proposal_params}, as_of, "ok")
     return _res(True, task_id, [f"Task {task_id}: assigned→in_progress (pending approval)",
                                 f"RiskEvent {task['risk_event_id']}: →mitigating"])
 
@@ -138,6 +203,16 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
     if not task or task["approval_status"] != "pending":
         return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
                      "任务不存在或无待审批提案")
+    _ensure_task_governance_columns(con, cur)
+    task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    proposer_actor_id = task["proposal_actor_id"]
+    if not proposer_actor_id:
+        proposer_actor_id, _ = _proposal_actor_from_log(cur, task_id)
+    allowed, reason = can_approve_actor(proposer_actor_id, actor, role)
+    if not allowed:
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     f"M1 审批边界拒绝：{reason}",
+                     {"proposer_actor_id": proposer_actor_id, "approver_actor_id": actor})
     risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
                        (task["risk_event_id"],)).fetchone()
     affected = json.loads(risk["affected_so_line_ids"])
@@ -162,52 +237,52 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                          f"G4 门禁未过：incoterm={incoterm} 下费种 {sorted(overflow)} 不可转嫁客户",
                          {"decision": decision, "proposal": params})
     effects = []
-    if decision == "rejected":
-        cur.execute("""UPDATE tasks SET status='assigned', approval_status='rejected',
-                       proposed_action=NULL, proposal_params=NULL WHERE task_id=?""", (task_id,))
-        effects.append(f"Task {task_id}: →assigned（提案已驳回，参数留痕于审计）")
-    elif decision == "approved":
-        if act == "reschedule":
-            for lid in affected:
-                cur.execute("""UPDATE sales_order_lines SET promised_delivery_date=?,
-                               reschedule_count=reschedule_count+1, line_status='allocated'
-                               WHERE so_line_id=? AND line_status='at_risk'""",
-                            (params["new_promise_date"], lid))
-            effects.append(f"受影响行承诺日→{params['new_promise_date']}，at_risk→allocated")
-        elif act == "expedite":
-            cur.execute("UPDATE shipments SET expedite_flag=1 WHERE shipment_id=?",
-                        (risk["shipment_id"],))
-            for lid in affected:
-                cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
-                               WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
-            effects.append(f"Shipment {risk['shipment_id']} expedite_flag=1，行风险解除（D9/C2 简化）")
-        elif act == "accept_delay":
-            effects.append("接受延误：行保持 at_risk 至交付")
-        elif act in ("dispute", "accept_charge", "rebill_customer"):
-            # 费用提案：无行级副作用（affected_so_line_ids 空）；按 §2 状态机回写发票。
-            # dispute → 受影响行所属发票 disputed；accept_charge / rebill_customer → approved。
-            inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
-            new_inv_status = "disputed" if act == "dispute" else "approved"
-            inv_ids = []
-            if inv_lids:
-                ph = ",".join("?" * len(inv_lids))
-                inv_ids = [r["invoice_id"] for r in cur.execute(
-                    f"SELECT DISTINCT invoice_id FROM invoice_lines WHERE invoice_line_id IN ({ph})",
-                    inv_lids)]
-                for iid in inv_ids:
-                    cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
-                                (new_inv_status, iid))
-            effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
-        cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
-                       approved_by_role=?, action_taken=? WHERE task_id=?""",
-                    (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
-        effects.append(f"Task {task_id}: →done")
-    else:
+    if decision not in ("approved", "rejected"):
         return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
                      "decision 必须是 approved/rejected")
-    _log(cur, actor, role, "ApproveMitigation", task_id,
-         {"decision": decision, "comment": comment, "proposal": params}, as_of, "ok")
-    con.commit()
+    with transaction(con):
+        if decision == "rejected":
+            cur.execute("""UPDATE tasks SET status='assigned', approval_status='rejected',
+                           proposed_action=NULL, proposal_params=NULL WHERE task_id=?""", (task_id,))
+            effects.append(f"Task {task_id}: →assigned（提案已驳回，参数留痕于审计）")
+        elif decision == "approved":
+            if act == "reschedule":
+                for lid in affected:
+                    cur.execute("""UPDATE sales_order_lines SET promised_delivery_date=?,
+                                   reschedule_count=reschedule_count+1, line_status='allocated'
+                                   WHERE so_line_id=? AND line_status='at_risk'""",
+                                (params["new_promise_date"], lid))
+                effects.append(f"受影响行承诺日→{params['new_promise_date']}，at_risk→allocated")
+            elif act == "expedite":
+                cur.execute("UPDATE shipments SET expedite_flag=1 WHERE shipment_id=?",
+                            (risk["shipment_id"],))
+                for lid in affected:
+                    cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
+                                   WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
+                effects.append(f"Shipment {risk['shipment_id']} expedite_flag=1，行风险解除（D9/C2 简化）")
+            elif act == "accept_delay":
+                effects.append("接受延误：行保持 at_risk 至交付")
+            elif act in ("dispute", "accept_charge", "rebill_customer"):
+                # 费用提案：无行级副作用（affected_so_line_ids 空）；按 §2 状态机回写发票。
+                # dispute → 受影响行所属发票 disputed；accept_charge / rebill_customer → approved。
+                inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
+                new_inv_status = "disputed" if act == "dispute" else "approved"
+                inv_ids = []
+                if inv_lids:
+                    ph = ",".join("?" * len(inv_lids))
+                    inv_ids = [r["invoice_id"] for r in cur.execute(
+                        f"SELECT DISTINCT invoice_id FROM invoice_lines WHERE invoice_line_id IN ({ph})",
+                        inv_lids)]
+                    for iid in inv_ids:
+                        cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
+                                    (new_inv_status, iid))
+                effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
+            cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
+                           approved_by_role=?, action_taken=? WHERE task_id=?""",
+                        (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
+            effects.append(f"Task {task_id}: →done")
+        _log(cur, actor, role, "ApproveMitigation", task_id,
+             {"decision": decision, "comment": comment, "proposal": params}, as_of, "ok")
     return _res(True, task_id, effects)
 
 

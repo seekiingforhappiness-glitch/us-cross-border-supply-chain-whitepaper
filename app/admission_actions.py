@@ -7,9 +7,11 @@
 import json
 
 try:
-    from .actions import _log, _res
+    from .action_context import transaction
+    from .actions import _log, _res, can_approve_actor
 except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上下文
-    from actions import _log, _res
+    from action_context import transaction
+    from actions import _log, _res, can_approve_actor
 
 ADM_PERMS = {
     "CreateAdmissionCase": {"sales"},
@@ -55,6 +57,21 @@ def _next_id(cur, table, prefix, width, id_col):
 
 def _case(cur, aid):
     return cur.execute("SELECT * FROM admission_cases WHERE admission_case_id=?", (aid,)).fetchone()
+
+
+def _quote_proposer_for_scenario(cur, admission_case_id, cost_scenario_id):
+    rows = cur.execute("""SELECT actor, params_json FROM action_log
+                         WHERE target_object_id=? AND action='CalculateCostScenario'
+                         AND result='ok'
+                         ORDER BY log_id DESC""", (admission_case_id,)).fetchall()
+    for row in rows:
+        try:
+            params = json.loads(row["params_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if params.get("cost_scenario_id") == cost_scenario_id:
+            return row["actor"]
+    return None
 
 
 def create_admission_case(con, customer_id, sku_id, request_type, incoterm_candidate,
@@ -232,6 +249,13 @@ def approve_quote_decision(con, admission_case_id, approved_logistics_plan_id,
     if case["status"] != "priced" or not plan or not scen:
         return _fail(con, "ApproveQuoteDecision", admission_case_id, actor, role, as_of,
                      f"G3 门禁未过：案件须 priced（当前 {case['status']}）且方案/情景引用有效")
+    proposer_actor_id = _quote_proposer_for_scenario(cur, admission_case_id,
+                                                     approved_cost_scenario_id)
+    allowed, reason = can_approve_actor(proposer_actor_id, actor, role)
+    if not allowed:
+        return _fail(con, "ApproveQuoteDecision", admission_case_id, actor, role, as_of,
+                     f"M1 审批边界拒绝：{reason}",
+                     {"proposer_actor_id": proposer_actor_id, "approver_actor_id": actor})
     # G1 critical 合规
     crit = cur.execute("""SELECT compliance_finding_id FROM compliance_findings
                           WHERE admission_case_id=? AND severity='critical'
@@ -247,18 +271,19 @@ def approve_quote_decision(con, admission_case_id, approved_logistics_plan_id,
             return _fail(con, "ApproveQuoteDecision", admission_case_id, actor, role, as_of,
                          f"G2 门禁未过：DDP 方案但客户 IOR={cust['ior_capability']}")
     status = "approved" if decision == "approve" else "quote_with_conditions"
-    cur.execute("""UPDATE admission_cases SET status=?, decision=?, decision_reason=?, conditions=?
-                   WHERE admission_case_id=?""",
-                (status, decision, decision_reason, conditions or "", admission_case_id))
     effects = [f"case→{status}"]
-    if decision == "approve":  # E1/N5 生命周期咬合
-        cur.execute("UPDATE skus SET sku_status='active' WHERE sku_id=? AND sku_status='candidate'",
-                    (case["sku_id"],))
-        effects.append(f"Sku {case['sku_id']}: candidate→active")
-    _log(cur, actor, role, "ApproveQuoteDecision", admission_case_id,
-         {"decision": decision, "plan": approved_logistics_plan_id,
-          "scenario": approved_cost_scenario_id, "gates_checked": ["G1", "G2", "G3"]}, as_of, "ok")
-    con.commit()
+    with transaction(con):
+        cur.execute("""UPDATE admission_cases SET status=?, decision=?, decision_reason=?, conditions=?
+                       WHERE admission_case_id=?""",
+                    (status, decision, decision_reason, conditions or "", admission_case_id))
+        if decision == "approve":  # E1/N5 生命周期咬合
+            cur.execute("UPDATE skus SET sku_status='active' WHERE sku_id=? AND sku_status='candidate'",
+                        (case["sku_id"],))
+            effects.append(f"Sku {case['sku_id']}: candidate→active")
+        _log(cur, actor, role, "ApproveQuoteDecision", admission_case_id,
+             {"decision": decision, "plan": approved_logistics_plan_id,
+              "scenario": approved_cost_scenario_id, "gates_checked": ["G1", "G2", "G3"]},
+             as_of, "ok")
     return _res(True, admission_case_id, effects)
 
 

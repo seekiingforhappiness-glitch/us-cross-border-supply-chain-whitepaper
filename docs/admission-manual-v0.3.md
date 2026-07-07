@@ -182,6 +182,7 @@ approve_quote_decision(con, admission_case_id, approved_logistics_plan_id,
 - **G1**：存在 severity=critical 且 evidence_status≠verified 的 CF → 禁批
 - **G2**：批准的 LP 为 DDP 且 customer.ior_capability≠has_ior → 禁批
 - **G3**：AC≠priced 或指定 CS 不存在 → 禁批
+- **M1 maker-checker**：若可从所选成本情景推断报价提案 actor，则审批 actor 不得与其相同
 成功：AC→approved / quote_with_conditions，写 decision/reason/conditions；
 若 approve 则 sku_status: candidate→active（E1 生命周期咬合）。
 失败：任一门禁触发 → 拒绝并审计（这是准入侧的 B4/B5 断言）。

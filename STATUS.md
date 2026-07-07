@@ -22,6 +22,8 @@
   `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
   `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；下一步是 Daniel
   裁决 M 系列决策门槛（MA 系列只是验收检查），未获批前不改 ontology/规则/业务范围。
+- **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
+  已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
 
 ## v0.4 进度
 
