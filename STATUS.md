@@ -11,7 +11,7 @@
 ## v0.4 进度
 
 - [x] X1：cost-manual-v0.4（Container/Invoice/InvoiceLine/ExpectedCost + Invoice 状态机 +
-      R4-R6 + 提案类型扩展 + G4 门禁，勘误 P1-P3）；统一 JSON 0.4.0（19 对象/24 关系/6 状态机）；
+      R4-R6 + 提案类型扩展 + G4 门禁，勘误 P1-P3）；统一 JSON 0.4.0（19 对象/23 关系/6 状态机）；
       断言清单 24 条（XA/XB/XC/XD/XE）
 - [ ] X2：费率卡 + 发票数据 + Container 迁移（独立随机流 seed+2000）+ pipeline + 零回归
 - [ ] X3：R4-R6 引擎 + 提案/门禁扩展 + 费用工作台 + 无头闭环测试
