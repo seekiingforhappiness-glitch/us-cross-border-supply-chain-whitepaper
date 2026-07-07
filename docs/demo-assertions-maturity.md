@@ -1,6 +1,6 @@
 # Maturity Upgrade Demo Assertions
 
-当前状态：M1、M2 已完成；M3+ 未获批准前不改 ontology、规则或业务范围。
+当前状态：M1、M2 已完成；M3 已批准并实现，待 controller review；M4+ 未获批准前不改 ontology、规则或业务范围。
 
 这些条目是验收检查，不是批准决策。批准决策仍以 Daniel 批准后的 plan/control-tower decision log 为准。
 
@@ -12,7 +12,7 @@
 
 ## W8 Source Truth
 
-- [ ] MA4. 一个 milestone 源事件可追溯到 canonical event envelope 和 raw payload 摘要。
+- [x] MA4. 一个 milestone 源事件可追溯到 canonical event envelope 和 raw payload 摘要。
 - [ ] MA5. booking_no/container_no 解析失败时进入 DQ issue，而不是被静默丢弃。
 - [ ] MA6. 对同一 source message 重放不会创建重复 RiskEvent 或重复 writeback。
 

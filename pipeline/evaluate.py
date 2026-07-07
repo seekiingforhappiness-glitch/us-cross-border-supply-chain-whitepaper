@@ -36,6 +36,15 @@ def _load_known_loss(noise_path, ship_by_booking):
     return known
 
 
+def _payload_has_fields(raw_json, required):
+    try:
+        payload = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return False
+    return all(k in payload for k in required) and all(
+        payload.get(k) for k in ("event_type", "event_time"))
+
+
 def main():
     con = sqlite3.connect("data/ontology.sqlite")
     con.row_factory = sqlite3.Row
@@ -136,6 +145,38 @@ def main():
     print(f"  解析统计：总 {mr['total']} 解析 {mr['resolved']}"
           f"（booking {mr['resolved_by_booking']} / container {mr['resolved_by_container']}）"
           f" unresolved {mr['unresolved']} 按因 {mr['unresolved_by_reason']}")
+
+    print("== 5. 源事件 envelope 与 lineage（M3）==")
+    source_count = con.execute("SELECT count(*) FROM source_events").fetchone()[0]
+    check("source_events 行数等于 raw tms_milestones 行数",
+          source_count == mr["total"], f"source_events={source_count} raw_milestones={mr['total']}")
+    lineage_counts = con.execute("""
+        SELECT count(*) resolved_rows,
+               count(e.idempotency_key) lineage_rows
+        FROM shipment_milestones m
+        LEFT JOIN source_events e ON e.source_record_id = m.milestone_id
+    """).fetchone()
+    missing = list(con.execute("""
+        SELECT m.milestone_id
+        FROM shipment_milestones m
+        LEFT JOIN source_events e ON e.source_record_id = m.milestone_id
+        WHERE e.idempotency_key IS NULL
+        ORDER BY m.milestone_id
+        LIMIT 5"""))
+    check("所有 resolved milestone 可追溯到 source_events",
+          lineage_counts["resolved_rows"] == lineage_counts["lineage_rows"],
+          f"missing={[r['milestone_id'] for r in missing]}")
+    payloads = list(con.execute("""
+        SELECT payload_json FROM source_events ORDER BY idempotency_key"""))
+    check("source payload 保留 booking/container/event 原始字段",
+          bool(payloads) and all(_payload_has_fields(
+                                    r["payload_json"],
+                                    ("booking_no", "container_no", "event_type", "event_time"))
+                                for r in payloads))
+    idem = con.execute("""
+        SELECT count(*) total, count(distinct idempotency_key) distinct_keys
+        FROM source_events""").fetchone()
+    check("source_events idempotency_key 唯一", idem["total"] == idem["distinct_keys"])
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

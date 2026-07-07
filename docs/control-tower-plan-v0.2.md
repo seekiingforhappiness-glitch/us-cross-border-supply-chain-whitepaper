@@ -130,6 +130,13 @@ DQ issue、outbox、业务扩展）仍须另行批准。
 simulation-first；真实人力排班、提醒发送、自动升级动作、工作量均衡不在本决策范围内。
 M3+（事件信封/血缘、MDM、关系 registry、DQ issue、outbox、业务扩展）仍须另行批准。
 
+**M3 — 源事件信封与 raw lineage 作为模拟 source-truth 基础设施（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 3：为 milestone 源事件增加 canonical event envelope、
+`source_events` 停靠表、`idempotency_key` 与 raw payload 摘要，使对象层事件可追溯回模拟源消息。
+取舍：比直接消费 cleaned milestone 更接近成熟控制塔的数据血缘，但仍保持 simulation-first；
+不接真实 carrier/API，不新增真实生产集成、DQ issue 工作流、outbox、MDM crosswalk 或业务规则。
+M4+（MDM、关系 registry、DQ issue、outbox、AI/redaction 等）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

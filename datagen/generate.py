@@ -121,10 +121,18 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                 "origin_port", "origin_port_locode", "destination_port",
                                 "destination_port_locode", "destination_warehouse", "etd",
                                 "eta_initial", "status", "missing_docs", "supplier_names", "po_ids"])
+    milestone_rows = []
+    for r in sorted(noise["ms_rows"], key=lambda r: (r["ingested_at"], r["milestone_id"])):
+        row = dict(r)
+        row["source_record_id"] = row["milestone_id"]
+        row["message_id"] = f"MSG-{row['milestone_id']}"
+        milestone_rows.append(row)
     # H3：源表删除 shipment_id，改带 booking_no + container_no（真实 EDI 形态）。
+    # M3：补充 source_record_id/message_id，作为模拟 source-truth envelope 的稳定身份。
     # 列白名单不含 shipment_id → DictWriter(extrasaction="ignore") 自动不输出。
-    tables["tms_milestones"] = (sorted(noise["ms_rows"], key=lambda r: (r["ingested_at"], r["milestone_id"])),
-                                ["milestone_id", "booking_no", "container_no", "event_type",
+    tables["tms_milestones"] = (milestone_rows,
+                                ["milestone_id", "source_record_id", "message_id",
+                                 "booking_no", "container_no", "event_type",
                                  "event_classifier", "event_time", "event_locode", "new_eta",
                                  "source_system", "ingested_at"])
     tables["tms_allocations"] = (sorted(w["allocations"], key=lambda a: a["allocation_id"]),

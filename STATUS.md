@@ -28,6 +28,11 @@
   escalation_level；实现范围限定为 `Task` 字段、demo roster 分配、显式 `as_of_date` SLA 计算和
   UI 呈现，不接真实用户目录/通知/排班系统，不推进 M3+。子代理规格/质量复审均已通过；验证：
   work_queue、action_governance、全链路 datagen/pipeline/engine/app/agent 回归全绿。
+- **M3 Task 3 已完成并通过 controller review**：Daniel 已批准 canonical event envelope + raw lineage
+  的模拟 source-truth 基础设施；实现范围限定为 raw `tms_milestones` source identity、
+  `source_events` 表、idempotency key 与 pipeline lineage 评估。不接真实 carrier/API、不做 DQ issue
+  workflow、outbox、MDM crosswalk 或业务规则。子代理规格/质量复审均已通过；验证：event_envelope、
+  datagen、pipeline、engine、app、agent 回归全绿，engine 仍为 Recall=1.000 / Precision=1.000。
 
 ## v0.4 进度
 

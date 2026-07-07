@@ -61,6 +61,11 @@ Tier 1 加入单证号后，v0.2 仍保留源表中的 shipment_id（解释：�
 W3 不强制"从单证号重建对象"。完全删掉 shipment_id、逼管道做单证号级 entity resolution 是更真实
 但更重的练习，留给 v0.3 决定。理由：W3 已有 supplier 名称 ER 练习，一周内两个 ER 课题会超时（plan §13）。
 
+后续 H3 已把 `tms_milestones` 源表从内部 `shipment_id` 升级为 `booking_no/container_no` 单证号级 ER。
+M3 在此基础上再补一层 source-truth 基础设施：每条 raw milestone 带 `source_record_id` 与 `message_id`，
+管道先归一为 canonical event envelope 并写入 `source_events`，再进入 ER 与对象层重建。这个层次只模拟
+source identity、idempotency 与 raw payload lineage，不引入真实 carrier API、真实生产集成或新的业务规则。
+
 ## 4. 采纳后的影响面
 
 datagen 六模块加字段与生成逻辑（约半天）；ontology manual §2.7/§2.8 与 JSON 的 Shipment/

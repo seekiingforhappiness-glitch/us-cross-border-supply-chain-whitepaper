@@ -9,6 +9,7 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+from .event_envelope import normalize_event
 from .er import resolve, resolve_milestones
 
 RAW = Path("data/raw")
@@ -50,6 +51,40 @@ def derive_shipment_state(sid, events, eta_initial):
     return state
 
 
+def source_event_rows(raw_milestones):
+    rows = []
+    for raw in sorted(raw_milestones, key=lambda r: (r["ingested_at"], r["milestone_id"])):
+        event = normalize_event(raw, transform_version="M3")
+        rows.append({
+            "idempotency_key": event.idempotency_key,
+            "source_system": event.source_system,
+            "source_record_id": event.source_record_id,
+            "message_id": event.message_id,
+            "event_type": event.event_type,
+            "event_classifier": event.event_classifier,
+            "event_time": event.event_time,
+            "booking_no": event.booking_no or "",
+            "container_no": event.container_no or "",
+            "transform_version": event.transform_version,
+            "payload_json": event.payload_json,
+            "ingested_at": str(raw.get("ingested_at") or ""),
+        })
+    return rows
+
+
+def _ensure_unique_source_events(rows):
+    seen = set()
+    duplicates = []
+    for row in rows:
+        key = row["idempotency_key"]
+        if key in seen:
+            duplicates.append(key)
+        seen.add(key)
+    if duplicates:
+        sample = ",".join(sorted(set(duplicates))[:5])
+        raise ValueError(f"duplicate_idempotency_key:{sample}")
+
+
 def main():
     t = {n: load(n) for n in ["srm_suppliers", "catalog_skus", "oms_customers", "oms_sales_orders",
                               "oms_so_lines", "srm_purchase_orders", "tms_shipments",
@@ -59,6 +94,8 @@ def main():
                               "tms_containers", "rate_card", "ap_invoices",
                               "ap_invoice_lines", "ap_expected_costs"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
+    source_events = source_event_rows(t["tms_milestones"])
+    _ensure_unique_source_events(source_events)
 
     # 0) 单证号级 ER（v0.6-H3）：源表 milestone 无内部 shipment_id，先按 booking_no/
     #    container_no 反查 shipment，补回 shipment_id；解析失败进 unresolved 停车表。
@@ -189,6 +226,36 @@ def main():
         cur.execute(f"CREATE TABLE {name} ({', '.join(cols)}, PRIMARY KEY ({pk}))")
         cur.executemany(f"INSERT INTO {name} VALUES ({','.join('?' * len(cols))})",
                         [[r.get(c.split()[0], "") for c in cols] for r in rows])
+
+    cur.execute("""create table if not exists source_events (
+        idempotency_key text primary key,
+        source_system text not null,
+        source_record_id text not null,
+        message_id text not null,
+        event_type text not null,
+        event_classifier text not null,
+        event_time text not null,
+        booking_no text,
+        container_no text,
+        transform_version text not null,
+        payload_json text not null,
+        ingested_at text not null
+    )""")
+    cur.executemany("""insert into source_events (
+        idempotency_key, source_system, source_record_id, message_id, event_type,
+        event_classifier, event_time, booking_no, container_no, transform_version,
+        payload_json, ingested_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", [
+        [r["idempotency_key"], r["source_system"], r["source_record_id"], r["message_id"],
+         r["event_type"], r["event_classifier"], r["event_time"], r["booking_no"],
+         r["container_no"], r["transform_version"], r["payload_json"], r["ingested_at"]]
+        for r in source_events
+    ])
+    dq["source_events"] = {
+        "raw_milestones": len(t["tms_milestones"]),
+        "inserted": cur.execute("select count(*) from source_events").fetchone()[0],
+        "duplicate_idempotency_keys": len(source_events) - len({r["idempotency_key"] for r in source_events}),
+    }
 
     table("suppliers", t["srm_suppliers"],
           ["supplier_id TEXT", "supplier_name TEXT", "city TEXT", "lead_time_days INTEGER",
