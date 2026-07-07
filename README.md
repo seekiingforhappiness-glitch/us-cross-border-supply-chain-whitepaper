@@ -1,11 +1,13 @@
 # 跨境供应链智能运营原型（Cross-Border Supply Chain Ontology OS）
 
-参考 Palantir Ontology 理念自研的统一本体原型，**一套 ontology 承载两个业务闭环**：
+参考 Palantir Ontology 理念自研的统一本体原型，**一套 ontology 承载三个业务闭环**：
 
 - **v0.2 延误风险控制塔**：运输延误 → 沿对象图定位受影响客户订单行 → 风险事件与任务 →
   人工处置回写（改期/加急/接受），全程审计
 - **v0.3 SKU 准入报价**：销售建案 → 合规预审 → 物流方案 → 三情景成本 → 经理审批，
   三重门禁（critical 合规/DDP-IOR/流程完整性）挡住该挡的
+- **v0.4 费用对账**：账单 → 基准匹配 → 超收/重复/计划外异常 → 争议/接受/按贸易术语转嫁，
+  复用同一套风险闭环；滞箱费异常可归因到控制塔的延误事实（跨场景智能）
 
 两场景共享 Supplier/Sku/Customer 对象（零重复定义）与全部治理机制（审计/权限/动作五要素/
 AI 护栏），并经 SKU 生命周期咬合：准入批准的商品进入控制塔的履约世界。
@@ -23,8 +25,9 @@ python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate  # 2. 重建�
 python3 -m engine.detect && python3 -m engine.evaluate              # 3. 风险检测（查准查全 1.0）
 python3 -m app.test_closed_loop                                     # 4. 控制塔动作闭环
 python3 -m app.test_admission_loop                                  # 5. 准入闭环与门禁（17 项）
-python3 -m agent.evaluate                                           # 6. AI 层评估（17 题）
-streamlit run app/streamlit_app.py                                  # 7. UI（控制塔 + 准入工作台）
+python3 -m engine.evaluate_cost && python3 -m app.test_cost_loop    # 6. 费用引擎与闭环（v0.4）
+python3 -m agent.evaluate                                           # 7. AI 层评估（22 题）
+streamlit run app/streamlit_app.py                                  # 8. UI（控制塔+准入+费用工作台）
 ```
 
 演示走查脚本见 `docs/demo-assertions.md`（24 条断言）；看不懂数据先读 `docs/data-guide.md`。

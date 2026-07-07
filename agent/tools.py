@@ -52,6 +52,16 @@ TOOL_DEFS = [
      "description": "查准入案件完整上下文：案件、合规发现、物流方案、成本情景（成本字段按角色脱敏）、客户能力",
      "input_schema": {"type": "object", "properties": {
          "admission_case_id": {"type": "string"}}, "required": ["admission_case_id"]}},
+    {"name": "list_invoices",
+     "description": "列出发票（v0.4），可按 status 过滤（received/under_review/approved/disputed）。"
+                    "返回 invoice_id/vendor/type/shipment/total/status/issue_date",
+     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
+    {"name": "get_invoice_context",
+     "description": "查发票完整对账上下文：发票 + 行明细（join expected_costs 给出基准与差异列）"
+                    "+ 所属 shipment 摘要（incoterm/delay_days/status）。发票金额对 AI 可见"
+                    "（对账数据非敏感，区别于 CostScenario 脱敏规则）",
+     "input_schema": {"type": "object", "properties": {
+         "invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
     {"name": "assign_task",
      "description": "为 open 状态的风险派发处置任务（A3）。这是允许 AI 执行的写动作之一",
      "input_schema": {"type": "object", "properties": {
@@ -166,6 +176,46 @@ class AgentSession:
                 "cost_scenarios": scens,
                 "note": "cost fields masked for role=ops; credit_terms/risk_tier not returned"}
 
+    def list_invoices(self, status=None):
+        sql = """SELECT invoice_id, vendor_type, vendor_name, shipment_id, total_usd,
+                        status, issue_date FROM invoices"""
+        rows = self._rows(sql + " WHERE status=? ORDER BY invoice_id"
+                          if status else sql + " ORDER BY invoice_id",
+                          *([status] if status else []))
+        return {"count": len(rows), "invoices": rows}
+
+    def get_invoice_context(self, invoice_id):
+        inv = self._rows("SELECT * FROM invoices WHERE invoice_id=?", invoice_id)
+        if not inv:
+            return {"error": f"发票 {invoice_id} 不存在"}
+        inv = inv[0]
+        # 行明细 join expected_costs（基准与差异列）——与费用工作台 UI 同一 join 规则
+        lines = self._rows(
+            """SELECT il.invoice_line_id, il.charge_code, il.container_no, il.qty,
+                      il.unit_price_usd, il.amount_usd, ec.baseline_usd
+               FROM invoice_lines il
+               LEFT JOIN expected_costs ec
+                 ON ec.shipment_id=? AND ec.charge_code=il.charge_code
+                 AND ec.container_no=COALESCE(il.container_no,'')
+               WHERE il.invoice_id=? ORDER BY il.invoice_line_id""",
+            inv["shipment_id"], invoice_id)
+        for ln in lines:
+            ln["diff_usd"] = (round(ln["amount_usd"] - ln["baseline_usd"], 2)
+                              if ln["baseline_usd"] is not None else None)
+        # 行级异常：来自本票所属 shipment 的风险 affected_invoice_line_ids 并集
+        anom = set()
+        for rr in self._rows("SELECT affected_invoice_line_ids FROM risk_events WHERE shipment_id=?",
+                             inv["shipment_id"]):
+            if rr["affected_invoice_line_ids"]:
+                anom |= set(json.loads(rr["affected_invoice_line_ids"]))
+        for ln in lines:
+            ln["is_anomaly"] = ln["invoice_line_id"] in anom
+        sp = self._rows("""SELECT shipment_id, incoterm, delay_days, status
+                           FROM shipments WHERE shipment_id=?""", inv["shipment_id"])
+        return {"invoice": inv, "lines": lines,
+                "shipment": sp[0] if sp else None,
+                "note": "invoice amounts visible to AI (对账数据非敏感)"}
+
     # ---------- 写动作（仅 proposal-only 白名单） ----------
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
         return assign_task(self.con, risk_event_id, assignee_role, priority, due_at,
@@ -192,6 +242,8 @@ class AgentSession:
                     "get_audit_trail": self.get_audit_trail,
                     "list_admission_cases": self.list_admission_cases,
                     "get_admission_context": self.get_admission_context,
+                    "list_invoices": self.list_invoices,
+                    "get_invoice_context": self.get_invoice_context,
                     "assign_task": self._assign_task,
                     "propose_mitigation": self._propose_mitigation}
         if tool_name not in handlers:

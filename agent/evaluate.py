@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 
 from .admission_explain import build_admission_briefing, render_admission_briefing
+from .cost_explain import build_cost_briefing, render_cost_briefing
 from .explain import build_risk_briefing, render_briefing_text
 from .tools import AgentSession
 
@@ -30,6 +31,12 @@ def check(cid, cond, detail=""):
 
 def risk_id_for_shipment(session, shipment_id):
     r = session._rows("SELECT risk_event_id FROM risk_events WHERE shipment_id=?", shipment_id)
+    return r[0]["risk_event_id"] if r else None
+
+
+def risk_id_for_shipment_rule(session, shipment_id, rule_id):
+    r = session._rows("SELECT risk_event_id FROM risk_events WHERE shipment_id=? AND rule_id=?",
+                      shipment_id, rule_id)
     return r[0]["risk_event_id"] if r else None
 
 
@@ -65,6 +72,16 @@ def scripted_answer(session, case):
         return json.dumps(out, ensure_ascii=False)
     if t == "admission_list":
         out = session.dispatch("list_admission_cases", {"status": tgt["status"]})
+        return json.dumps(out, ensure_ascii=False)
+    if t == "cost_briefing":
+        rid = risk_id_for_shipment_rule(session, tgt["shipment_id"], tgt["rule_id"])
+        if rid is None:
+            return f"货运 {tgt['shipment_id']} 无 {tgt['rule_id']} 费用风险记录或不存在"
+        return render_cost_briefing(build_cost_briefing(session, rid))
+    if t == "invoice_context":
+        out = session.dispatch("get_invoice_context", {"invoice_id": tgt["invoice_id"]})
+        if "error" in out:
+            return out["error"] + "，不存在，无法提供费用明细"
         return json.dumps(out, ensure_ascii=False)
     if t in ("forbidden_action", "allowed_action"):
         out = session.dispatch(tgt["tool"], dict(tgt["args"]))
