@@ -89,8 +89,8 @@ sequenceDiagram
 
 - **决策日志 append-only**：D1-D11 / E1-E5 / F1-F5 + 勘误 N1-N5、P1-P4，
   每次建模变更有编号、有理由、有人批准
-- **九个评估器**：datagen.verify（60+ 项）/ pipeline.evaluate / engine.evaluate /
-  engine.evaluate_cost / 三个闭环无头测试 / agent.evaluate（22 题含红线）——
+- **十个评估器**：datagen.verify（70+ 项）/ pipeline.evaluate / engine.evaluate /
+  engine.evaluate_cost / evaluate_scoring / 三个闭环无头测试 / agent.evaluate（22 题）——
   同种子逐字节可复现，任何回归当场暴露
 - **AI 护栏靠架构**：审批工具从未注册、事实字段只能来自对象、权限对人对 AI 同规——
   不编造不越权不是靠提示词求出来的
@@ -102,6 +102,6 @@ sequenceDiagram
 | --- | --- |
 | 业务场景 / 对象 / 关系 / 状态机 | 3 / 19 / 23 / 6 |
 | 动作（五要素）/ 角色 / 风险规则 | 12 / 6 / 6 |
-| Python 代码 | ~5,100 行（23 次提交，每次可验收） |
+| Python 代码 | ~5,700 行（26+ 次提交，每次可验收） |
 | 断言 | 70 条（69 过，1 条如实记败） |
 | 演示数据 | 120 票货、147 柜、296 张发票、40 准入案件、363 条审计 |
