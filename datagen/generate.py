@@ -17,6 +17,7 @@ import yaml
 
 from . import world as W
 from . import admission as ADM
+from . import cost as COST
 from .design_cases import apply_design_cases
 from .noise import apply_noise
 from .oracle import sweep
@@ -37,6 +38,9 @@ def build(cfg):
     adm_rng = random.Random(cfg["seed"] + 1000)
     ADM.extend_shared_objects(w, adm_rng)
     ADM.build_admission_world(w, cfg, adm_rng)
+    # v0.4 费用对账：独立随机流（seed+2000），既有数据零扰动（X2 决策）
+    cost_rng = random.Random(cfg["seed"] + 2000)
+    COST.build_cost_world(w, cfg, cost_rng)
     return w, expected, noise
 
 
@@ -144,10 +148,31 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                      "last_mile_cost_usd", "returns_allowance_usd",
                                      "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"])
 
+    # v0.4 费用对账四表（ap_ = 应付账款系统 / tms_ = 运输管理系统）
+    cost = w["cost"]
+    tables["tms_containers"] = (sorted(cost["containers"], key=lambda x: x["container_no"]),
+                                ["container_no", "shipment_id", "container_type", "is_primary",
+                                 "free_days", "gross_weight_kg", "volume_cbm"])
+    tables["rate_card"] = (cost["rate_card"],
+                           ["charge_code", "scope", "key", "rate_usd"])
+    tables["ap_invoices"] = (sorted(cost["invoices"], key=lambda x: x["invoice_id"]),
+                             ["invoice_id", "vendor_type", "vendor_name", "vendor_invoice_no",
+                              "shipment_id", "issue_date", "currency", "total_usd", "status"])
+    tables["ap_invoice_lines"] = (sorted(cost["invoice_lines"], key=lambda x: x["invoice_line_id"]),
+                                  ["invoice_line_id", "invoice_id", "charge_code", "container_no",
+                                   "qty", "unit_price_usd", "amount_usd"])
+    tables["ap_expected_costs"] = (sorted(cost["expected_costs"], key=lambda x: x["expected_cost_id"]),
+                                   ["expected_cost_id", "shipment_id", "charge_code", "container_no",
+                                    "baseline_usd", "source"])
+
     for name, (rows, cols) in tables.items():
         _dump(raw / f"{name}.csv", rows, cols)
     _dump(truth / "expected_admission_gates.csv", adm["gates"],
           ["case_label", "admission_case_id", "gate", "attempt", "expected", "reason"])
+    # v0.4 费用异常 ground truth（仅 datagen/verify 与 X3 评估可读）
+    _dump(truth / "expected_cost_anomalies.csv", cost["anomalies"],
+          ["rule_id", "type", "shipment_id", "severity", "anomaly_value_usd",
+           "affected_invoice_line_ids", "case_id", "attribution"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

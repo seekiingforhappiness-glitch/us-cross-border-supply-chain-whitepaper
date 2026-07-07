@@ -239,6 +239,102 @@ def main():
           all(f["admission_case_id"] in cases for f in adm_find)
           and all(f["hts_candidate"] for f in adm_find if f["finding_type"] == "hts"))
 
+    print("== 7. 费用扩展（v0.4-X2）==")
+    from datetime import date as _date
+    from .world import iso6346_check_digit
+    containers = load(raw_dir, "tms_containers")
+    invoices = load(raw_dir, "ap_invoices")
+    inv_lines = load(raw_dir, "ap_invoice_lines")
+    expected_costs = load(raw_dir, "ap_expected_costs")
+    rate_card = load(raw_dir, "rate_card")
+    anom = load(truth_dir, "expected_cost_anomalies")
+
+    cont_by_ship = defaultdict(list)
+    for r in containers:
+        cont_by_ship[r["shipment_id"]].append(r)
+    # XA1：每票 ≥1 柜且恰一个 primary；柜号 ISO 6346 校验位合法
+    truthy = ("True", "1", "true")
+    every_ship_has_container = all(cont_by_ship.get(sid) for sid in ship_ids)
+    one_primary = all(sum(1 for c in cont_by_ship[sid] if c["is_primary"] in truthy) == 1
+                      for sid in ship_ids)
+    check("XA1 每票 ≥1 柜且恰一个 primary", every_ship_has_container and one_primary)
+    cd_ok = all(len(c["container_no"]) == 11
+                and iso6346_check_digit(c["container_no"][:10]) == c["container_no"][10]
+                for c in containers)
+    check("XA1 全部柜号 ISO 6346 校验位合法", cd_ok,
+          f"{sum(1 for c in containers if iso6346_check_digit(c['container_no'][:10]) != c['container_no'][10])} 个非法")
+    # XA2：≥15 票有 ≥2 柜
+    multi = sum(1 for sid in ship_ids if len(cont_by_ship.get(sid, [])) >= 2)
+    check("XA2 ≥15 票有 ≥2 柜（多柜升级）", multi >= 15, f"got {multi}")
+
+    # XA4：每张发票 total=Σ行（±0.02）
+    lines_by_inv = defaultdict(list)
+    for r in inv_lines:
+        lines_by_inv[r["invoice_id"]].append(r)
+    total_ok = all(abs(float(i["total_usd"])
+                       - round(sum(float(l["amount_usd"]) for l in lines_by_inv[i["invoice_id"]]), 2)) <= 0.02
+                   for i in invoices)
+    check("XA4 每张发票 total=Σ行（±0.02）", total_ok)
+    # THC/DET/DEM/CHS 行必带 container_no
+    cl_codes = {"THC", "DET", "DEM", "CHS"}
+    cl_ok = all(l["container_no"] for l in inv_lines if l["charge_code"] in cl_codes)
+    check("XA4 THC/DET/DEM/CHS 行必带 container_no", cl_ok)
+    # expected_costs 无 DET/DEM/CHS/ACC 费种
+    ec_clean = not any(r["charge_code"] in ("DET", "DEM", "CHS", "ACC") for r in expected_costs)
+    check("XA4 expected_costs 无 DET/DEM/CHS/ACC（R6 判据）", ec_clean)
+
+    # XA5：gt 每行引用的 invoice_line 全部存在
+    il_ids = {r["invoice_line_id"] for r in inv_lines}
+    gt_refs = []
+    for a in anom:
+        gt_refs.extend(json.loads(a["affected_invoice_line_ids"]))
+    check("XA5 gt 引用的 invoice_line 全部存在",
+          all(x in il_ids for x in gt_refs),
+          f"缺失 {[x for x in gt_refs if x not in il_ids][:5]}")
+    # 六个设计案例 gt 齐备且 case_id 正确
+    cd_rules = {"CD-A": "R4", "CD-B": "R5", "CD-C": "R6", "CD-D": "R6", "CD-F": "R5"}
+    anom_by_case = {a["case_id"]: a for a in anom if a["case_id"]}
+    cd_present = all(c in anom_by_case and anom_by_case[c]["rule_id"] == r
+                     for c, r in cd_rules.items())
+    check("XA5 五个注入设计案例 gt 齐备且 rule 正确", cd_present,
+          f"got {[(c, anom_by_case.get(c, {}).get('rule_id')) for c in cd_rules]}")
+    # CD-E 的船不出现在 gt（不误报反例）
+    cost_design = None
+    for _ in [0]:
+        # 从生成器取设计船映射（world 已在可复现性段构建过，此处重建一次取映射）
+        pass
+    # 用 anomalies 里所有 shipment 集合 + CD-E 判据：CD-E 船须无任何 gt 行
+    # CD-E 船号从设计案例映射取（重建世界）
+    w2, _e2, _n2 = build(cfg)
+    cde_ship = w2["cost"]["design_cases"].get("CD-E")
+    check("XA5 CD-E 船不出现在 gt（不误报反例）",
+          cde_ship is not None and not any(a["shipment_id"] == cde_ship for a in anom))
+    # CD-C 的 attribution 含"延误"
+    cdc = anom_by_case.get("CD-C")
+    check("XA5 CD-C attribution 含'延误'（F4 跨场景归因）",
+          bool(cdc) and "延误" in cdc["attribution"])
+
+    # 发票只开给非 planned 船；issue_date ≤ 数据窗口终点
+    snap = json.loads((Path(truth_dir) / "world_snapshot.json").read_text(encoding="utf-8"))
+    planned = {s for s, v in snap["shipments"].items() if v["status"] == "planned"}
+    inv_ships = {i["shipment_id"] for i in invoices}
+    check("发票只开给非 planned 船", not (planned & inv_ships),
+          f"planned 船被开票: {sorted(planned & inv_ships)[:5]}")
+    win_end = cfg["window"]["end"]
+    check("issue_date ≤ 数据窗口终点", all(i["issue_date"] <= win_end for i in invoices))
+    # rate_card 完整性（引用抽检）
+    check("rate_card 覆盖 OFT/THC/FSC/DOC/CUS/DTY/WHS/STO/LMD",
+          {r["charge_code"] for r in rate_card} >= {"OFT", "THC", "FSC", "DOC", "CUS",
+                                                    "DTY", "WHS", "STO", "LMD"})
+    # 发票行引用完整（invoice_id 存在、container_no 若非空须存在）
+    inv_ids = {i["invoice_id"] for i in invoices}
+    cno_all = {c["container_no"] for c in containers}
+    check("发票行 invoice_id 引用完整", all(l["invoice_id"] in inv_ids for l in inv_lines))
+    check("发票行 container_no 引用完整（若非空）",
+          all((not l["container_no"]) or l["container_no"] in cno_all for l in inv_lines))
+    print(f"  柜数={len(containers)} 发票={len(invoices)} 发票行={len(inv_lines)} "
+          f"基准={len(expected_costs)} gt={len(anom)} 多柜票={multi}")
+
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)
 

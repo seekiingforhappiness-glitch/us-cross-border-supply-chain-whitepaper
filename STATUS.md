@@ -13,7 +13,9 @@
 - [x] X1：cost-manual-v0.4（Container/Invoice/InvoiceLine/ExpectedCost + Invoice 状态机 +
       R4-R6 + 提案类型扩展 + G4 门禁，勘误 P1-P3）；统一 JSON 0.4.0（19 对象/23 关系/6 状态机）；
       断言清单 24 条（XA/XB/XC/XD/XE）
-- [ ] X2：费率卡 + 发票数据 + Container 迁移（独立随机流 seed+2000）+ pipeline + 零回归
+- [x] X2：datagen/cost.py（Opus 子代理执行，Fable 评审通过）：柜 147（18 票多柜）、
+      发票 296/行 824、基准 1161、gt 25 行（R4×5/R5×2/R6×18）、设计案例 CD-A..F；
+      verify 第 7 段全绿；六评估器零回归；勘误 P4（G4 矩阵对齐 FOB/CIF/DDP）
 - [ ] X3：R4-R6 引擎 + 提案/门禁扩展 + 费用工作台 + 无头闭环测试
 - [ ] X4：AI 费用简报（F4 归因叙事）+ 评估 +5 题 + 复盘收官
 

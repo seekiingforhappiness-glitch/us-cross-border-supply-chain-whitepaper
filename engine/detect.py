@@ -40,10 +40,12 @@ def apply_candidates(con, cands, as_of):
         else:
             seq += 1
             rid = f"RSK-{seq:04d}"
-            cur.execute("""INSERT INTO risk_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            # 末列 affected_invoice_line_ids（P1 新列）：R1-R3 为控制塔风险，留 NULL；
+            # R4-R6 的费用行归因由 X3 引擎填充（本阶段不实现）。
+            cur.execute("""INSERT INTO risk_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (rid, c["type"], c["rule_id"], c["severity"], c["shipment_id"],
                          c["affected_so_line_ids"], c["affected_value_usd"], c["detected_at"],
-                         c["root_cause"], "open", None, None, None))
+                         c["root_cause"], "open", None, None, None, None))
             result = "created"
             created += 1
         # 受影响行 → at_risk（A2 副作用）

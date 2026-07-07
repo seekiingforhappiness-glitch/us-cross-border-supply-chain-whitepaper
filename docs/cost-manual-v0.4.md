@@ -87,11 +87,11 @@ affected_value_usd = **异常金额**（超收部分/重复金额/计划外金�
   - `dispute`：{reason, disputed_amount_usd}
   - `accept_charge`：{reason}
   - `rebill_customer`：{rebill_amount_usd, incoterm_basis}
-- **A5 审批新增 G4 incoterm 责任门禁**（F5）：rebill_customer 仅当受影响行的费种
-  ⊆ 该票 incoterm 的可转嫁集合：
-  - DDP → ∅（全我方，rebill 一律拒绝）
-  - DAP → {DTY, CUS}
-  - FOB → {OFT, FSC, THC, DET, DEM, CHS, DOC}
+- **A5 审批新增 G4 incoterm 责任门禁**（F5，P4 勘误对齐 Shipment 实际枚举 FOB/CIF/DDP）：
+  rebill_customer 仅当受影响行的费种 ⊆ 该票 incoterm 的可转嫁集合：
+  - DDP → ∅（门到门全我方，rebill 一律拒绝）
+  - CIF → {DTY, CUS, WHS, STO, LMD, DET, DEM, CHS, ACC}（目的港起买方责任）
+  - FOB → {OFT, FSC, THC, DOC, DTY, CUS, WHS, STO, LMD, DET, DEM, CHS, ACC}（装船起买方责任）
 - **A5 批准的发票侧回写**：dispute→invoice.status=disputed；accept/rebill→approved。
 - A3/A6 原样复用；风险队列/任务处理台 UI 自动出现新类型（F1 的直接收益）。
 
@@ -109,3 +109,5 @@ AI 角色（ops）可读发票用于解释，rebill/dispute 提案工具向 AI �
 - **P2**：type 枚举扩展 rate_overbilling / duplicate_charge / unplanned_charge；
   rule_id 枚举扩展 R4/R5/R6
 - **P3**：A4 执行者扩展为 ops/cs/finance（原 ops/cs）——费用提案属财务
+- **P4**：G4 矩阵键对齐 Shipment.incoterm 实际枚举（FOB/CIF/DDP）；plan §3-F5 的 DAP
+  表述系笔误（DAP 是准入 LogisticsPlan 的枚举，不是控制塔 Shipment 的）

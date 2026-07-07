@@ -42,6 +42,13 @@ noise_rates:                    # 数据质量噪声（进 injected_noise_log，
   null_vessel_carrier: 0.10
   supplier_name_variant: 0.20
 
+cost:                           # v0.4 费用闭环（X2）参数
+  rate_tolerance: 0.05          # R4 费率超收容差（>基准×1.05 判超收）
+  unplanned_high_threshold_usd: 500  # R6 计划外费用 high 门槛
+  detention_daily_usd: 150      # DET 滞箱费日费率
+  overbilling_rate: 0.08        # 随机超收注入比例（→R4）
+  duplicate_rate: 0.04          # 随机重复计费注入比例（→R5）
+
 output:
   raw_dir: "data/raw"
   truth_dir: "data/truth"       # 仅 datagen/verify 与 W4 评估可读；pipeline/engine 禁读

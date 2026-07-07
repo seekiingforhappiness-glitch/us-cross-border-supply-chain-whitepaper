@@ -7,8 +7,9 @@
 ```text
 CD-A 超收     ：某票 OFT 按基准 130% 开票 → R4 high，dispute 流程走通
 CD-B 跨票重复 ：同柜 THC 在两张发票各计一次 → R5，重复金额=第二笔
-CD-C 滞箱归因 ：SHP-2026-0099（DEMO-01 延误 7 天的那票船！）产生 DET 6 天×$150
-               → R6 high，root_cause 含延误归因（F4），FOB 可 rebill
+CD-C 滞箱归因 ：确定性选取"延误且已妥投"的船（本种子=SHP-2026-0009，FOB，延误 8 天）
+               产生 DET 6 天×$150 → R6 high，root_cause 含延误归因（F4），FOB 可 rebill
+               （X2 勘误：原设想用 SHP-2026-0099，但在途船不会收到滞箱账单——真实性优先）
 CD-D DDP 转嫁被拒：DDP 票的 DET 异常提 rebill → A5 的 G4 门禁拒绝
 CD-E 干净发票 ：全部行恰在基准内 → 零异常，发票直接 approved（不误报反例）
 CD-F 同票重复 ：同一发票内同费种同柜两行 → R5
@@ -16,11 +17,11 @@ CD-F 同票重复 ：同一发票内同费种同柜两行 → R5
 
 ## A. 数据与迁移（X2）
 
-- [ ] XA1. Container 迁移：每票 ≥1 柜、恰一个 primary、柜号 ISO 6346 校验位合法
-- [ ] XA2. 多柜升级：≥15 票 FCL 有 2-3 柜，柜级费用按柜开票
-- [ ] XA3. 控制塔零回归：shipment 原字段未动，v0.2/v0.3 全部评估器全绿
-- [ ] XA4. 发票 DQ：total=Σ行、柜级费种必带柜号、基准表无 DET/DEM/ACC/CHS
-- [ ] XA5. ground truth：注入异常与 expected_risk_events(R4-R6) 严格 1:1
+- [x] XA1. Container 迁移：每票 ≥1 柜、恰一个 primary、柜号 ISO 6346 校验位合法
+- [x] XA2. 多柜升级：≥15 票 FCL 有 2-3 柜，柜级费用按柜开票
+- [x] XA3. 控制塔零回归：shipment 原字段未动，v0.2/v0.3 全部评估器全绿
+- [x] XA4. 发票 DQ：total=Σ行、柜级费种必带柜号、基准表无 DET/DEM/ACC/CHS
+- [x] XA5. ground truth：注入异常与 expected_risk_events(R4-R6) 严格 1:1
 
 ## B. 引擎（X3）
 

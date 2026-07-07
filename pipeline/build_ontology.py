@@ -55,7 +55,9 @@ def main():
                               "oms_so_lines", "srm_purchase_orders", "tms_shipments",
                               "tms_milestones", "tms_allocations",
                               "qms_admission_cases", "qms_compliance_findings",
-                              "qms_logistics_plans", "qms_cost_scenarios"]}
+                              "qms_logistics_plans", "qms_cost_scenarios",
+                              "tms_containers", "rate_card", "ap_invoices",
+                              "ap_invoice_lines", "ap_expected_costs"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
 
     # 1) milestone 判重（四元组保首条，重复标记保留——事件不可变，只标不删）
@@ -237,14 +239,56 @@ def main():
     dq["admission_orphan_plans"] = sum(
         1 for r in t["qms_logistics_plans"] if r["admission_case_id"] not in case_ids)
 
+    # v0.4 费用对账五表（ap/tms/rate_card 为记录系统，直通加载 + 引用完整性入 DQ）
+    table("containers", sorted(t["tms_containers"], key=lambda x: x["container_no"]),
+          ["container_no TEXT", "shipment_id TEXT", "container_type TEXT", "is_primary TEXT",
+           "free_days INTEGER", "gross_weight_kg REAL", "volume_cbm REAL"], "container_no")
+    rate_card_rows = [{**r, "rate_card_id": f"RC-{i:04d}"}
+                      for i, r in enumerate(t["rate_card"], 1)]
+    table("rate_card", rate_card_rows,
+          ["rate_card_id TEXT", "charge_code TEXT", "scope TEXT", "key TEXT", "rate_usd REAL"],
+          "rate_card_id")
+    table("invoices", sorted(t["ap_invoices"], key=lambda x: x["invoice_id"]),
+          ["invoice_id TEXT", "vendor_type TEXT", "vendor_name TEXT", "vendor_invoice_no TEXT",
+           "shipment_id TEXT", "issue_date TEXT", "currency TEXT", "total_usd REAL",
+           "status TEXT"], "invoice_id")
+    table("invoice_lines", sorted(t["ap_invoice_lines"], key=lambda x: x["invoice_line_id"]),
+          ["invoice_line_id TEXT", "invoice_id TEXT", "charge_code TEXT", "container_no TEXT",
+           "qty INTEGER", "unit_price_usd REAL", "amount_usd REAL"], "invoice_line_id")
+    table("expected_costs", sorted(t["ap_expected_costs"], key=lambda x: x["expected_cost_id"]),
+          ["expected_cost_id TEXT", "shipment_id TEXT", "charge_code TEXT", "container_no TEXT",
+           "baseline_usd REAL", "source TEXT"], "expected_cost_id")
+
+    # 费用侧 DQ（P1 附近）：孤儿行、total 不平、柜孤儿——应全为 0
+    ship_id_set = {r["shipment_id"] for r in t["tms_shipments"]}
+    inv_id_set = {r["invoice_id"] for r in t["ap_invoices"]}
+    cont_id_set = {r["container_no"] for r in t["tms_containers"]}
+    dq["invoice_line_orphans"] = sum(1 for r in t["ap_invoice_lines"]
+                                     if r["invoice_id"] not in inv_id_set)
+    lines_sum = defaultdict(float)
+    for r in t["ap_invoice_lines"]:
+        lines_sum[r["invoice_id"]] += float(r["amount_usd"])
+    dq["invoice_total_imbalance"] = sum(
+        1 for r in t["ap_invoices"]
+        if abs(float(r["total_usd"]) - round(lines_sum[r["invoice_id"]], 2)) > 0.02)
+    dq["container_orphans"] = sum(1 for r in t["tms_containers"]
+                                  if r["shipment_id"] not in ship_id_set)
+    dq["invoice_shipment_orphans"] = sum(1 for r in t["ap_invoices"]
+                                         if r["shipment_id"] not in ship_id_set)
+    dq["invoice_line_container_orphans"] = sum(
+        1 for r in t["ap_invoice_lines"]
+        if r["container_no"] and r["container_no"] not in cont_id_set)
+
     cur.execute("CREATE TABLE supplier_name_map (raw_name TEXT PRIMARY KEY, supplier_id TEXT)")
     cur.executemany("INSERT INTO supplier_name_map VALUES (?,?)",
                     [(k, v or "") for k, v in sorted(mapping.items())])
     # W4/W5 空表（schema 与 ontology JSON 一致）
+    # P1：risk_events 增可空字段 affected_invoice_line_ids（费用场景专用，控制塔留空）
     cur.execute("""CREATE TABLE risk_events (risk_event_id TEXT PRIMARY KEY, type TEXT,
         rule_id TEXT, severity TEXT, shipment_id TEXT, affected_so_line_ids TEXT,
         affected_value_usd REAL, detected_at TEXT, root_cause TEXT, status TEXT,
-        resolved_at TEXT, outcome TEXT, resolution_summary TEXT)""")
+        resolved_at TEXT, outcome TEXT, resolution_summary TEXT,
+        affected_invoice_line_ids TEXT)""")
     cur.execute("""CREATE TABLE tasks (task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT,
         assignee_role TEXT, priority TEXT, due_at TEXT, proposed_action TEXT,
         proposal_params TEXT, approval_status TEXT, approved_by_role TEXT,

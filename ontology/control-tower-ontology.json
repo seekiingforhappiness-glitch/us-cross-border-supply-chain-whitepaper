@@ -647,9 +647,9 @@
   },
   "incotermRebillMatrix": {
     "DDP": [],
-    "DAP": ["DTY", "CUS"],
-    "FOB": ["OFT", "FSC", "THC", "DET", "DEM", "CHS", "DOC"],
-    "note": "G4 gate (F5): rebill_customer approval requires affected charge codes within matrix of shipment incoterm."
+    "CIF": ["DTY", "CUS", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC"],
+    "FOB": ["OFT", "FSC", "THC", "DOC", "DTY", "CUS", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC"],
+    "note": "G4 gate (F5/P4): keyed to Shipment.incoterm enum (FOB/CIF/DDP). rebill approval requires affected charge codes within matrix."
   },
   "auditLog": {
     "table": "action_log",
