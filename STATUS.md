@@ -6,6 +6,8 @@
 
 > **顶部摘要（2026-07-08 刷新，任何接手模型先读这段）。** 下方历史 bullet(M1-M7/P1-P3/W1/口径收敛)保留为详细过程；决策日志见 `docs/control-tower-plan-v0.2.md §4`。
 
+> **v0.8 收官（2026-07-09，loop 15 迭代完成）**：自定步调 loop（§4 加固，不擅开新域）交付完成——见 `docs/release-notes-v0.8.md`（发布说明）+ `docs/release-checklist.md`（23 模块 + 2 可复现性门全绿证据集）+ `docs/loop-state.md`（15 项逐条追踪）。新接手先读 `ONBOARDING.md`（5 分钟）。本轮修 2 个真崩溃点、补对抗安全/多区域/健壮性测试、面客一页纸 `docs/control-tower-overview.html`。真值 md5 全程 byte-identical。**下一步（需 Daniel §3 亲批才动）**：接真实 API/大模型基座、或新增业务域（关务/资金风控等）。
+
 - **阶段：5 个业务场景一本体，全部落地并通过 controller review**。场景：延误运营(R1-R3) / 费用稽核(R4-R6) /
   准入合规(门禁 G1-G4) / 采购(R7-R15：三方对账+预付款+资质+单一来源+maverick) / 仓储库存(R16-R18)。
   **18 条风险规则全 P/R=1.000**；33 个对象类型；ontology **v0.8.0**。

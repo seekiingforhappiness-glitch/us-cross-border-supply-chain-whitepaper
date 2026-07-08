@@ -23,7 +23,7 @@
 - [x] **12. 接手/onboarding 文档**：新会话/新模型 5 分钟上手路径
 - [x] **13. 健壮性 pass**：streamlit 启动/空数据/边界输入的优雅处理 + 冒烟测试
 - [x] **14. 全链端到端验证 + release checklist**：一键复现全绿证据集
-- [ ] **15. 最终整合**：release notes + STATUS 收官 + 全评估器全绿快照
+- [x] **15. 最终整合**：release notes + STATUS 收官 + 全评估器全绿快照
 
 ## 进度日志
 
@@ -43,3 +43,4 @@
 - 迭代 12 — 新建 ONBOARDING.md（5 分钟上手导航图：这是什么+诚实边界 / 一条命令验全绿的复现路径 / 心智模型对象-关系-动作+一条风险队列共用+对象即工作台+跨场景网 / 目录图 / 会咬你的规则 §3人裁决+§5真值只读+controller纪律+四条红线+streamlit完整重启 / 安全改一处套路）；**顺带修正 STATUS.md 顶部摘要过时数字（唯一状态源纠错：Warehouse 已在迭代1 升第6富工作台，31对象→33/5富→6/26标准→27，与 architecture.md/README/代码一致）**；AGENTS §0 + README 加发现性指针 — controller 核对：先从代码确证 33对象=27标准(OBJECT_REGISTRY)+6富(RICH，二者不相交)/v0.8.0、ONBOARDING 引用的 13 个模块逐一存在、纯文档 0 代码/规则/真值改动 — 见 loop 提交
 - 迭代 13 — 健壮性 pass（证据驱动，非臆造防御）：枚举边界输入实测只找到 2 个**真崩溃点**并修：① `agent/explain.py` build_risk_briefing 对 shipment_id 为空的采购/仓储/预付款风险 `ctx["shipment"]` KeyError（任务台看这类风险简报的真实可达崩溃）→ `if "error" in ctx` 降级友好提示；② `app/streamlit_app.py` render_adm_tab 硬编码锚点 `.index("AC-2026-0031")` 空库 ValueError → 空状态 + 安全默认索引。新建 app/test_smoke.py（~50 断言：真实库+空库各 6 角色 0 未捕获异常、缺失/未知 id 优雅、agent focus 缺失友好、读工具 None/空串/超长返 error、空库授权护栏仍拦截）。子代理诚实报告多数"边界" build 层已处理好、**不加冗余防御**。— controller 独立复核全绿：**亲验崩溃点1 已优雅（RSK-0077/78/79 R7 无货运锚点→友好提示非 KeyError）+ happy-path RSK-0001 货运锚点正常渲染 271 字**、只改 3 文件、权限/规则常量 0 改动、冒烟+闭环+scope_parity+agent_security+R1-R18 全退出 0、truth md5 不变 — 见 loop 提交
 - 迭代 14 — 全链端到端验证 + release checklist：主会话 controller 从零重跑完整链（造世界→verify→本体→管道→检测→四评估器→seed→6 闭环→5 对象中心→7 治理/可信AI→agent.evaluate），捕获真实全绿输出；新建 docs/release-checklist.md（一键复现命令 + 发版门 A检测精度/B闭环/C对象中心/D可信AI治理/E真值防线/F诚实边界，每条附命令与 2026-07-09 实测证据）。检测 152 事件覆盖全 R1-R18；23 测试/评估模块 + 2 可复现性门全绿。**关键证据：8 个真值文件 md5 与迭代 9 记录逐一吻合，证明本会话 14 次迭代 §5 真值防线全程 byte-identical**。README 加发版门指针。数字自核对（重数模块修正 25→23）。纯文档/纯验证 0 代码/规则/真值改动 — 见 loop 提交
+- 迭代 15（收官）— 最终整合：新建 docs/release-notes-v0.8.md（一句话定位+诚实边界 / v0.8 全景表 / 本轮 15 迭代加固分组 / 发现修复的 2 真 bug / 治理护城河 / 收官验证快照 / 从这里开始导航）；STATUS.md 加 v0.8 收官条（指向 release-notes/checklist/loop-state/ONBOARDING + 明确"下一步需 Daniel §3 亲批"）。**收官全评估器快照：21 模块 21 通过 0 失败，truth md5 汇总 9bb202ea 与迭代 9/14 完全一致**。loop 15 项全部勾完 → 停循环 + PushNotification。纯文档 0 代码/规则/真值改动 — 见 loop 提交
