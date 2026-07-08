@@ -152,8 +152,13 @@
   新增 PurchasePayment(70)/SupplierQualification(19) 对象 + R11 开票超收货/R12 预付款敞口/R13 资质过期检测。
   **controller 独立复核**：R7-R13 全 P/R=1.000、灰区 0 误报、真值确定性（两次生成 md5 一致 d08428…）、
   R7-R10 真值行 byte-identical（纯 append 19 行）、R1-R6 R/P=1.000 未扰动、标准视图 21、全套回归绿。
-  2 新对象走自动标准视图（ontology v0.6.0）。**Build B（R11-R13 处置动作 escalate_prepayment/hold_balance_payment/
-  request_supplier_docs/suspend_supplier + 闭环）待续。**
+  2 新对象走自动标准视图（ontology v0.6.0）。
+- **采购富化 P2 Build B（R11-R13 处置动作 + 闭环）已完成并通过 controller review —— 采购域 R7-R13 全部落地**：
+  approve_mitigation 加 R12/R13 分支（escalate_prepayment/hold_balance_payment → PurchasePayment.exposure_status=at_risk；
+  request_supplier_docs/suspend_supplier → SupplierQualification.evidence_status/status；R11 复用 dispute_supplier_invoice），
+  走既有 assign→propose→approve 闭环。**controller 独立复核**：ROLE_PERMS/maker-checker/FORBIDDEN diff=0（纯 append）、
+  agent ops/finance/manager 均不能审批、R11-R13 五条闭环 + 越权杀手全过、R1-R13 全 P/R=1.000、全套回归绿、三角色 UI 0 异常。
+  **→ 采购域完整：7 条规则(R7-R13, 三方对账+预付款+资质) P/R=1.000、端到端闭环、对象工作台+不越权 agent。全库 R1-R13。**
 
 ## v0.4 进度
 

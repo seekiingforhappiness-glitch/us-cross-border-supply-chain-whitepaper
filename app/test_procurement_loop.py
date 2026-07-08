@@ -25,7 +25,8 @@ import yaml
 
 from . import object_workbench as owb
 from .actions import (ROLE_PERMS, assign_task, propose_mitigation, approve_mitigation,
-                      close_risk_event, PROCUREMENT_ACTIONS)
+                      close_risk_event, PROCUREMENT_ACTIONS, PREPAYMENT_ACTIONS,
+                      QUALIFICATION_ACTIONS)
 from .procurement_actions import PROC_PERMS, record_goods_receipt, match_supplier_invoice
 from agent.tools import AgentSession, FORBIDDEN_TOOLS
 from engine.procurement_rules import detect_procurement_risks
@@ -164,6 +165,79 @@ def main():
     check("②c raise_supplier_claim 批准 → PoLine claim_raised",
           q1("SELECT line_status FROM po_lines WHERE po_line_id=?", r9_pol)["line_status"] == "claim_raised")
 
+    print("== ②' P2 富化闭环 R11-R13（决策日志 P2；审批后回写可见状态，非判风险）==")
+    # R11（开票超收货）复用既有 dispute_supplier_invoice → 该 PO 供票 disputed
+    r11 = q1("SELECT risk_event_id, po_id FROM risk_events WHERE rule_id='R11' AND status='open' LIMIT 1")
+    _, _, p11, a11 = run_loop(r11["risk_event_id"], "dispute_supplier_invoice",
+                              {"reason": "开票量超实收", "disputed_amount_usd": 300.0}, "finance")
+    r11_disp = [x["status"] for x in con.execute(
+        "SELECT status FROM supplier_invoices WHERE po_id=?", (r11["po_id"],))]
+    check("②'a R11 dispute_supplier_invoice(复用) 批准 → 该 PO 供票 disputed",
+          p11["ok"] and a11["ok"] and "disputed" in r11_disp, f"propose={p11['ok']} inv={r11_disp}")
+    # R12 escalate_prepayment（po_id 锚）→ deposit 付款 exposure_status=at_risk
+    r12a = q1("SELECT risk_event_id, po_id FROM risk_events WHERE rule_id='R12' AND status='open' LIMIT 1")
+    con.execute("UPDATE purchase_payments SET exposure_status='covered' "  # 先压成 covered 证明真回写
+                "WHERE po_id=? AND payment_type='deposit'", (r12a["po_id"],))
+    con.commit()
+    _, _, p12a, a12a = run_loop(r12a["risk_event_id"], "escalate_prepayment",
+                                {"reason": "预付款超期升级"}, "finance")
+    dep_st = [x["exposure_status"] for x in con.execute(
+        "SELECT exposure_status FROM purchase_payments WHERE po_id=? AND payment_type='deposit'",
+        (r12a["po_id"],))]
+    check("②'b R12 escalate_prepayment 批准 → deposit exposure_status=at_risk（covered→at_risk 真回写）",
+          p12a["ok"] and a12a["ok"] and dep_st and all(s == "at_risk" for s in dep_st), str(dep_st))
+    # R12 hold_balance_payment → balance 付款 at_risk（种子无 balance，注入一笔证明分支）
+    r12b = q1("""SELECT risk_event_id, po_id FROM risk_events WHERE rule_id='R12'
+                 AND status='open' AND po_id!=? LIMIT 1""", r12a["po_id"])
+    con.execute("""INSERT INTO purchase_payments (payment_id, po_id, payment_type, amount_usd,
+                   paid_date, exposure_status, as_of_date, created_at)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                ("PAY-TEST-BAL", r12b["po_id"], "balance", 10000.0, "2026-06-01", "covered",
+                 as_of, f"{as_of}T00:00:00Z"))
+    con.commit()
+    _, _, p12b, a12b = run_loop(r12b["risk_event_id"], "hold_balance_payment",
+                                {"reason": "暂缓尾款"}, "finance")
+    bal_st = q1("SELECT exposure_status FROM purchase_payments WHERE payment_id='PAY-TEST-BAL'")["exposure_status"]
+    check("②'c R12 hold_balance_payment 批准 → balance exposure_status=at_risk",
+          p12b["ok"] and a12b["ok"] and bal_st == "at_risk", str(bal_st))
+    # R13 request_supplier_docs（supplier_id 锚）→ 过期资质 evidence_status=provided
+    r13a = q1("SELECT risk_event_id, supplier_id FROM risk_events WHERE rule_id='R13' AND status='open' LIMIT 1")
+    _, _, p13a, a13a = run_loop(r13a["risk_event_id"], "request_supplier_docs",
+                                {"reason": "要求补交资质"}, "cs")
+    ev_st = [x["evidence_status"] for x in con.execute(
+        "SELECT evidence_status FROM supplier_qualifications WHERE supplier_id=? AND valid_to < ?",
+        (r13a["supplier_id"], as_of))]
+    check("②'d R13 request_supplier_docs 批准 → 过期资质 evidence_status=provided",
+          p13a["ok"] and a13a["ok"] and ev_st and all(s == "provided" for s in ev_st), str(ev_st))
+    # R13 suspend_supplier → 过期资质 status=revoked（Supplier 无 status，回写资质对象）
+    r13b = q1("""SELECT risk_event_id, supplier_id FROM risk_events WHERE rule_id='R13'
+                 AND status='open' AND supplier_id!=? LIMIT 1""", r13a["supplier_id"])
+    _, _, p13b, a13b = run_loop(r13b["risk_event_id"], "suspend_supplier",
+                                {"reason": "资质失效冻结供应商"}, "ops")
+    rev_st = [x["status"] for x in con.execute(
+        "SELECT status FROM supplier_qualifications WHERE supplier_id=? AND valid_to < ?",
+        (r13b["supplier_id"], as_of))]
+    check("②'e R13 suspend_supplier 批准 → 过期资质 status=revoked",
+          p13b["ok"] and a13b["ok"] and rev_st and all(s == "revoked" for s in rev_st), str(rev_st))
+    # 越权杀手（复用）：agent 注入 approve R12 pending 任务 → 被拒（工具层 + 动作层双闸）
+    r12k = q1("SELECT risk_event_id, po_id FROM risk_events WHERE rule_id='R12' AND status='open' LIMIT 1")
+    rk = assign_task(con, r12k["risk_event_id"], "ops", "P2", as_of,
+                     actor="u-ops-us", role="ops", as_of=as_of)
+    PENDK = rk["object_id"]
+    propose_mitigation(con, PENDK, "escalate_prepayment", {"reason": "待审"},
+                       actor="proposer-finance", role="finance", as_of=as_of)
+    pk_before = q1("SELECT status, approval_status FROM tasks WHERE task_id=?", PENDK)
+    sess_k = owb.make_po_agent_session("manager", r12k["po_id"], db_path=str(tmp))
+    out_k = sess_k.dispatch("approve_mitigation",
+                            {"task_id": PENDK, "decision": "approved", "comment": "bypass R12"})
+    pk_after = q1("SELECT status, approval_status FROM tasks WHERE task_id=?", PENDK)
+    r_dk = approve_mitigation(con, PENDK, "approved", "越权直调", actor="ai-agent", role="ops", as_of=as_of)
+    check("②'f 越权杀手（R12 任务）：agent approve 被拒 + 任务未改 + 动作层双闸 ok=False",
+          out_k.get("refused") is True
+          and (pk_after["status"], pk_after["approval_status"]) == (pk_before["status"], pk_before["approval_status"])
+          and r_dk["ok"] is False and "权限拒绝" in (r_dk["error"] or ""),
+          f"refused={out_k.get('refused')} direct={r_dk.get('error')}")
+
     print("== ③ PO 工作台数据组装（PO + 三方对账 + 锚定风险 + 角色可用 action + 成本脱敏）==")
     # 取一个未被上面 loop 触碰的 open R7 PO（风险仍 open、无 task）
     r7 = q1("""SELECT po_id FROM risk_events WHERE rule_id='R7' AND status='open'
@@ -266,10 +340,17 @@ def main():
           str(PROC_PERMS))
     check("⑥ FORBIDDEN_TOOLS 含 approve/close（红线未削弱）",
           {"approve_mitigation", "close_risk_event"} <= FORBIDDEN_TOOLS)
-    check("⑥ 四个采购处置动作已注册（proposed_action 扩展）",
+    check("⑥ 八个采购处置动作已注册（Build3 四 + P2 富化四；proposed_action 扩展）",
           PROCUREMENT_ACTIONS == {"expedite_po", "raise_supplier_claim",
-                                  "dispute_supplier_invoice", "accept_receipt_variance"},
+                                  "dispute_supplier_invoice", "accept_receipt_variance",
+                                  "escalate_prepayment", "hold_balance_payment",
+                                  "request_supplier_docs", "suspend_supplier"},
           str(PROCUREMENT_ACTIONS))
+    check("⑥ R12/R13 富化动作分组正确（PREPAYMENT=R12、QUALIFICATION=R13，均属采购动作）",
+          PREPAYMENT_ACTIONS == {"escalate_prepayment", "hold_balance_payment"}
+          and QUALIFICATION_ACTIONS == {"request_supplier_docs", "suspend_supplier"}
+          and (PREPAYMENT_ACTIONS | QUALIFICATION_ACTIONS) <= PROCUREMENT_ACTIONS,
+          f"prepay={PREPAYMENT_ACTIONS} qual={QUALIFICATION_ACTIONS}")
 
     con.close()
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")

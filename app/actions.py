@@ -37,6 +37,12 @@ PARAM_SCHEMAS = {
     "raise_supplier_claim": {"claim_amount_usd", "reason"},   # 供应商索赔：标记 PoLine 已发起索赔
     "dispute_supplier_invoice": {"reason", "disputed_amount_usd"},  # 争议供应商发票（复用 dispute 语义）
     "accept_receipt_variance": {"reason"},           # 接受短装/差异：标记 PoLine 差异已接受
+    # P2 采购富化 A4 提案类型扩展（R12 预付款敞口 / R13 供应商资质；决策日志 P2，Build B）：
+    # 同走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "escalate_prepayment": {"reason"},               # R12 升级预付款敞口：标记 deposit 付款 at_risk
+    "hold_balance_payment": {"reason"},              # R12 暂缓尾款：标记 balance 付款 at_risk
+    "request_supplier_docs": {"reason"},             # R13 要求补交资质：标记过期资质 evidence_status=provided（cert_type 可选，缺省全过期证）
+    "suspend_supplier": {"reason"},                  # R13 冻结供应商：标记过期资质 status=revoked（Supplier 无 status 字段，回写资质对象）
 }
 # 采购处置动作 → PoLine.line_status 目标态（审批通过后回写受影响 PoLine 的可见状态）。
 # dispute_supplier_invoice 不改 PoLine（改 supplier_invoices.status=disputed），故不在此表。
@@ -45,7 +51,14 @@ PO_LINE_STATUS_ON_APPROVE = {
     "raise_supplier_claim": "claim_raised",
     "accept_receipt_variance": "variance_accepted",
 }
-PROCUREMENT_ACTIONS = set(PO_LINE_STATUS_ON_APPROVE) | {"dispute_supplier_invoice"}
+# P2 采购富化处置（决策日志 P2，Build B）——审批后回写受影响对象「可见状态」，非判风险
+# （R12/R13 检测由 engine 从事实重算，绝不信 exposure_status/status 字段，同"不信状态字段"铁律）：
+#   R12 预付款敞口（po_id 锚）→ PurchasePayment.exposure_status='at_risk'；
+#   R13 供应商资质（supplier_id 锚）→ SupplierQualification.evidence_status/status（Supplier 无 status 字段）。
+PREPAYMENT_ACTIONS = {"escalate_prepayment", "hold_balance_payment"}   # R12
+QUALIFICATION_ACTIONS = {"request_supplier_docs", "suspend_supplier"}  # R13
+PROCUREMENT_ACTIONS = (set(PO_LINE_STATUS_ON_APPROVE) | {"dispute_supplier_invoice"}
+                       | PREPAYMENT_ACTIONS | QUALIFICATION_ACTIONS)
 # cost-manual §4 A5 G4 incoterm 责任门禁矩阵（与 ontology JSON incotermRebillMatrix 同步）：
 # rebill_customer 仅当受影响行费种 ⊆ 该票 incoterm 的可转嫁集合。
 REBILL_MATRIX = {
@@ -414,6 +427,41 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                             cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
                                         (new_inv_status, iid))
                     effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
+                elif act in PREPAYMENT_ACTIONS:
+                    # R12 预付款敞口处置（po_id 锚）：审批后把相关付款 exposure_status 回写 at_risk
+                    # （可见状态回写，非判风险——R12 由收货存在性+付款账龄重算，不信该字段）。
+                    # escalate_prepayment 锚 deposit（预付敞口本体）；hold_balance_payment 锚 balance（暂缓尾款）。
+                    pay_type = "deposit" if act == "escalate_prepayment" else "balance"
+                    pay_ids = [r["payment_id"] for r in cur.execute(
+                        "SELECT payment_id FROM purchase_payments WHERE po_id=? AND payment_type=?",
+                        (risk["po_id"], pay_type))]
+                    for pid in pay_ids:
+                        cur.execute("UPDATE purchase_payments SET exposure_status='at_risk' "
+                                    "WHERE payment_id=?", (pid,))
+                    effects.append(f"{act} 批准：{pay_type} 付款 {sorted(pay_ids)} → exposure_status=at_risk")
+                elif act in QUALIFICATION_ACTIONS:
+                    # R13 供应商资质处置（supplier_id 锚）：审批后回写该供应商「过期证」的可见状态
+                    # （无 Supplier.status 字段，回写资质对象；R13 由 valid_to vs as_of 重算，不信 status/evidence_status）。
+                    # 过期证域 = valid_to < as_of（R13 检测口径）；request 可选 cert_type 缩到某类证。
+                    cert_filter = params.get("cert_type")
+                    quals = cur.execute(
+                        """SELECT qualification_id, cert_type, valid_to FROM supplier_qualifications
+                           WHERE supplier_id=?""", (risk["supplier_id"],)).fetchall()
+                    qids = sorted(r["qualification_id"] for r in quals
+                                  if r["valid_to"] < as_of
+                                  and (cert_filter is None or r["cert_type"] == cert_filter))
+                    if act == "request_supplier_docs":
+                        for qid in qids:
+                            cur.execute("UPDATE supplier_qualifications SET evidence_status='provided' "
+                                        "WHERE qualification_id=?", (qid,))
+                        effects.append(f"request_supplier_docs 批准：过期资质 {qids} "
+                                       f"→ evidence_status=provided（补证请求已发）")
+                    else:  # suspend_supplier
+                        for qid in qids:
+                            cur.execute("UPDATE supplier_qualifications SET status='revoked' "
+                                        "WHERE qualification_id=?", (qid,))
+                        effects.append(f"suspend_supplier 批准：供应商 {risk['supplier_id']} 过期资质 "
+                                       f"{qids} → status=revoked（供应商已冻结）")
                 elif act in PROCUREMENT_ACTIONS:
                     # P1 采购处置（Build 3）：采购 RiskEvent 用 po_id/affected_po_line_ids 锚点，
                     # 无 SO 行副作用；批准后回写受影响 PoLine 状态或供票状态（事实回写，非判风险）。
