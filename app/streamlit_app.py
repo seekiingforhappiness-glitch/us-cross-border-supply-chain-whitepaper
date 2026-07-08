@@ -39,8 +39,12 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
 
 try:
     from app.rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
+    from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
+                                risk_in_region_scope, scope_for_role)
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
+    from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
+                            risk_in_region_scope, scope_for_role)
 
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
@@ -499,11 +503,16 @@ def render_command_header(role, n_open):
     role_label = {"ops": "物流运营", "cs": "客户成功", "manager": "经理", "sales": "销售",
                   "compliance": "合规", "finance": "财务"}[role]
     meta = ROLE_WORKSPACE_META.get(role, ROLE_WORKSPACE_META["manager"])
+    # 数据域改为真实 active scope（行级范围）：读任务台当前 mode（有 task tab 才信 session），
+    # 无则用角色默认。manager 恒 Global，ops/cs 如 "US · 我的任务"。不再硬编码/占位。
+    _task_mode = st.session_state.get("task_scope_mode") if "task" in visible_tabs(role) else None
+    scope_label = scope_for_role(role, _task_mode if _task_mode in MODES else None).label
     st.markdown(f"""
     <div class="command-header">
         <div class="command-title">
             <h1>{html.escape(meta['name'])}</h1>
-            <p>跨境供应链控制塔 · 角色 {role_label} · 数据域 {html.escape(meta['domain'])}</p>
+            <p>跨境供应链控制塔 · 角色 {role_label} · 工作台 {html.escape(meta['domain'])}
+               · 数据域 {html.escape(scope_label)}</p>
         </div>
         <div class="command-clock">
             simulation clock
@@ -604,12 +613,29 @@ def render_kpi_tab():
 
 # ---------- 风险队列 ----------
 def render_risk_tab():
-    show_closed = st.checkbox("显示已关闭", value=False)
+    c_top1, c_top2 = st.columns([1, 2])
+    with c_top1:
+        show_closed = st.checkbox("显示已关闭", value=False)
+    # 行级数据范围：按 shipment 目的地 region 过滤（本区域 / 全部）。
+    # manager 默认全部（不受限）；其余默认本区域。all-US demo 数据下「本区域」==全集，
+    # 故 SHP-2026-0099 走查永不被挡，随时可切「全部」恢复全集（只过滤视图，不删数据）。
+    _region = resolve_actor(role)[1]
+    with c_top2:
+        risk_choice = st.radio("数据范围（风险按目的地 region）", ["region", "all"],
+                               index=1 if role == "manager" else 0, horizontal=True,
+                               format_func=lambda m: {"region": f"本区域 {_region}",
+                                                      "all": "全部"}[m],
+                               key="risk_scope_mode")
     where = "" if show_closed else "WHERE r.status NOT IN ('resolved','escalated')"
-    risks = rows(f"""SELECT r.*, s.eta_initial, s.eta_current, s.delay_days, s.destination_port
+    risks = rows(f"""SELECT r.*, s.eta_initial, s.eta_current, s.delay_days, s.destination_port,
+                     s.destination_port_locode
                      FROM risk_events r JOIN shipments s ON s.shipment_id=r.shipment_id {where}
                      ORDER BY CASE r.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
                               r.affected_value_usd DESC""")
+    if risk_choice != "all":
+        risk_scope = scope_for_role(role, "team")  # team=同 region；manager 恒 all 不受限
+        risks = [r for r in risks if risk_in_region_scope(risk_scope, r["destination_port_locode"])]
+        st.caption(f"数据范围：本区域 {_region}（{len(risks)} 条风险；切「全部」即恢复全集，不删数据）")
     # 数据范围：把「本台焦点」风险类型稳定置顶并标注（不删数据，只调呈现）。
     focus = ROLE_RISK_FOCUS.get(role)
     if focus:
@@ -681,6 +707,17 @@ def render_task_tab():
                     r.affected_invoice_line_ids
                     FROM tasks t JOIN risk_events r ON r.risk_event_id=t.risk_event_id
                     ORDER BY t.task_id DESC""")
+    # 行级数据范围：按 assignee 过滤（我的任务 / 本组 / 全部）。
+    # manager 默认全部（监督全局不受限，即便选窄也恒全集）；ops/cs 默认「我的任务」。
+    # 切「全部」即恢复全集——只过滤视图，不删数据（key=task_scope_mode 供命令栏数据域联动）。
+    mode = st.radio("数据范围", list(MODES),
+                    index=list(MODES).index(default_mode(role)), horizontal=True,
+                    format_func=lambda m: MODE_LABELS[m], key="task_scope_mode")
+    scope = scope_for_role(role, mode)
+    _total = len(tasks)
+    tasks = [t for t in tasks if scope.matches_task(t)]
+    st.caption(f"数据域 **{scope.label}**：{len(tasks)}/{_total} 个任务"
+               + ("（只看与自己相关的行；切「全部」恢复全集）" if scope.mode != "all" else ""))
     render_table([{"任务": t["task_id"], "风险": t["risk_event_id"],
                    "级别": f"{SEV_ICON[t['severity']]}{t['severity']}", "货运": t["shipment_id"],
                    "负责人": t["assignee_user_id"] or "-", "团队": t["assignee_team_id"] or "-",

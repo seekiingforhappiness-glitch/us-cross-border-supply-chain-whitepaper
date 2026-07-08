@@ -65,6 +65,14 @@
   动作层 ROLE_PERMS/maker-checker 未改动（git diff 为空）。验证：test_rbac_nav 全绿、三 loop 无回归、
   六角色 UI 各 0 异常。**待 Daniel 裁决**：审计日志现仅 manager 可见（原全角色），如需 ops/compliance
   保留审计可见性改 ROLE_WORKSPACE 一行即可。
+- **行级数据范围（data scoping）机制已完成并通过 controller review**：`app/data_scope.py`（resolve_actor +
+  scope_predicate：mine/team/all 三 mode，manager=全局不受限）+ 任务台「我的任务/本组/全部」+ 风险台
+  「本区域/全部」视图级过滤（只过滤不删数据；命令栏数据域显示真实 scope 如 "US · 我的任务"）。动作层未改
+  （git diff 为空）。验证：test_data_scope 31 断言全绿、rbac_nav+三 loop 无回归、六角色 UI 各 0 异常。
+  **诚实标注（controller 独立复核发现）**：现有工作库全 US 单区域 + 运行时 0 任务，故 scoping 机制正确但
+  "看得见的过滤效果"为空；子代理的"mine⊆all 严格子集"断言实为空集⊆空集、通过得 vacuous。要让数据范围在
+  demo 里真正可见地过滤，下一步需 **enrich demo 数据**（多区域 + 多实名 owner + 预置分派任务）——这也更贴近
+  真实控制塔（多区域多 owner）。
 
 ## v0.4 进度
 
