@@ -364,6 +364,22 @@ def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, ro
                                 f"RiskEvent {task['risk_event_id']}: →mitigating"])
 
 
+def _bulk_set_status(cur, table, column, value, id_column, ids):
+    """逐条 UPDATE {table} SET {column}=value WHERE {id_column}=?；抽自 approve_mitigation 六处等价回写。"""
+    for i in ids:
+        cur.execute(f"UPDATE {table} SET {column}=? WHERE {id_column}=?", (value, i))
+
+
+def _distinct_invoice_col(cur, column, invoice_line_ids):
+    """DISTINCT {column} FROM invoice_lines WHERE invoice_line_id IN ids（参数化，空→[]）；抽自 rebill/dispute 两处。"""
+    if not invoice_line_ids:
+        return []
+    ph = ",".join("?" * len(invoice_line_ids))
+    return [r[column] for r in cur.execute(
+        f"SELECT DISTINCT {column} FROM invoice_lines WHERE invoice_line_id IN ({ph})",
+        invoice_line_ids)]
+
+
 def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
     """A5：审批（仅经理）。approved 按方案回写；rejected 退回 assigned，提案留痕于 action_log。"""
     if role not in ROLE_PERMS["ApproveMitigation"]:
@@ -391,12 +407,7 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
     # G4 incoterm 责任门禁（仅 rebill_customer）：审批前置校验，越界即拒绝并审计（A5/XC4）。
     if decision == "approved" and act == "rebill_customer":
         inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
-        codes = set()
-        if inv_lids:
-            ph = ",".join("?" * len(inv_lids))
-            codes = {r["charge_code"] for r in cur.execute(
-                f"SELECT DISTINCT charge_code FROM invoice_lines WHERE invoice_line_id IN ({ph})",
-                inv_lids)}
+        codes = set(_distinct_invoice_col(cur, "charge_code", inv_lids))
         ship = cur.execute("SELECT incoterm FROM shipments WHERE shipment_id=?",
                            (risk["shipment_id"],)).fetchone()
         incoterm = ship["incoterm"] if ship else ""
@@ -441,15 +452,8 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                     # dispute → 受影响行所属发票 disputed；accept_charge / rebill_customer → approved。
                     inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
                     new_inv_status = "disputed" if act == "dispute" else "approved"
-                    inv_ids = []
-                    if inv_lids:
-                        ph = ",".join("?" * len(inv_lids))
-                        inv_ids = [r["invoice_id"] for r in cur.execute(
-                            f"SELECT DISTINCT invoice_id FROM invoice_lines WHERE invoice_line_id IN ({ph})",
-                            inv_lids)]
-                        for iid in inv_ids:
-                            cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
-                                        (new_inv_status, iid))
+                    inv_ids = _distinct_invoice_col(cur, "invoice_id", inv_lids)
+                    _bulk_set_status(cur, "invoices", "status", new_inv_status, "invoice_id", inv_ids)
                     effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
                 elif act in PREPAYMENT_ACTIONS:
                     # R12 预付款敞口处置（po_id 锚）：审批后把相关付款 exposure_status 回写 at_risk
@@ -459,9 +463,8 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                     pay_ids = [r["payment_id"] for r in cur.execute(
                         "SELECT payment_id FROM purchase_payments WHERE po_id=? AND payment_type=?",
                         (risk["po_id"], pay_type))]
-                    for pid in pay_ids:
-                        cur.execute("UPDATE purchase_payments SET exposure_status='at_risk' "
-                                    "WHERE payment_id=?", (pid,))
+                    _bulk_set_status(cur, "purchase_payments", "exposure_status", "at_risk",
+                                     "payment_id", pay_ids)
                     effects.append(f"{act} 批准：{pay_type} 付款 {sorted(pay_ids)} → exposure_status=at_risk")
                 elif act in QUALIFICATION_ACTIONS:
                     # R13 供应商资质处置（supplier_id 锚）：审批后回写该供应商「过期证」的可见状态
@@ -475,15 +478,13 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                                   if r["valid_to"] < as_of
                                   and (cert_filter is None or r["cert_type"] == cert_filter))
                     if act == "request_supplier_docs":
-                        for qid in qids:
-                            cur.execute("UPDATE supplier_qualifications SET evidence_status='provided' "
-                                        "WHERE qualification_id=?", (qid,))
+                        _bulk_set_status(cur, "supplier_qualifications", "evidence_status",
+                                         "provided", "qualification_id", qids)
                         effects.append(f"request_supplier_docs 批准：过期资质 {qids} "
                                        f"→ evidence_status=provided（补证请求已发）")
                     else:  # suspend_supplier
-                        for qid in qids:
-                            cur.execute("UPDATE supplier_qualifications SET status='revoked' "
-                                        "WHERE qualification_id=?", (qid,))
+                        _bulk_set_status(cur, "supplier_qualifications", "status", "revoked",
+                                         "qualification_id", qids)
                         effects.append(f"suspend_supplier 批准：供应商 {risk['supplier_id']} 过期资质 "
                                        f"{qids} → status=revoked（供应商已冻结）")
                 elif act in PROCUREMENT_ACTIONS:
@@ -503,15 +504,13 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                             sinv_ids = [r["supplier_invoice_id"] for r in cur.execute(
                                 "SELECT supplier_invoice_id FROM supplier_invoices WHERE po_id=?",
                                 (risk["po_id"],))]
-                        for sid in sinv_ids:
-                            cur.execute("UPDATE supplier_invoices SET status='disputed' "
-                                        "WHERE supplier_invoice_id=?", (sid,))
+                        _bulk_set_status(cur, "supplier_invoices", "status", "disputed",
+                                         "supplier_invoice_id", sinv_ids)
                         effects.append(f"dispute_supplier_invoice 批准：供票 {sorted(sinv_ids)} → disputed")
                     else:
                         new_pol_status = PO_LINE_STATUS_ON_APPROVE[act]
-                        for lid in po_line_ids:
-                            cur.execute("UPDATE po_lines SET line_status=? WHERE po_line_id=?",
-                                        (new_pol_status, lid))
+                        _bulk_set_status(cur, "po_lines", "line_status", new_pol_status,
+                                         "po_line_id", po_line_ids)
                         effects.append(f"{act} 批准：受影响采购行 {sorted(po_line_ids)} "
                                        f"→ line_status={new_pol_status}")
                 elif act in WAREHOUSE_ACTIONS:

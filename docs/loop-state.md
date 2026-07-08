@@ -15,7 +15,7 @@
 - [x] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
 - [x] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
 - [x] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
-- [ ] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
+- [x] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
 - [ ] **8. 多区域 demo 数据**：让行级数据范围（region）可见地过滤（守真值 md5、engine R/P 不变）
 - [ ] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
 - [ ] **10. `docs/field-gap-analysis.md` + retrospective 更新**到当前全貌
@@ -35,3 +35,4 @@
 - 迭代 4 — README.md 全面重写到当前 5 场景 + 对象中心 + 全景导航（场景表/跨场景网/对象级 agent 三约束/完整复现链/架构六层/导航表/治理护城河）— 复现命令均为本会话已验证模块 — 纯文档 — 见 loop 提交
 - 迭代 5 — 新建 docs/demo-assertions-all.md 统一验收清单（A 检测精度/B 五场景闭环/C 对象中心+可信AI/D 治理/E 现场走查，每条附验证命令 + 诚实提醒）— controller 核对清单引用的 21 个测试模块全部真实存在 — 纯文档 — 见 loop 提交
 - 迭代 6 — 新建 app/test_agent_security.py 统一对抗安全 sweep（6 对象 agent × 6 角色 tool_defs 无审批类；6 agent × 3 关键角色 × 4 审批类 × 4 注入变体 = 288 次 dispatch 全 refused + 目标三态不变；manager 亦被拒；7 条边界/负例：未知工具/越域读/超角色写/动作层双闸/FORBIDDEN⊇四审批类；292 条 denied 全溯源 ai-agent）— controller 独立复核全绿：git tracked diff=0（只加测试）、test_agent_security 全通过、既有回归(object_workbench/warehouse/scope_parity/agent.evaluate)无退化、R1-R18 未动 — 见 loop 提交
+- 迭代 7 — app/actions.py 行为保持重构：抽 2 私有 helper（`_bulk_set_status` 合并 6 处等价单列批量回写、`_distinct_invoice_col` 合并 2 处 invoice_lines 父列去重），行数 595→594；子代理诚实标注不宜合并处（lazy-import 委派/多列 SET+outbox/JOIN 查询保持内联）— controller 独立复核全绿：只动 actions.py(净 -1 行)、ROLE_PERMS/ADM_PERMS/FORBIDDEN 0 改动、五场景闭环+test_agent_security+scope_parity 全通过(退出码 0；grep 的 error 命中系「无 error」断言假阳性)、R1-R18+agent.evaluate 未动 — 见 loop 提交
