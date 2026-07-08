@@ -44,6 +44,7 @@ try:
                                 audit_region_index, audit_in_scope)
     from app import object_workbench
     from app import standard_object_view as sov
+    from app.executive_view import build_executive_summary
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
@@ -51,6 +52,7 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
                             audit_region_index, audit_in_scope)
     import object_workbench
     import standard_object_view as sov
+    from executive_view import build_executive_summary
 
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
@@ -579,44 +581,84 @@ ROLE_RISK_FOCUS = {
 
 render_command_header(role, n_open)
 
-# ---------- KPI 总览（manager 专属落地页）----------
-def render_kpi_tab():
-    st.caption("经理总览：全域运营健康快照，来自现有对象表只读聚合（不新增对象/表）。")
-    open_risk = rows("SELECT count(*) c FROM risk_events "
-                     "WHERE status NOT IN ('resolved','escalated')")[0]["c"]
-    esc_cand = rows("SELECT count(*) c FROM tasks "
-                    "WHERE sla_state='overdue' OR escalation_level>0")[0]["c"]
-    dq_open = rows("SELECT count(*) c FROM dq_issues WHERE status!='closed'")[0]["c"]
-    adm_wip = rows("SELECT count(*) c FROM admission_cases "
-                   "WHERE status NOT IN ('approved','rejected')")[0]["c"]
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("开放风险", open_risk)
-    k2.metric("升级候选", esc_cand, help="任务 SLA 逾期或已升级")
-    k3.metric("DQ 待处置", dq_open)
-    k4.metric("准入在办", adm_wip, help="未 approved/rejected 的准入案件")
+# ---------- 全局 Executive 一页视图（manager 专属落地页）----------
+def _signal_strip(cards):
+    """复用既有 signal-card 样式渲染一行信号卡；cards=[(label, value, sub), ...]。"""
+    html_cards = "".join(
+        f'<div class="signal-card"><span>{html.escape(str(lbl))}</span>'
+        f'<strong>{html.escape(str(val))}</strong>'
+        f'<em>{html.escape(str(sub))}</em></div>'
+        for lbl, val, sub in cards)
+    st.markdown(f'<div class="signal-strip">{html_cards}</div>', unsafe_allow_html=True)
 
-    c_left, c_right = st.columns(2)
-    with c_left:
-        st.markdown("**任务 SLA 状态分布**")
-        sla = {r["s"]: r["c"] for r in rows(
-            "SELECT COALESCE(sla_state,'(未知)') s, count(*) c FROM tasks GROUP BY sla_state")}
-        sla_rows = [{"SLA 状态": s, "任务数": sla.get(s, 0)}
-                    for s in ("open", "due_today", "overdue")]
-        if "(未知)" in sla:
-            sla_rows.append({"SLA 状态": "(未知)", "任务数": sla["(未知)"]})
-        render_table(sla_rows)
-        st.markdown("**发票状态分布**")
-        render_table([{"发票状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}",
-                       "数量": x["c"]} for x in rows(
-            "SELECT status, count(*) c FROM invoices GROUP BY status ORDER BY status")])
-    with c_right:
-        st.markdown("**开放风险按类型**")
-        render_table([{"风险类型": x["type"], "开放数": x["c"]} for x in rows(
-            "SELECT type, count(*) c FROM risk_events "
-            "WHERE status NOT IN ('resolved','escalated') GROUP BY type ORDER BY c DESC")])
+
+def render_kpi_tab():
+    st.caption("经理总览 · 全局 Executive 一页视图：跨 5 场景的全域运营健康快照，"
+               "来自现有对象表只读聚合（不新增对象/表/规则/动作）。")
+    # 单次聚合：render 显示的数字与 test_executive_view 断言同源（build 一次，render 读它）。
+    summary = build_executive_summary(db())
+    cross, delay, cost = summary["cross"], summary["delay"], summary["cost"]
+    proc, wh, adm = summary["procurement"], summary["warehouse"], summary["admission"]
+
+    # ---- 顶部：全局健康（跨场景横条，复用 signal-card 样式）----
+    st.markdown("#### 全局健康")
+    sla = cross["tasks_by_sla"]
+    _signal_strip([
+        ("总未结风险", cross["total_open_risk"], "open risk events"),
+        ("任务逾期", sla["overdue"], "SLA overdue"),
+        ("今日到期", sla["due_today"], "due today"),
+        ("升级候选", cross["escalation_candidates"], "overdue / escalated"),
+        ("DQ 待处置", cross["dq_open"], "data quality open"),
+    ])
+
+    # ---- 场景 1 · 延误运营（R1-R3）----
+    st.markdown("#### 延误运营　·　R1-R3")
+    d = delay["by_severity"]
+    dc = st.columns(5)
+    dc[0].metric("开放风险", delay["open_risk"])
+    dc[1].metric("critical", d["critical"])
+    dc[2].metric("high", d["high"])
+    dc[3].metric("medium", d["medium"])
+    dc[4].metric("at_risk 订单行", delay["at_risk_so_lines"], help="line_status='at_risk' 的销售订单行")
+
+    # ---- 场景 2 · 费用稽核（R4-R6）----
+    st.markdown("#### 费用稽核　·　R4-R6")
+    c = cost["by_severity"]
+    cc = st.columns(5)
+    cc[0].metric("开放风险", cost["open_risk"])
+    cc[1].metric("critical", c["critical"])
+    cc[2].metric("high", c["high"])
+    cc[3].metric("under_review 发票", cost["under_review_invoices"])
+    cc[4].metric("disputed 发票", cost["disputed_invoices"])
+
+    # ---- 场景 3 · 采购（R7-R15）----
+    st.markdown("#### 采购　·　R7-R15")
+    pc = st.columns(6)
+    pc[0].metric("开放风险", proc["open_risk"])
+    pc[1].metric("三方对账异常", proc["three_way_recon"], help="R10 价量不符 + R11 票超收")
+    pc[2].metric("预付款敞口", proc["prepayment_exposure"], help="R12")
+    pc[3].metric("资质过期", proc["qualification_expired"], help="R13")
+    pc[4].metric("单一来源", proc["single_source"], help="R14")
+    pc[5].metric("maverick 采购", proc["maverick_spend"], help="R15")
+
+    # ---- 场景 4 · 仓储库存（R16-R18）----
+    st.markdown("#### 仓储库存　·　R16-R18")
+    wc = st.columns(4)
+    wc[0].metric("开放风险", wh["open_risk"])
+    wc[1].metric("断货", wh["stockout"], help="R16")
+    wc[2].metric("不可履约", wh["unfulfillable"], help="R17")
+    wc[3].metric("盘点差异", wh["shrinkage"], help="R18")
+
+    # ---- 场景 5 · 准入合规 ----
+    st.markdown("#### 准入合规")
+    ac_left, ac_right = st.columns([2, 1])
+    with ac_left:
         st.markdown("**准入案件按状态**")
-        render_table([{"准入状态": x["status"], "数量": x["c"]} for x in rows(
-            "SELECT status, count(*) c FROM admission_cases GROUP BY status ORDER BY c DESC")])
+        render_table([{"准入状态": s, "数量": n} for s, n in adm["by_status"].items()]
+                     or [{"准入状态": "(无)", "数量": 0}])
+    with ac_right:
+        st.metric("门禁触发", adm["gate_triggered"],
+                  help="G1 硬门禁：severity=critical 且 evidence_status≠verified 的合规发现（禁批）")
 
 
 # ---------- 风险队列 ----------

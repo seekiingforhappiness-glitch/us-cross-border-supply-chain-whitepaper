@@ -10,7 +10,7 @@
 ## 迭代清单（15 项，均为 §4 无需逐次批准）
 
 - [x] **1. Warehouse 富工作台 + permission-aware 对象级 agent**（补齐对象中心对称性；无新对象/规则）
-- [ ] **2. 全局 Executive 一页视图**（跨 5 场景 KPI：各域风险数/SLA/追回额/精度；manager 落地页增强）
+- [x] **2. 全局 Executive 一页视图**（跨 5 场景 KPI：各域风险数/SLA/追回额/精度；manager 落地页增强）
 - [ ] **3. `docs/architecture.md` 刷新**到 5 场景全貌（对象图/场景连接/治理层）
 - [ ] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
 - [ ] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
@@ -30,3 +30,4 @@
 （每次迭代在此追加一行：`迭代 N — <做了什么> — <controller 复核结论> — <commit hash>`）
 
 - 迭代 1 — Warehouse 升第 6 富对象 + 富工作台（库存位/预留/盘点/锚定风险）+ permission-aware 对象级 agent — controller 独立复核全绿：wh-agent 三角色 approve 全被拒、ROLE_PERMS/FORBIDDEN/warehouse_actions diff=0、R1-R18 全 P/R=1.000、标准视图 28→27、全套回归绿 — 见 loop 提交
+- 迭代 2 — 全局 Executive 一页视图（manager 落地页 = 5 场景 KPI 一屏：延误/费用/采购/仓储/准入 + 全局健康横条）— controller 独立复核全绿：纯只读聚合、actions/rbac_nav/ontology diff=0、executive_view 测试全绿（数字与直查一致，152 总未结）、R1-R18 未动、三角色 UI 0 异常 — 见 loop 提交
