@@ -182,6 +182,17 @@ MVP 动作：`RecordGoodsReceipt`/`MatchSupplierInvoice`（摄入→检测）+ p
 **推迟（富化，另行批准）**：R11-R13(超收货开票/预付款敞口/资质过期)、PurchasePayment、SupplierQualification、
 RFQ、单一来源(R14)/maverick(R15)。取舍：先把一条三方对账主线端到端跑通验证模式，再富化。
 
+**P2 — 采购富化 R11-R13（2026-07-08，Daniel 批准，承 P1 推迟清单）。**
+把 P1 推迟的三条采购风险从"另行批准"转为落地：**R11 开票超收货量、R12 预付款敞口、R13 供应商资质过期**。
+新增对象：`PurchasePayment`（挂 PO：payment_type[deposit/balance/full]、amount_usd、paid_date、exposure_status；
+R12 事实源）、`SupplierQualification`（挂 Supplier：cert_type、evidence_status、valid_from、valid_to、status；R13 事实源）。
+R11 复用既有 supplier_invoice_lines + goods_receipt_lines（无新对象）。新增处置动作（proposed_action 扩展）：
+`escalate_prepayment`/`hold_balance_payment`（R12）、`request_supplier_docs`/`suspend_supplier`（R13）。全复用
+RiskEvent→Task→治理闭环 + po_id/supplier_id 锚点 + 既有 PO 工作台；两个新对象走**自动标准视图**（不建富工作台）。
+容差/阈值（敞口金额、超期天数、资质过期宽限）入 `config/*.yaml`。取舍：补齐跨境采购最吃重的预付款/资质两条
+（研究里异常 G/H），仍不做 RFQ/单一来源/maverick。铁律不变：引擎禁读真值、真值存 data/truth/、既有 R1-R10 R/P=1.000
+不得扰动、agent 不越权。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

@@ -20,6 +20,18 @@
 """
 from datetime import date, timedelta
 
+# PO 级注入桶顺序（决策日志 P2）：既有 6 桶在前、字节不变；富化 4 桶 append 在后。
+# selected 排序前缀不变 + rng 在既有 52 PO 之后才为新桶抽样 → 既有 R7-R10 数据逐字节零扰动。
+PO_BUCKETS = ("clean", "gray", "r7", "r8", "r9", "r10", "r11", "r11_gray", "r12", "r12_gray")
+
+# R11 注入幅度（固定，非随机 → P/R 精确 1.000）：实收比订购少 2.5%（落 [over_tol,short_tol]=
+# [2%,3%] 带内：>2% 触发 R11 超收，<3% 不触发 R8 短装、发票仍开足订购量 → 不触 R10 数量分支）。
+R11_SHORT = 0.025      # r11：received = ordered×(1−0.025)，invoice = ordered
+R11_GRAY_SHORT = 0.01  # r11_gray：received = ordered×(1−0.01)，超收 ~1% < 2% 容差 → 不触发
+# R13 资质证严重度：合规/审计类过期 = high，管理体系/产品认证类 = medium（gen 与 detect 同一映射）
+CERT_SEVERITY = {"factory_audit": "high", "uflpa_traceability": "high",
+                 "iso9001": "medium", "product_safety_cert": "medium"}
+
 
 def _num(po_id):
     return int(po_id.split("-")[-1])
@@ -44,7 +56,12 @@ def build_procurement_world(world, cfg, rng):
     short_tol = pc["short_qty_tol"]
     ppm_thr = pc["defect_ppm_threshold"]
     price_tol = pc["price_tol"]
+    deposit_ratio = pc["deposit_ratio"]
+    grace_days = pc["deposit_grace_days"]
+    exposure_high = pc["exposure_high_usd"]
+    expiring_days = pc["qual_expiring_days"]
     inj = pc["inject"]
+    qinj = pc["qual_inject"]
 
     pos = world["pos"]
     skus = world["skus"]
@@ -55,14 +72,14 @@ def build_procurement_world(world, cfg, rng):
     for kid in sorted(skus):
         skus_of_supplier.setdefault(skus[kid]["supplier_id"], []).append(kid)
 
-    # 确定性选 PO：排除设计槽位，按 po_id 排序取前 n_pos
-    n_pos = sum(inj[k] for k in ("clean", "gray", "r7", "r8", "r9", "r10"))
+    # 确定性选 PO：排除设计槽位，按 po_id 排序取前 n_pos（含富化 4 桶；前缀=既有 52 不变）
+    n_pos = sum(inj[k] for k in PO_BUCKETS)
     selected = [pid for pid in sorted(pos) if _num(pid) not in DESIGN_PO_NUMS][:n_pos]
 
-    # 画像切片（顺序：clean / gray / r7 / r8 / r9 / r10）
+    # 画像切片（PO_BUCKETS 顺序：既有 6 桶在前 → 主循环先处理、rng 抽样与产物字节不变）
     profile = {}
     i = 0
-    for name in ("clean", "gray", "r7", "r8", "r9", "r10"):
+    for name in PO_BUCKETS:
         for pid in selected[i:i + inj[name]]:
             profile[pid] = name
         i += inj[name]
@@ -83,8 +100,10 @@ def build_procurement_world(world, cfg, rng):
     grn_lines = []
     supplier_invoices = []
     supplier_invoice_lines = []
+    payments = []
+    qualifications = []
     anomalies = []
-    seqs = {"pol": 0, "grn": 0, "grl": 0, "sinv": 0, "sil": 0, "epr": 0}
+    seqs = {"pol": 0, "grn": 0, "grl": 0, "sinv": 0, "sil": 0, "epr": 0, "pay": 0, "qual": 0}
 
     def nid(kind, fmt):
         seqs[kind] += 1
@@ -122,6 +141,8 @@ def build_procurement_world(world, cfg, rng):
             gray_dim = gray_dims[gray_seen[0] % len(gray_dims)]
             gray_seen[0] += 1
 
+        # r12/r12_gray = 预付款敞口画像：PO 已下、有 po_line，但尚未收货 → line_status=open
+        line_status_val = "open" if prof in ("r12", "r12_gray") else "received"
         lines_meta = []  # (po_line_id, sku_id, qty, unit_price, expected_ready)
         for j, sku_id in enumerate(line_skus):
             pol_id = nid("pol", "POL-{:06d}")
@@ -133,11 +154,16 @@ def build_procurement_world(world, cfg, rng):
                 "po_line_id": pol_id, "po_id": pid, "sku_id": sku_id, "qty": qty,
                 "unit_price_usd": unit_price, "currency": "USD",
                 "expected_ready_date": expected_ready.isoformat(),
-                "line_status": "received", "as_of_date": as_of.isoformat(),
+                "line_status": line_status_val, "as_of_date": as_of.isoformat(),
                 "created_at": _iso(po_date)})
             lines_meta.append([pol_id, sku_id, qty, unit_price, expected_ready])
 
         primary = lines_meta[0]  # 异常默认落在 primary 行
+
+        # r12/r12_gray：不生成收货/GRN/开票（open PO，尚未到货、未开票）。故 recv_by_line 不含这些
+        # po_line → R7-R11 天然不触发；敞口由 deposit 付款判定（主循环后 payment pass）。R12 真值同处生成。
+        if prof in ("r12", "r12_gray"):
+            continue
 
         # --- 收货（GoodsReceipt + 行）：默认单张 GRN；clean/gray 部分分批(2 张)---
         do_partial = (prof in ("clean", "gray")
@@ -178,6 +204,14 @@ def build_procurement_world(world, cfg, rng):
                 accepted_qty, rejected_qty = received_qty, 0
             elif k == 0 and gray_dim == "defect":
                 defect_ppm = int(ppm_thr * 0.8)                  # ppm = 0.8×阈值 < 阈值
+            elif k == 0 and prof == "r11":                       # R11 开票超收货量
+                # 实收比订购少 2.5%（发票仍开足订购量，见下）→ 发票 > 实收 → 超收；
+                # 2.5% < short_tol(3%) → 非短装 R8；发票=订购 → 不触 R10 数量分支。
+                received_qty = qty - round(qty * R11_SHORT)
+                accepted_qty, rejected_qty = received_qty, 0
+            elif k == 0 and prof == "r11_gray":                  # 灰区：超收 ~1% < 2% 容差
+                received_qty = qty - round(qty * R11_GRAY_SHORT)
+                accepted_qty, rejected_qty = received_qty, 0
 
             recv[pol_id] = dict(received_qty=received_qty, accepted_qty=accepted_qty,
                                 rejected_qty=rejected_qty, qc_status=qc_status,
@@ -272,6 +306,100 @@ def build_procurement_world(world, cfg, rng):
                         (inv_unit - unit_price) * qty,
                         f"价量不符：PO 单价 ${unit_price} vs 发票单价 ${inv_unit}"
                         f"（超 {round(over * 100, 1)}%）", case_id)
+        elif prof == "r11":
+            inv_qty = qty  # 发票开足订购量（默认 inv_qty=qty），实收短 2.5% → 超收
+            over_units = inv_qty - r["received_qty"]
+            over_ratio = over_units / r["received_qty"] if r["received_qty"] else 0
+            sev = "high" if over_ratio > 0.10 else "medium"
+            add_anomaly("R11", "invoice_over_receipt", pid, pol_id, supplier_id, sev,
+                        over_units * unit_price,
+                        f"开票超收货量：实收 {r['received_qty']} 件 / 开票 {inv_qty} 件"
+                        f"（超收 {over_units} 件未到货，占实收 {round(over_ratio * 100, 1)}%）", case_id)
+
+    # === PurchasePayment（挂 PO）+ R12 预付款敞口真值（决策日志 P2）===
+    # 每 selected PO 一笔预付定金。有收货的 PO 定金 released/covered；r12/r12_gray（无收货）为敞口。
+    # 检测不信 exposure_status 字段（denormalized hint），由收货 + 付款日重算（同 build_ontology
+    # "不信状态字段"哲学）。付款在主循环后统一抽 rng → 既有 52 PO 的 po_line/GRN/发票逐字节零扰动。
+    po_total = {}
+    for l in po_lines:
+        po_total[l["po_id"]] = po_total.get(l["po_id"], 0.0) + l["qty"] * l["unit_price_usd"]
+    pos_with_grn = {g["po_id"] for g in goods_receipts}
+    for pid in selected:
+        prof = profile[pid]
+        supplier_id = pos[pid]["supplier_id"]
+        po_date = pos[pid]["po_date"]
+        case_id = case_of_po.get(pid, "")
+        deposit_amt = round(deposit_ratio * po_total.get(pid, 0.0), 2)
+        if prof == "r12":                       # 敞口：超宽限、无收货
+            paid = _clamp(as_of - timedelta(days=grace_days + rng.randint(5, 20)), ready_lo, as_of)
+            exposure = "at_risk"
+        elif prof == "r12_gray":                # 灰区：仍在宽限期内
+            paid = _clamp(as_of - timedelta(days=rng.randint(1, grace_days - 2)), ready_lo, as_of)
+            exposure = "covered"
+        else:                                   # 有收货 → 定金已被履约覆盖
+            paid = _clamp(po_date + timedelta(days=rng.randint(3, 10)), ready_lo, as_of)
+            exposure = "released" if pid in pos_with_grn else "covered"
+        payments.append({
+            "payment_id": nid("pay", "PAY-2026-{:05d}"), "po_id": pid, "payment_type": "deposit",
+            "amount_usd": deposit_amt, "paid_date": paid.isoformat(),
+            "exposure_status": exposure, "as_of_date": as_of.isoformat(),
+            "created_at": _iso(paid)})
+        if prof == "r12":  # 注入即真值（detect 同判定：deposit≤as_of + 无 GRN + (as_of−paid)>grace）
+            sev = "high" if deposit_amt > exposure_high else "medium"
+            add_anomaly("R12", "prepayment_exposure", pid, "", supplier_id, sev, deposit_amt,
+                        f"预付款敞口：定金 ${deposit_amt} 已付（{paid.isoformat()}）、PO 至今无收货、"
+                        f"超 {grace_days} 天宽限（敞口 {'>' if deposit_amt > exposure_high else '≤'} "
+                        f"${exposure_high} → {sev}）", case_id)
+
+    # === SupplierQualification（挂 Supplier）+ R13 资质过期真值（决策日志 P2）===
+    # 每供应商基础发一张有效 iso9001；R13 target 另发一张过期证（无同类续证）。R13 锚 supplier_id：
+    # 某 cert_type 全部过期且无同类有效证覆盖 as_of + 供应商仍有 open PO(status≠closed) → 敞口。
+    # 检测不信 status 字段，由 valid_from/valid_to vs as_of 重算（as-of 安全）。
+    suppliers_all = sorted({pos[pid]["supplier_id"] for pid in pos})
+    open_suppliers = sorted({pos[pid]["supplier_id"] for pid in pos
+                             if pos[pid].get("status") != "closed"})
+    r13_targets = open_suppliers[:qinj["r13"]]
+    gray_pool = [s for s in open_suppliers if s not in r13_targets]
+    r13_gray = gray_pool[:qinj["r13_gray"]]
+    r13_expiring = gray_pool[qinj["r13_gray"]:qinj["r13_gray"] + qinj["r13_expiring"]]
+
+    def _emit_qual(supplier_id, cert_type, vfrom, vto, status, evidence="verified"):
+        qualifications.append({
+            "qualification_id": nid("qual", "QUAL-{:05d}"), "supplier_id": supplier_id,
+            "cert_type": cert_type, "evidence_status": evidence,
+            "valid_from": vfrom.isoformat(), "valid_to": vto.isoformat(),
+            "status": status, "as_of_date": as_of.isoformat(), "created_at": _iso(vfrom)})
+
+    for supplier_id in suppliers_all:
+        # 基础有效证（管理体系）：保证非 target 供应商全绿、且不与 target 过期证同 cert_type
+        _emit_qual(supplier_id, "iso9001", as_of - timedelta(days=200),
+                   as_of + timedelta(days=300), "valid")
+        if supplier_id in r13_targets:
+            ti = r13_targets.index(supplier_id)   # 前 3 = factory_audit(high)，其余 = product_safety_cert(medium)
+            cert = "factory_audit" if ti < 3 else "product_safety_cert"
+            vto = as_of - timedelta(days=30)
+            _emit_qual(supplier_id, cert, as_of - timedelta(days=400), vto, "expired")
+            sev = CERT_SEVERITY[cert]
+            add_anomaly("R13", "qualification_expired", "", "", supplier_id, sev, 0.0,
+                        f"供应商资质过期：{cert} 有效期至 {vto.isoformat()}（已过期、无同类续证），"
+                        f"且供应商仍有 open PO（status≠closed）", "")
+        elif supplier_id in r13_gray:            # 灰区：过期证 + 同类有效续证覆盖 as_of → 不触发
+            _emit_qual(supplier_id, "factory_audit", as_of - timedelta(days=400),
+                       as_of - timedelta(days=20), "expired")
+            _emit_qual(supplier_id, "factory_audit", as_of - timedelta(days=10),
+                       as_of + timedelta(days=355), "valid")
+        elif supplier_id in r13_expiring:        # 灰区：临期（valid_to≥as_of，未过期）→ 不触发
+            _emit_qual(supplier_id, "factory_audit", as_of - timedelta(days=200),
+                       as_of + timedelta(days=max(1, expiring_days // 2)), "expiring")
+        else:                                    # 全绿：有效 factory_audit
+            _emit_qual(supplier_id, "factory_audit", as_of - timedelta(days=100),
+                       as_of + timedelta(days=265), "valid")
+
+    # 真值输出（§5 铁律）：R7-R10 原序原字节在前（只按既有键排序，逐字节不变），R11-R13 append 在后。
+    r710 = sorted([a for a in anomalies if a["rule_id"] in ("R7", "R8", "R9", "R10")],
+                  key=lambda a: (a["po_id"], a["po_line_id"], a["rule_id"]))
+    rich = sorted([a for a in anomalies if a["rule_id"] in ("R11", "R12", "R13")],
+                  key=lambda a: (a["rule_id"], a["po_id"], a["po_line_id"], a["supplier_id"]))
 
     world["procurement"] = {
         "pos": selected,
@@ -280,9 +408,12 @@ def build_procurement_world(world, cfg, rng):
         "grn_lines": grn_lines,
         "supplier_invoices": supplier_invoices,
         "supplier_invoice_lines": supplier_invoice_lines,
-        "anomalies": sorted(anomalies, key=lambda a: (a["po_id"], a["po_line_id"], a["rule_id"])),
+        "payments": payments,
+        "qualifications": qualifications,
+        "anomalies": r710 + rich,
         "design_cases": design_cases,
         "profile": profile,
+        "qual_roles": {"r13": r13_targets, "r13_gray": r13_gray, "r13_expiring": r13_expiring},
     }
     return world["procurement"]
 

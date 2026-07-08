@@ -1,9 +1,9 @@
 {
-  "version": "0.5.0",
+  "version": "0.6.0",
   "name": "cross_border_unified_ontology",
   "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账，四场景共享）",
   "scope": "Four scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice) — all REUSING the RiskEvent/Task closed loop (F1/P1). Shared objects zero duplication.",
-  "authority": "Human-readable sources: control-tower-ontology-manual.md (v0.2) + admission-manual-v0.3.md + cost-manual-v0.4.md. Decisions D1-D11, E1-E5, F1-F5, P1 govern changes. Filename kept for reference stability.",
+  "authority": "Human-readable sources: control-tower-ontology-manual.md (v0.2) + admission-manual-v0.3.md + cost-manual-v0.4.md. Decisions D1-D11, E1-E5, F1-F5, P1-P2 govern changes. P2 adds procurement enrichment (PurchasePayment, SupplierQualification, rules R11-R13). Filename kept for reference stability.",
   "asOfPolicy": {
     "rule": "All engine evaluation and UI rendering take an explicit as_of_date parameter. Implicit system time is forbidden (D8)."
   },
@@ -502,6 +502,43 @@
         {"name": "created_at", "type": "datetime", "required": true}
       ],
       "dataQualityRules": ["supplier_invoice_line_id unique", "amount_usd == qty * unit_price_usd", "supplier_invoice_id in supplier_invoices", "po_line_id in po_lines"]
+    },
+    {
+      "type": "PurchasePayment",
+      "primaryKey": "payment_id",
+      "ownerRole": "finance",
+      "statusField": "exposure_status",
+      "description": "P2 (procurement enrichment): a payment milestone against a PurchaseOrder (deposit / balance / full). Deposit paid before goods arrive creates prepayment exposure — the money-out leg the three-way match (PO/GRN/invoice) alone cannot see. Basis for R12.",
+      "properties": [
+        {"name": "payment_id", "type": "string", "required": true},
+        {"name": "po_id", "type": "string", "required": true, "description": "References existing purchase_orders.po_id (payment attaches to the PO header, not a line)."},
+        {"name": "payment_type", "type": "enum", "required": true, "values": ["deposit", "balance", "full"], "description": "Deposit is the prepayment leg R12 watches; balance/full follow receipt."},
+        {"name": "amount_usd", "type": "number", "required": true, "description": "Cash paid; for a deposit this is the exposure at risk until goods are received."},
+        {"name": "paid_date", "type": "date", "required": true, "description": "R12: exposure age = as_of_date - paid_date, compared with config.deposit_grace_days."},
+        {"name": "exposure_status", "type": "enum", "required": true, "values": ["covered", "at_risk", "released"], "description": "Denormalized hint only. Detection (R12) NEVER trusts this field — it recomputes from receipts + paid_date (same 'do not trust status fields' rule as pipeline shipment state)."},
+        {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["payment_id unique", "amount_usd >= 0", "po_id in purchase_orders"]
+    },
+    {
+      "type": "SupplierQualification",
+      "primaryKey": "qualification_id",
+      "ownerRole": "compliance",
+      "statusField": "status",
+      "description": "P2 (procurement enrichment): a supplier certificate/qualification with a validity window (factory audit, ISO9001, UFLPA traceability, product safety). An expired qualification on a supplier that still has open POs is a live compliance exposure. Basis for R13.",
+      "properties": [
+        {"name": "qualification_id", "type": "string", "required": true},
+        {"name": "supplier_id", "type": "string", "required": true, "description": "References existing suppliers.supplier_id."},
+        {"name": "cert_type", "type": "string", "required": true, "description": "e.g. factory_audit, iso9001, uflpa_traceability, product_safety_cert. Severity of R13 depends on cert_type."},
+        {"name": "evidence_status", "type": "enum", "required": true, "values": ["missing", "provided", "verified", "rejected"]},
+        {"name": "valid_from", "type": "date", "required": true},
+        {"name": "valid_to", "type": "date", "required": true, "description": "R13: valid_to < as_of_date (expired) with no same-cert_type renewal covering as_of. valid_to within [as_of, as_of+config.qual_expiring_days] is 'expiring', NOT yet expired."},
+        {"name": "status", "type": "enum", "required": true, "values": ["valid", "expiring", "expired", "revoked"], "description": "Denormalized hint only. Detection (R13) recomputes from valid_from/valid_to vs as_of_date; does not trust this field."},
+        {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["qualification_id unique", "valid_from <= valid_to", "supplier_id in suppliers"]
     }
   ],
   "links": [
@@ -537,7 +574,9 @@
     {"linkType": "supplier_invoice_from_supplier", "source": "SupplierInvoice", "target": "Supplier", "cardinality": "N:1"},
     {"linkType": "supplier_invoice_has_line", "source": "SupplierInvoice", "target": "SupplierInvoiceLine", "cardinality": "1:N"},
     {"linkType": "supplier_invoice_line_for_po_line", "source": "SupplierInvoiceLine", "target": "PoLine", "cardinality": "N:1", "rule": "three-way match anchor: invoice vs order"},
-    {"linkType": "risk_on_po", "source": "RiskEvent", "target": "PurchaseOrder", "cardinality": "N:1", "rule": "P1: nullable anchor for procurement anomalies (R7-R10)"},
+    {"linkType": "po_has_payment", "source": "PurchaseOrder", "target": "PurchasePayment", "cardinality": "1:N", "rule": "P2: deposit/balance milestones against a PO; deposit-before-receipt drives R12 exposure"},
+    {"linkType": "supplier_has_qualification", "source": "Supplier", "target": "SupplierQualification", "cardinality": "1:N", "rule": "P2: certificates with validity windows; expired + open PO drives R13"},
+    {"linkType": "risk_on_po", "source": "RiskEvent", "target": "PurchaseOrder", "cardinality": "N:1", "rule": "P1: nullable anchor for procurement anomalies (R7-R10); P2 R12 also anchors here"},
     {"linkType": "risk_on_supplier", "source": "RiskEvent", "target": "Supplier", "cardinality": "N:1", "rule": "P1: nullable anchor for procurement anomalies"},
     {"linkType": "risk_affects_po_line", "source": "RiskEvent", "target": "PoLine", "cardinality": "N:M", "via": "affected_po_line_ids (P1)"}
   ],
@@ -768,6 +807,22 @@
       "successEffects": ["three-way match invoice line vs PoLine vs GoodsReceiptLine", "no anomaly -> status=matched/approved; R10 mismatch -> status=under review + CreateRiskEvent"],
       "failureHandling": ["total_usd != sum(lines) -> reject and count in DQ"],
       "audit": ["supplier_invoice_id", "match_result", "rules_triggered"]
+    },
+    {
+      "id": "A9", "name": "RecordPurchasePayment",
+      "signature": "record_purchase_payment(po_id, payment_type, amount_usd, paid_date, actor, role, as_of_date=...) -> Result",
+      "executors": ["finance", "system"],
+      "placeholder": "P2 Build A defines the object + R12 detection only. This ingest action (and R12 disposition, e.g. escalate/release prepayment hold) lands in Build B; not implemented in Build A.",
+      "preconditions": ["po_id in purchase_orders", "amount_usd >= 0", "paid_date <= as_of_date (D8)"],
+      "audit": ["payment_id", "po_id", "amount_usd"]
+    },
+    {
+      "id": "A10", "name": "RecordSupplierQualification",
+      "signature": "record_supplier_qualification(supplier_id, cert_type, valid_from, valid_to, evidence_status, actor, role, as_of_date=...) -> Result",
+      "executors": ["compliance", "system"],
+      "placeholder": "P2 Build A defines the object + R13 detection only. This ingest action (and R13 disposition, e.g. request qualification renewal) lands in Build B; not implemented in Build A.",
+      "preconditions": ["supplier_id in suppliers", "valid_from <= valid_to"],
+      "audit": ["qualification_id", "supplier_id", "cert_type"]
     }
   ],
   "riskRules": [
@@ -780,7 +835,10 @@
     {"id": "R7", "type": "supplier_delay", "logic": "P1: max(goods_receipt.received_date over a po_line's grn_lines) > po_line.expected_ready_date + config.receipt_delay_tol_days. Detection logic lands in Build 2.", "severity": "excess (delay - tol) > 7d: high; else medium"},
     {"id": "R8", "type": "short_receipt", "logic": "P1: sum(grn_line.received_qty) per po_line < po_line.qty * (1 - config.short_qty_tol). Detection logic lands in Build 2.", "severity": "shortfall > 10% of qty: high; else medium"},
     {"id": "R9", "type": "qc_failure", "logic": "P1: any grn_line with qc_status='failed' OR defect_ppm > config.defect_ppm_threshold for a po_line. Detection logic lands in Build 2.", "severity": "qc_status=failed: high; ppm-over-threshold only: medium"},
-    {"id": "R10", "type": "price_qty_mismatch", "logic": "P1: |supplier_invoice_line.unit_price_usd - po_line.unit_price_usd| / po_line.unit_price_usd > config.price_tol (or invoice qty != ordered/received). Detection logic lands in Build 2.", "severity": "overbill > 10%: high; else medium"}
+    {"id": "R10", "type": "price_qty_mismatch", "logic": "P1: |supplier_invoice_line.unit_price_usd - po_line.unit_price_usd| / po_line.unit_price_usd > config.price_tol (or invoice qty != ordered/received). Detection logic lands in Build 2.", "severity": "overbill > 10%: high; else medium"},
+    {"id": "R11", "type": "invoice_over_receipt", "logic": "P2: supplier_invoice_line.qty > (sum grn_line.received_qty for the po_line) * (1 + config.invoice_over_qty_tol), AND the line is fully received (received >= po_line.qty * (1 - config.short_qty_tol)) so it is NOT R8's short-receipt domain. Compares invoice vs RECEIVED qty (not accepted): keeps R11 orthogonal to R9 (QC rejection lowers accepted, not received). Anchored on po_line.", "severity": "over-received-billed ratio > 10%: high; else medium"},
+    {"id": "R12", "type": "prepayment_exposure", "logic": "P2: a PurchasePayment(payment_type='deposit', paid_date <= as_of) whose PO has NO GoodsReceipt (received_date <= as_of) AND (as_of - paid_date) > config.deposit_grace_days. Money-out with nothing received past grace. Recomputed from receipts+paid_date, never trusting exposure_status. Anchored on po_id.", "severity": "deposit amount_usd > config.exposure_high_usd: high; else medium"},
+    {"id": "R13", "type": "qualification_expired", "logic": "P2: a Supplier with an open PO (purchase_orders.status != 'closed') that has some cert_type where all SupplierQualifications are expired (valid_to < as_of) and none valid covers as_of (valid_from <= as_of <= valid_to). Expiring (valid_to within [as_of, as_of+config.qual_expiring_days]) is NOT expired. Aggregated to one event per supplier. Anchored on supplier_id.", "severity": "cert_type in {factory_audit, uflpa_traceability}: high; else medium"}
   ],
   "config": {
     "customs_buffer_days": 3,
@@ -792,7 +850,11 @@
     "short_qty_tol": 0.03,
     "defect_ppm_threshold": 3000,
     "price_tol": 0.02,
-    "note": "Values live in config/*.yaml (procurement.* for R7-R10); these are defaults, not hardcoded constants."
+    "invoice_over_qty_tol": 0.02,
+    "deposit_grace_days": 30,
+    "exposure_high_usd": 30000,
+    "qual_expiring_days": 30,
+    "note": "Values live in config/*.yaml (procurement.* for R7-R13); these are defaults, not hardcoded constants."
   },
   "incotermRebillMatrix": {
     "DDP": [],

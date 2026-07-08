@@ -264,7 +264,8 @@ def main():
                               "ap_invoice_lines", "ap_expected_costs",
                               "srm_po_lines", "srm_goods_receipts",
                               "srm_goods_receipt_lines", "ap_supplier_invoices",
-                              "ap_supplier_invoice_lines"]}
+                              "ap_supplier_invoice_lines", "ap_purchase_payments",
+                              "srm_supplier_qualifications"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
     source_events = source_event_rows(t["tms_milestones"])
     _ensure_unique_source_events(source_events)
@@ -550,6 +551,16 @@ def main():
           ["supplier_invoice_line_id TEXT", "supplier_invoice_id TEXT", "po_line_id TEXT",
            "qty INTEGER", "unit_price_usd REAL", "amount_usd REAL", "as_of_date TEXT",
            "created_at TEXT"], "supplier_invoice_line_id")
+    # P2 采购富化两表：预付款（R12）+ 供应商资质（R13）；直通加载 + 引用完整性入 DQ
+    table("purchase_payments", sorted(t["ap_purchase_payments"], key=lambda x: x["payment_id"]),
+          ["payment_id TEXT", "po_id TEXT", "payment_type TEXT", "amount_usd REAL",
+           "paid_date TEXT", "exposure_status TEXT", "as_of_date TEXT", "created_at TEXT"],
+          "payment_id")
+    table("supplier_qualifications",
+          sorted(t["srm_supplier_qualifications"], key=lambda x: x["qualification_id"]),
+          ["qualification_id TEXT", "supplier_id TEXT", "cert_type TEXT", "evidence_status TEXT",
+           "valid_from TEXT", "valid_to TEXT", "status TEXT", "as_of_date TEXT", "created_at TEXT"],
+          "qualification_id")
 
     # 采购侧 DQ（引用完整性——应全为 0；total 不平也应为 0）
     po_id_set = {r["po_id"] for r in t["srm_purchase_orders"]}
@@ -579,6 +590,12 @@ def main():
         "supplier_invoice_total_imbalance": sum(
             1 for r in t["ap_supplier_invoices"]
             if abs(float(r["total_usd"]) - round(sil_sum[r["supplier_invoice_id"]], 2)) > 0.02),
+        # P2 富化：预付款/资质规模 + 引用完整性（应全为 0）
+        "purchase_payments": len(t["ap_purchase_payments"]),
+        "supplier_qualifications": len(t["srm_supplier_qualifications"]),
+        "payment_orphans": sum(1 for r in t["ap_purchase_payments"] if r["po_id"] not in po_id_set),
+        "qualification_orphans": sum(1 for r in t["srm_supplier_qualifications"]
+                                     if r["supplier_id"] not in sup_id_set),
     }
 
     relationship_rows = build_object_relationship_rows(t, so_rows, line_rows, ship_rows, ms_rows)

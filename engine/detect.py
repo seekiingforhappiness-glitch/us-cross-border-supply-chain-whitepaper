@@ -164,7 +164,17 @@ def apply_procurement_candidates(con, cands, as_of):
     ts = f"{as_of.isoformat()}T00:00:00Z"
     seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
     created = 0
-    for c in sorted(cands, key=lambda x: (json.loads(x["affected_po_line_ids"])[0], x["rule_id"])):
+
+    def _order(x):
+        # R7-R10 保持既有排序（False 段 + po_line_id + rule_id → RSK 序号逐字节不变）；
+        # R11-R13 富化候选一律排在既有之后（True 段），空 affected_po_line_ids（R13 supplier 锚）
+        # 用 po_id/supplier_id 兜底 anchor，避免 [0] 越界。
+        plids = json.loads(x["affected_po_line_ids"] or "[]")
+        anchor = plids[0] if plids else (x.get("po_id") or x.get("supplier_id") or "")
+        is_rich = x["rule_id"] in ("R11", "R12", "R13")
+        return (is_rich, anchor, x["rule_id"])
+
+    for c in sorted(cands, key=_order):
         seq += 1
         rid = f"RSK-{seq:04d}"
         cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,

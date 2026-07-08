@@ -148,6 +148,12 @@
   直调动作层 ok=False；ROLE_PERMS/maker-checker/FORBIDDEN diff=0（纯 append）；procurement_loop 端到端闭环全绿、
   R1-R10 全 P/R=1.000、四富工作台+标准视图(19)+全套回归绿、三角色 UI 0 异常。
   **→ 采购成为第 4 个业务场景（延误/准入/费用/采购）；对象级 agent 模式已在 5 对象验证泛化。**
+- **采购富化 P2 Build A（R11-R13 模型+数据+引擎）已完成并通过 controller review**：决策日志 P2（Daniel 批准）——
+  新增 PurchasePayment(70)/SupplierQualification(19) 对象 + R11 开票超收货/R12 预付款敞口/R13 资质过期检测。
+  **controller 独立复核**：R7-R13 全 P/R=1.000、灰区 0 误报、真值确定性（两次生成 md5 一致 d08428…）、
+  R7-R10 真值行 byte-identical（纯 append 19 行）、R1-R6 R/P=1.000 未扰动、标准视图 21、全套回归绿。
+  2 新对象走自动标准视图（ontology v0.6.0）。**Build B（R11-R13 处置动作 escalate_prepayment/hold_balance_payment/
+  request_supplier_docs/suspend_supplier + 闭环）待续。**
 
 ## v0.4 进度
 

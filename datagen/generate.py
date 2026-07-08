@@ -206,6 +206,15 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                            ["supplier_invoice_line_id", "supplier_invoice_id",
                                             "po_line_id", "qty", "unit_price_usd", "amount_usd",
                                             "as_of_date", "created_at"])
+    # 采购富化 P2：预付款（ap_ = 应付账款/资金）+ 供应商资质（srm_ = 供应商关系系统）
+    tables["ap_purchase_payments"] = (sorted(proc["payments"], key=lambda x: x["payment_id"]),
+                                      ["payment_id", "po_id", "payment_type", "amount_usd",
+                                       "paid_date", "exposure_status", "as_of_date", "created_at"])
+    tables["srm_supplier_qualifications"] = (sorted(proc["qualifications"],
+                                                    key=lambda x: x["qualification_id"]),
+                                             ["qualification_id", "supplier_id", "cert_type",
+                                              "evidence_status", "valid_from", "valid_to", "status",
+                                              "as_of_date", "created_at"])
 
     for name, (rows, cols) in tables.items():
         _dump(raw / f"{name}.csv", rows, cols)

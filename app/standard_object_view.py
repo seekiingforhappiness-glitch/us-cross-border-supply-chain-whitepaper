@@ -108,6 +108,9 @@ KEY_FIELDS = {
                          "rejected_qty", "qc_status", "defect_ppm", "received_date"],
     "SupplierInvoice": ["supplier_id", "po_id", "vendor_invoice_no", "total_usd", "status"],
     "SupplierInvoiceLine": ["supplier_invoice_id", "po_line_id", "qty", "unit_price_usd", "amount_usd"],
+    # P2 采购富化对象（决策日志 P2）：标准视图展示字段
+    "PurchasePayment": ["po_id", "payment_type", "amount_usd", "paid_date", "exposure_status"],
+    "SupplierQualification": ["supplier_id", "cert_type", "status", "valid_to", "evidence_status"],
 }
 
 # 非核心对象注册表：type → (表名, 主键列, 关键展示字段)。表名/主键来自 ontology 派生（TYPE_META），
@@ -121,7 +124,8 @@ OBJECT_REGISTRY = {
 # 让每个对象都有可导航邻居）。spec = (关系名, 目标类型, 模式, 列名)；
 #   fk_out：本对象该列存目标主键（读本行取值）；fk_in：目标表该列存本对象主键（反查目标表）。
 FK_SUPPLEMENT = {
-    "Supplier": [("supplier_provides", "Sku", "fk_in", "supplier_id")],
+    "Supplier": [("supplier_provides", "Sku", "fk_in", "supplier_id"),
+                 ("supplier_has_qualification", "SupplierQualification", "fk_in", "supplier_id")],
     "Sku": [("supplier_provides", "Supplier", "fk_out", "supplier_id")],
     "PurchaseOrder": [("po_for_sku", "Sku", "fk_out", "sku_id")],
     "ShipmentAllocation": [("allocation_to_shipment", "Shipment", "fk_out", "shipment_id"),
@@ -133,6 +137,10 @@ FK_SUPPLEMENT = {
     "InvoiceLine": [("line_bills_container", "Container", "fk_out", "container_no")],
     "Container": [("line_bills_container", "InvoiceLine", "fk_in", "container_no")],
     "Customer": [("case_for_customer", "AdmissionCase", "fk_in", "customer_id")],
+    # P2 采购富化：预付款挂 PO、资质挂 Supplier（PurchaseOrder 富工作台走 rich，反向边挂在从表侧；
+    # Supplier→SupplierQualification 反向边已并入上方 Supplier 条目）
+    "PurchasePayment": [("payment_for_po", "PurchaseOrder", "fk_out", "po_id")],
+    "SupplierQualification": [("qualification_for_supplier", "Supplier", "fk_out", "supplier_id")],
 }
 
 
@@ -316,7 +324,7 @@ def build_standard_view(conn: sqlite3.Connection, object_type: str, object_id: s
 
 
 def navigable_types() -> list:
-    """UI 对象浏览器可选的对象类型（全部 24 类，按类型名排序）。核心类型也在列——route_object 决定
+    """UI 对象浏览器可选的对象类型（全部 26 类，按类型名排序）。核心类型也在列——route_object 决定
     进富工作台还是标准视图。"""
     return sorted(TYPE_META.keys())
 

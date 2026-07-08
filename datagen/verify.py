@@ -401,10 +401,11 @@ def main():
     sinv_ids = {r["supplier_invoice_id"] for r in sup_inv}
     proc_sup_ids = {r["supplier_id"] for r in t["srm_suppliers"]}
 
-    # 9.1 规模：非空、PO 数=Σinject、行数≥PO 数（多 SKU 存在）
-    n_pos_expected = sum(inj[k] for k in ("clean", "gray", "r7", "r8", "r9", "r10"))
+    # 9.1 规模：非空、PO 数=Σinject（含富化 4 桶：r11/r11_gray/r12/r12_gray 也有 po_line）、行数≥PO 数
+    po_bucket_keys = ("clean", "gray", "r7", "r8", "r9", "r10", "r11", "r11_gray", "r12", "r12_gray")
+    n_pos_expected = sum(inj[k] for k in po_bucket_keys)
     distinct_pos = {r["po_id"] for r in po_lines}
-    check("采购 PO 数 = Σinject", len(distinct_pos) == n_pos_expected,
+    check("采购 PO 数 = Σinject（含富化 4 桶）", len(distinct_pos) == n_pos_expected,
           f"got {len(distinct_pos)} vs {n_pos_expected}")
     check("po_lines/grn/grn_lines/supplier_invoices/lines 均非空",
           all([po_lines, grns, grn_lines, sup_inv, sup_inv_lines]))
@@ -469,11 +470,23 @@ def main():
           bool(r7_gt) and all(_late_line_ok(r) for r in r7_gt),
           f"不满足: {[r['po_line_id'] for r in r7_gt if not _late_line_ok(r)]}")
 
-    # 9.4 ground truth：rule 合法、引用完整、计数=inject、severity 合法
-    check("采购真值 rule 仅 R7-R10", all(r["rule_id"] in ("R7", "R8", "R9", "R10") for r in proc_gt))
-    check("采购真值引用完整（po_id/po_line_id/supplier_id）",
-          all(r["po_id"] in po_ids and r["po_line_id"] in pol_ids
-              and r["supplier_id"] in proc_sup_ids for r in proc_gt))
+    # 9.4 ground truth：rule 合法、引用完整（按锚点）、计数=inject、severity 合法
+    check("采购真值 rule 仅 R7-R13",
+          all(r["rule_id"] in ("R7", "R8", "R9", "R10", "R11", "R12", "R13") for r in proc_gt))
+
+    def _ref_ok(r):  # 引用完整性按锚点：R7-R11 锚 po_line；R12 锚 po；R13 锚 supplier
+        rule = r["rule_id"]
+        if rule in ("R7", "R8", "R9", "R10", "R11"):
+            return (r["po_id"] in po_ids and r["po_line_id"] in pol_ids
+                    and r["supplier_id"] in proc_sup_ids)
+        if rule == "R12":
+            return r["po_id"] in po_ids and r["supplier_id"] in proc_sup_ids and r["po_line_id"] == ""
+        if rule == "R13":
+            return r["supplier_id"] in proc_sup_ids and r["po_id"] == "" and r["po_line_id"] == ""
+        return False
+    check("采购真值引用完整（锚点：R7-R11 po_line / R12 po / R13 supplier）",
+          all(_ref_ok(r) for r in proc_gt),
+          f"违规: {[r['expected_procurement_risk_id'] for r in proc_gt if not _ref_ok(r)][:5]}")
     check("采购真值 severity 合法", all(r["severity"] in ("medium", "high") for r in proc_gt))
     gt_by_rule = defaultdict(int)
     for r in proc_gt:
@@ -482,11 +495,12 @@ def main():
           gt_by_rule["R7"] == inj["r7"] and gt_by_rule["R8"] == inj["r8"]
           and gt_by_rule["R9"] == inj["r9"] and gt_by_rule["R10"] == inj["r10"],
           f"got {dict(gt_by_rule)} vs r7={inj['r7']} r8={inj['r8']} r9={inj['r9']} r10={inj['r10']}")
-    # 每个异常 PO 恰一条真值（1:1，落具体行）
+    # 每个 PO 锚定异常恰一条真值（1:1；R7-R11/R12 po 锚，R13 supplier 锚不计此项）
     gt_per_po = defaultdict(int)
     for r in proc_gt:
-        gt_per_po[r["po_id"]] += 1
-    check("每个异常 PO 恰一条真值（1:1）", all(v == 1 for v in gt_per_po.values()),
+        if r["po_id"]:
+            gt_per_po[r["po_id"]] += 1
+    check("每个异常 PO 恰一条真值（1:1，含 R11/R12）", all(v == 1 for v in gt_per_po.values()),
           f"多真值 PO: {[k for k, v in gt_per_po.items() if v > 1]}")
 
     # 9.5 灰区/干净不进真值（测未来误报）；画像与真值一致
@@ -516,7 +530,82 @@ def main():
           dc["PD-E"] not in gt_pos and dc["PD-F"] not in gt_pos)
     print(f"  采购 PO={len(distinct_pos)}(多SKU {multi_line_pos}) 行={len(po_lines)} "
           f"GRN={len(grns)} GRN行={len(grn_lines)} 供票={len(sup_inv)} 供票行={len(sup_inv_lines)}")
-    print(f"  R7-R10 真值: {dict(sorted(gt_by_rule.items()))}  设计锚点: {dc}")
+    print(f"  R7-R10 真值: {dict((k, gt_by_rule[k]) for k in ('R7', 'R8', 'R9', 'R10'))}  设计锚点: {dc}")
+
+    print("== 10. 采购富化 R11-R13（P2 model+data）==")
+    payments = load(raw_dir, "ap_purchase_payments")
+    quals = load(raw_dir, "srm_supplier_qualifications")
+    qinj = pc["qual_inject"]
+    as_of = cfg["window"]["as_of"]
+    grace = pc["deposit_grace_days"]
+
+    # 10.1 新对象规模 + 引用完整
+    check("PurchasePayment 每 selected PO 一笔（=Σ PO 桶）", len(payments) == n_pos_expected,
+          f"got {len(payments)} vs {n_pos_expected}")
+    check("SupplierQualification 非空", len(quals) > 0)
+    check("payment 引用完整（po_id ∈ purchase_orders）", all(r["po_id"] in po_ids for r in payments))
+    check("payment 字段合法（type/amount/exposure/as_of）",
+          all(r["payment_type"] in ("deposit", "balance", "full") and float(r["amount_usd"]) >= 0
+              and r["exposure_status"] in ("covered", "at_risk", "released")
+              and r["as_of_date"] == as_of for r in payments))
+    check("qualification 引用完整（supplier_id ∈ suppliers）",
+          all(r["supplier_id"] in proc_sup_ids for r in quals))
+    check("qualification 字段合法（evidence/status/valid_from≤valid_to/as_of）",
+          all(r["evidence_status"] in ("missing", "provided", "verified", "rejected")
+              and r["status"] in ("valid", "expiring", "expired", "revoked")
+              and r["valid_from"] <= r["valid_to"] and r["as_of_date"] == as_of for r in quals))
+
+    # 10.2 R11/R12 画像 PO 集合 == 真值集合（1:1）；R13 真值 supplier == qual_roles["r13"]
+    r11_pos = {pid for pid, pr in profile.items() if pr == "r11"}
+    r12_pos = {pid for pid, pr in profile.items() if pr == "r12"}
+    gt_r11 = {r["po_id"] for r in proc_gt if r["rule_id"] == "R11"}
+    gt_r12 = {r["po_id"] for r in proc_gt if r["rule_id"] == "R12"}
+    gt_r13 = {r["supplier_id"] for r in proc_gt if r["rule_id"] == "R13"}
+    check("R11 真值 PO 集合 == r11 画像", r11_pos == gt_r11, f"diff: {sorted(r11_pos ^ gt_r11)}")
+    check("R12 真值 PO 集合 == r12 画像", r12_pos == gt_r12, f"diff: {sorted(r12_pos ^ gt_r12)}")
+    check("R13 真值 supplier == qual_roles.r13", set(proc["qual_roles"]["r13"]) == gt_r13,
+          f"diff: {sorted(set(proc['qual_roles']['r13']) ^ gt_r13)}")
+    check("R11/R12/R13 真值计数 = inject",
+          gt_by_rule["R11"] == inj["r11"] and gt_by_rule["R12"] == inj["r12"]
+          and gt_by_rule["R13"] == qinj["r13"],
+          f"got R11={gt_by_rule['R11']} R12={gt_by_rule['R12']} R13={gt_by_rule['R13']}")
+
+    # 10.3 灰区/干净不进真值（测未来误报）：r11_gray/r12_gray PO + r13_gray/r13_expiring supplier
+    gray_bucket_pos = {pid for pid, pr in profile.items() if pr in ("r11_gray", "r12_gray")}
+    check("r11_gray/r12_gray PO 不在真值", not (gray_bucket_pos & gt_pos),
+          f"泄漏: {sorted(gray_bucket_pos & gt_pos)}")
+    gray_sups = set(proc["qual_roles"]["r13_gray"]) | set(proc["qual_roles"]["r13_expiring"])
+    check("r13_gray/r13_expiring supplier 不在真值", not (gray_sups & gt_r13),
+          f"泄漏: {sorted(gray_sups & gt_r13)}")
+
+    # 10.4 R12 真值 PO 确无收货（open PO，敞口成立的数据前提）；R11 真值 PO 有收货（足量收货前提）
+    grn_pos = {r["po_id"] for r in grns}
+    check("R12 真值 PO 均无收货（GRN 不含）", not (gt_r12 & grn_pos),
+          f"违规: {sorted(gt_r12 & grn_pos)}")
+    check("R11 真值 PO 均有收货（足量收货、发票超收前提）", gt_r11 <= grn_pos,
+          f"缺收货: {sorted(gt_r11 - grn_pos)}")
+
+    # 10.5 R13 target 供应商确有 open PO（status≠closed），且过期证无同类续证
+    open_sups = {r["supplier_id"] for r in t["srm_purchase_orders"] if r["status"] != "closed"}
+    check("R13 target 供应商均有 open PO", gt_r13 <= open_sups,
+          f"无 open PO: {sorted(gt_r13 - open_sups)}")
+
+    def _uncovered_expired(sup):  # 存在某 cert_type 全过期且无同类有效证覆盖 as_of
+        by_cert = defaultdict(list)
+        for q in quals:
+            if q["supplier_id"] == sup:
+                by_cert[q["cert_type"]].append(q)
+        for cert, qs in by_cert.items():
+            if any(q["valid_to"] < as_of for q in qs) \
+                    and not any(q["valid_from"] <= as_of <= q["valid_to"] for q in qs):
+                return True
+        return False
+    check("R13 target 均有'未覆盖的过期证'", all(_uncovered_expired(s) for s in gt_r13))
+    check("R13 gray（已续期）无未覆盖过期证",
+          not any(_uncovered_expired(s) for s in proc["qual_roles"]["r13_gray"]))
+
+    print(f"  富化: payment={len(payments)} qualification={len(quals)}  "
+          f"真值 R11={gt_by_rule['R11']} R12={gt_by_rule['R12']} R13={gt_by_rule['R13']}")
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

@@ -1,13 +1,13 @@
-"""P1 采购异常 KPI 评估：python3 -m engine.evaluate_procurement
+"""采购异常 KPI 评估：python3 -m engine.evaluate_procurement（R7-R10 主线 + R11-R13 富化 P2）
 
-检出的 R7-R10 risk_events 对照 data/truth/expected_procurement_risks.csv（本脚本属评估层，
-允许读 truth；引擎检测绝不读 truth——§5 铁律）。
+检出的采购 risk_events 对照 data/truth/expected_procurement_risks.csv（本脚本属评估层，允许读
+truth；引擎检测绝不读 truth——§5 铁律）。
 
-匹配口径（仿 evaluate.py / evaluate_cost.py）：键 (po_line_id, rule_id)。
-  真值每 (po_id, po_line_id, rule_id) 一行；检出事件的 po_line_id 取自 affected_po_line_ids[0]。
-  灰区样本（9 条容差内合理波动，不在真值）若被检出 = false positive → 计入误报。
+匹配锚点按规则（R7-R10 与既有逐字节一致——仍是 po_line_id 锚）：
+  R7-R11 → po_line_id（检出取 affected_po_line_ids[0]）；R12 → po_id；R13 → supplier_id。
+  真值每锚点一行；灰区/干净样本不在真值，被检出即 false positive → 计入误报。
 
-KPI（每规则）：precision ≥ 0.90 且 recall ≥ 0.90 → PASS。
+KPI（每规则）：precision ≥ 0.90 且 recall ≥ 0.90 → PASS（R7-R10 仍须 1.000，不得扰动）。
 逐规则打印 检出/真值/TP/FP/FN + precision/recall + PASS/FAIL；匹配质量 severity / value±0.02。
 格式仿 engine/evaluate.py；exit code：全过 0，否则 1。
 """
@@ -17,9 +17,28 @@ import sqlite3
 import sys
 
 FAILS = []
-PROC_RULES = ("R7", "R8", "R9", "R10")
+PROC_RULES = ("R7", "R8", "R9", "R10", "R11", "R12", "R13")
 GATE_P = 0.90
 GATE_R = 0.90
+
+
+def _anchor_exp(r):
+    """真值行锚点：R12→po_id，R13→supplier_id，其余→po_line_id。"""
+    if r["rule_id"] == "R12":
+        return r["po_id"]
+    if r["rule_id"] == "R13":
+        return r["supplier_id"]
+    return r["po_line_id"]
+
+
+def _anchor_det(r):
+    """检出事件锚点：R12→po_id，R13→supplier_id，其余→affected_po_line_ids[0]。"""
+    if r["rule_id"] == "R12":
+        return r["po_id"]
+    if r["rule_id"] == "R13":
+        return r["supplier_id"]
+    ids = json.loads(r["affected_po_line_ids"] or "[]")
+    return ids[0] if ids else None
 
 
 def check(name, cond, detail=""):
@@ -34,14 +53,10 @@ def main():
     con = sqlite3.connect("data/ontology.sqlite")
     con.row_factory = sqlite3.Row
     detected = [dict(r) for r in con.execute(
-        "SELECT * FROM risk_events WHERE rule_id IN ('R7','R8','R9','R10')")]
+        "SELECT * FROM risk_events WHERE rule_id IN ('R7','R8','R9','R10','R11','R12','R13')")]
 
-    def det_line(r):
-        ids = json.loads(r["affected_po_line_ids"] or "[]")
-        return ids[0] if ids else None
-
-    exp_map = {(r["po_line_id"], r["rule_id"]): r for r in expected}
-    det_map = {(det_line(r), r["rule_id"]): r for r in detected}
+    exp_map = {(_anchor_exp(r), r["rule_id"]): r for r in expected}
+    det_map = {(_anchor_det(r), r["rule_id"]): r for r in detected}
     matched = set(exp_map) & set(det_map)
     missed = set(exp_map) - set(det_map)
     false_pos = set(det_map) - set(exp_map)
