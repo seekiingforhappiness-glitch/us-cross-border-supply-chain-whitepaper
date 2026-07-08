@@ -164,8 +164,16 @@
   + 现货救延误连接点。ontology v0.7.0 新增 Warehouse(5)/InventoryPosition(48)/InventoryReservation(16)/CycleCount(14)
   + RiskEvent 加可空 warehouse_id。`engine/warehouse_rules.py`+`evaluate_warehouse.py`。**controller 独立复核**：
   R16-R18 全 P/R=1.000、灰区 0 误报、仓储真值确定性（md5 5e1086…）、**R1-R13 全 P/R=1.000 未扰动**、标准视图 25、全套回归绿。
-  4 新对象走自动标准视图。**Build 2（连接动作 Putaway/ReserveInventory/SuggestSubstitution/RecordCycleCount + 闭环）、
-  Build 3（Warehouse 工作台+agent）待续。**
+  4 新对象走自动标准视图。
+- **仓储 Build 2/3（连接动作 + 处置动作 + 闭环）已完成并通过 controller review**：`app/warehouse_actions.py`
+  （Putaway/ReserveInventory/ReleaseReservation/RecordCycleCount 操作/连接动作）+ approve_mitigation 加仓储处置分支
+  （suggest_substitution 现货拆单救延误 / adjust_inventory 盘点调整 / escalate_replenishment 补货，走既有闭环+maker-checker）。
+  **三连接点打通**：①采购 GoodsReceipt→Putaway→InventoryPosition.available ②Reservation→SalesOrderLine open→allocated
+  ③**Shipment 延误(R1-R3)→查目的仓现货→拆单先发+余量 backorder（业务问题落点，控制塔把仓储/采购/延误连起来）**。
+  **controller 独立复核**：warehouse_loop 全绿（连接点+延误现货救援+越权杀手 wh-agent[manager] approve 被拒）、
+  R1-R18 全绿、ROLE_PERMS/maker-checker/FORBIDDEN/agent/tools diff=0、全套回归绿、三角色 UI 0 异常。
+  **→ 仓储成第 5 业务场景（延误/准入/费用/采购/仓储），R1-R18 全 P/R=1.000。剩 Warehouse 富工作台+agent（可选）
+  + 采购 RFQ/单一来源/maverick 富化（Daniel 已提，待续）。**
 
 ## v0.4 进度
 

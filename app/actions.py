@@ -43,6 +43,11 @@ PARAM_SCHEMAS = {
     "hold_balance_payment": {"reason"},              # R12 暂缓尾款：标记 balance 付款 at_risk
     "request_supplier_docs": {"reason"},             # R13 要求补交资质：标记过期资质 evidence_status=provided（cert_type 可选，缺省全过期证）
     "suspend_supplier": {"reason"},                  # R13 冻结供应商：标记过期资质 status=revoked（Supplier 无 status 字段，回写资质对象）
+    # W1 仓储处置提案类型扩展（R16-R18 + 延误连接；决策日志 W1，Build 2/3）：
+    # 同走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "suggest_substitution": {"reason"},              # 延误(R1-R3)/R17：目的仓现货拆单先发 + 余量 backorder（杀手锏）
+    "adjust_inventory": {"reason"},                  # R18：按 CycleCount.counted 调整 InventoryPosition + reconciled
+    "escalate_replenishment": {"reason"},            # R16：升级补货（在途补足安全库存缺口）
 }
 # 采购处置动作 → PoLine.line_status 目标态（审批通过后回写受影响 PoLine 的可见状态）。
 # dispute_supplier_invoice 不改 PoLine（改 supplier_invoices.status=disputed），故不在此表。
@@ -59,6 +64,13 @@ PREPAYMENT_ACTIONS = {"escalate_prepayment", "hold_balance_payment"}   # R12
 QUALIFICATION_ACTIONS = {"request_supplier_docs", "suspend_supplier"}  # R13
 PROCUREMENT_ACTIONS = (set(PO_LINE_STATUS_ON_APPROVE) | {"dispute_supplier_invoice"}
                        | PREPAYMENT_ACTIONS | QUALIFICATION_ACTIONS)
+# W1 仓储处置动作（决策日志 W1，Build 2/3）——审批后回写受影响仓储对象「可见状态」，非判风险
+# （R16-R18 检测由 engine 从事实重算，绝不信状态字段，同「不信状态字段」铁律）。回写逻辑在
+# app.warehouse_actions.apply_warehouse_disposition（approve_mitigation 事务内调用），锚点：
+#   suggest_substitution 延误(R1-R3, shipment 目的仓)/R17(warehouse_id) → Reservation + SalesOrderLine；
+#   adjust_inventory R18(cycle_count 锚) → InventoryPosition + CycleCount.status=reconciled；
+#   escalate_replenishment R16(inventory_position 锚) → InventoryPosition.in_transit_qty。
+WAREHOUSE_ACTIONS = {"suggest_substitution", "adjust_inventory", "escalate_replenishment"}
 # cost-manual §4 A5 G4 incoterm 责任门禁矩阵（与 ontology JSON incotermRebillMatrix 同步）：
 # rebill_customer 仅当受影响行费种 ⊆ 该票 incoterm 的可转嫁集合。
 REBILL_MATRIX = {
@@ -490,6 +502,16 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                                         (new_pol_status, lid))
                         effects.append(f"{act} 批准：受影响采购行 {sorted(po_line_ids)} "
                                        f"→ line_status={new_pol_status}")
+                elif act in WAREHOUSE_ACTIONS:
+                    # W1 仓储处置（Build 2/3）：仓储风险(R16-R18)锚 warehouse_id+affected_so_line_ids
+                    # （承载受影响仓储对象 id）；延误连接(R1-R3)锚 shipment_id。审批后按已批准方案回写受影响
+                    # 仓储对象「可见状态」（事实回写，非判风险——检测仍由 engine 从事实重算）。lazy import
+                    # 避免 actions↔warehouse_actions 循环 import；helper 在本事务内只用 cur。
+                    try:
+                        from .warehouse_actions import apply_warehouse_disposition
+                    except ImportError:
+                        from warehouse_actions import apply_warehouse_disposition
+                    effects.extend(apply_warehouse_disposition(cur, act, risk, affected, params, as_of))
                 cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
                                approved_by_role=?, action_taken=? WHERE task_id=?""",
                             (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
