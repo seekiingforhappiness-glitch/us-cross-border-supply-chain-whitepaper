@@ -159,6 +159,13 @@
   走既有 assign→propose→approve 闭环。**controller 独立复核**：ROLE_PERMS/maker-checker/FORBIDDEN diff=0（纯 append）、
   agent ops/finance/manager 均不能审批、R11-R13 五条闭环 + 越权杀手全过、R1-R13 全 P/R=1.000、全套回归绿、三角色 UI 0 异常。
   **→ 采购域完整：7 条规则(R7-R13, 三方对账+预付款+资质) P/R=1.000、端到端闭环、对象工作台+不越权 agent。全库 R1-R13。**
+- **仓储(warehouse)业务域已立项（决策日志 W1，Daniel 批准）+ Build 1/3（模型+数据+引擎 R16-R18）已完成并通过 controller review**：
+  第 5 个业务场景。Daniel 裁决：SKU×仓库粒度（R21 批次过期推迟）+ 库存准确主线（R16 断货/R17 不可履约/R18 盘点差异）
+  + 现货救延误连接点。ontology v0.7.0 新增 Warehouse(5)/InventoryPosition(48)/InventoryReservation(16)/CycleCount(14)
+  + RiskEvent 加可空 warehouse_id。`engine/warehouse_rules.py`+`evaluate_warehouse.py`。**controller 独立复核**：
+  R16-R18 全 P/R=1.000、灰区 0 误报、仓储真值确定性（md5 5e1086…）、**R1-R13 全 P/R=1.000 未扰动**、标准视图 25、全套回归绿。
+  4 新对象走自动标准视图。**Build 2（连接动作 Putaway/ReserveInventory/SuggestSubstitution/RecordCycleCount + 闭环）、
+  Build 3（Warehouse 工作台+agent）待续。**
 
 ## v0.4 进度
 

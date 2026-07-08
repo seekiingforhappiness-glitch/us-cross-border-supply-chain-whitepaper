@@ -111,6 +111,13 @@ KEY_FIELDS = {
     # P2 采购富化对象（决策日志 P2）：标准视图展示字段
     "PurchasePayment": ["po_id", "payment_type", "amount_usd", "paid_date", "exposure_status"],
     "SupplierQualification": ["supplier_id", "cert_type", "status", "valid_to", "evidence_status"],
+    # W1 仓储域对象（决策日志 W1）：标准视图展示字段
+    "Warehouse": ["type", "operator", "region", "capacity_units"],
+    "InventoryPosition": ["sku_id", "warehouse_id", "available_qty", "reserved_qty",
+                          "in_transit_qty", "safety_stock"],
+    "InventoryReservation": ["so_line_id", "inventory_position_id", "qty", "status"],
+    "CycleCount": ["inventory_position_id", "warehouse_id", "system_qty", "counted_qty",
+                   "variance", "status"],
 }
 
 # 非核心对象注册表：type → (表名, 主键列, 关键展示字段)。表名/主键来自 ontology 派生（TYPE_META），
@@ -141,6 +148,22 @@ FK_SUPPLEMENT = {
     # Supplier→SupplierQualification 反向边已并入上方 Supplier 条目）
     "PurchasePayment": [("payment_for_po", "PurchaseOrder", "fk_out", "po_id")],
     "SupplierQualification": [("qualification_for_supplier", "Supplier", "fk_out", "supplier_id")],
+    # W1 仓储：Warehouse←position/cycle_count；position→Warehouse/Sku、←reservation/cycle_count；
+    # reservation→position/SalesOrderLine；cycle_count→position/Warehouse（对象图可双向导航）
+    "Warehouse": [("position_in_warehouse", "InventoryPosition", "fk_in", "warehouse_id"),
+                  ("cycle_count_in_warehouse", "CycleCount", "fk_in", "warehouse_id")],
+    "InventoryPosition": [("position_in_warehouse", "Warehouse", "fk_out", "warehouse_id"),
+                          ("position_for_sku", "Sku", "fk_out", "sku_id"),
+                          ("reservation_on_position", "InventoryReservation", "fk_in",
+                           "inventory_position_id"),
+                          ("cycle_count_on_position", "CycleCount", "fk_in",
+                           "inventory_position_id")],
+    "InventoryReservation": [("reservation_on_position", "InventoryPosition", "fk_out",
+                              "inventory_position_id"),
+                             ("reservation_for_line", "SalesOrderLine", "fk_out", "so_line_id")],
+    "CycleCount": [("cycle_count_on_position", "InventoryPosition", "fk_out",
+                    "inventory_position_id"),
+                   ("cycle_count_in_warehouse", "Warehouse", "fk_out", "warehouse_id")],
 }
 
 

@@ -19,6 +19,7 @@ from . import world as W
 from . import admission as ADM
 from . import cost as COST
 from . import procurement as PROC
+from . import warehouse as WH
 from .design_cases import apply_design_cases
 from .noise import apply_noise, apply_doc_refs
 from .oracle import sweep
@@ -45,6 +46,9 @@ def build(cfg):
     # P1 采购三方对账（Build 1/3）：独立随机流（seed+procurement.seed_offset），既有数据零扰动
     proc_rng = random.Random(cfg["seed"] + cfg["procurement"]["seed_offset"])
     PROC.build_procurement_world(w, cfg, proc_rng)
+    # W1 仓储库存主线（Build 1/3）：独立随机流（seed+warehouse.seed_offset），既有数据零扰动
+    wh_rng = random.Random(cfg["seed"] + cfg["warehouse"]["seed_offset"])
+    WH.build_warehouse_world(w, cfg, wh_rng)
     # v0.6 专题二 H3：milestone 单证号（booking_no/container_no）填充 + doc_ref_typo。
     # 独立随机流（seed+3000），须在 cost 建柜之后（primary 柜号已就位）。
     doc_rng = random.Random(cfg["seed"] + 3000)
@@ -216,6 +220,24 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                               "evidence_status", "valid_from", "valid_to", "status",
                                               "as_of_date", "created_at"])
 
+    # W1 仓储库存主线四表（wms_ = 仓库管理系统）
+    wh = w["warehouse"]
+    tables["wms_warehouses"] = (sorted(wh["warehouses"], key=lambda x: x["warehouse_id"]),
+                                ["warehouse_id", "type", "operator", "region", "capacity_units",
+                                 "as_of_date"])
+    tables["wms_inventory_positions"] = (sorted(wh["positions"],
+                                                key=lambda x: x["inventory_position_id"]),
+                                         ["inventory_position_id", "sku_id", "warehouse_id",
+                                          "available_qty", "reserved_qty", "in_transit_qty",
+                                          "quarantine_qty", "safety_stock", "as_of_date"])
+    tables["wms_inventory_reservations"] = (sorted(wh["reservations"],
+                                                   key=lambda x: x["reservation_id"]),
+                                            ["reservation_id", "so_line_id",
+                                             "inventory_position_id", "qty", "status", "as_of_date"])
+    tables["wms_cycle_counts"] = (sorted(wh["cycle_counts"], key=lambda x: x["cycle_count_id"]),
+                                  ["cycle_count_id", "inventory_position_id", "warehouse_id",
+                                   "system_qty", "counted_qty", "variance", "status", "as_of_date"])
+
     for name, (rows, cols) in tables.items():
         _dump(raw / f"{name}.csv", rows, cols)
     _dump(truth / "expected_admission_gates.csv", adm["gates"],
@@ -228,6 +250,11 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
     _dump(truth / "expected_procurement_risks.csv", proc["anomalies"],
           ["expected_procurement_risk_id", "rule_id", "type", "po_id", "po_line_id",
            "supplier_id", "severity", "anomaly_value_usd", "note", "case_id"])
+    # W1 仓储异常 ground truth（R16-R18；仅 datagen/verify 与 engine 评估可读，引擎检测禁读——§5）
+    _dump(truth / "expected_warehouse_risks.csv", wh["anomalies"],
+          ["expected_warehouse_risk_id", "rule_id", "type", "warehouse_id", "sku_id",
+           "inventory_position_id", "so_line_id", "cycle_count_id", "severity",
+           "anomaly_value_usd", "note"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

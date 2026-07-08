@@ -193,6 +193,22 @@ RiskEvent→Task→治理闭环 + po_id/supplier_id 锚点 + 既有 PO 工作台
 （研究里异常 G/H），仍不做 RFQ/单一来源/maverick。铁律不变：引擎禁读真值、真值存 data/truth/、既有 R1-R10 R/P=1.000
 不得扰动、agent 不越权。
 
+**W1 — 仓储(warehouse/inventory)业务域第一个纵向切片（2026-07-08，Daniel 经 AskUserQuestion 批准）。**
+联网调研（Dynamics 库存/ATP/IRA/FBA/cycle count）后批准仓储接入控制塔，model-first，全复用 RiskEvent→Task→治理骨架。
+Daniel 两个业务裁决：① 库存粒度 = **SKU×仓库**（不到 lot；R21 批次过期因此推迟）；② 第一版 = **库存准确主线 + 现货救延误**。
+controller 默认取舍（未否决）：角色复用 ops(仓库执行)/finance(仓储费)/compliance(隔离过期)/manager(调整/替代审批)，暂不加 wh_ops；
+阈值(安全库存/IRA目标/容量%)入 config；RiskEvent 锚点加可空 `warehouse_id`。
+MVP 对象：`Warehouse`(type overseas/bonded/domestic/FBA/3PL、capacity)、`InventoryPosition`(sku×warehouse；桶
+available/reserved/in_transit/quarantine)、`InventoryReservation`(open→allocated→released→fulfilled/backordered)、
+`CycleCount`(scheduled→counted→variance→reconciled)。MVP 规则：**R16 stockout**(available≤safety_stock)、
+**R17 unfulfillable**(SOL.open 且 ATP<ordered_qty；ATP=available+在途−reserved)、**R18 shrinkage**(|counted−system|>tol 或 IRA<阈)。
+MVP 动作：`Putaway`(GoodsReceipt→InventoryPosition)、`ReserveInventory`/`ReleaseReservation`、
+`SuggestSubstitution`(延误→现货拆单先发+余量改期，过 A5 审批)、`RecordCycleCount`→`AdjustInventory`(过 A5)。
+**连接点**：①采购 GoodsReceipt.accepted_qty→Putaway→InventoryPosition.available ②Reservation.allocated→驱动
+SalesOrderLine open→allocated ③Shipment 延误(R1-R3)→查目的仓现货→SuggestSubstitution（业务问题落点）。
+**推迟（另行批准）**：R19 呆滞、R20 超库容、R21 批次过期(需 lot)、R22 错分配、wh_ops 子角色。铁律不变：引擎禁读真值、
+真值存 data/truth/、既有 R1-R13 R/P=1.000 不得扰动、agent 不越权。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

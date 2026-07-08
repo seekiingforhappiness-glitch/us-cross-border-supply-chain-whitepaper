@@ -265,7 +265,9 @@ def main():
                               "srm_po_lines", "srm_goods_receipts",
                               "srm_goods_receipt_lines", "ap_supplier_invoices",
                               "ap_supplier_invoice_lines", "ap_purchase_payments",
-                              "srm_supplier_qualifications"]}
+                              "srm_supplier_qualifications",
+                              "wms_warehouses", "wms_inventory_positions",
+                              "wms_inventory_reservations", "wms_cycle_counts"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
     source_events = source_event_rows(t["tms_milestones"])
     _ensure_unique_source_events(source_events)
@@ -598,6 +600,48 @@ def main():
                                      if r["supplier_id"] not in sup_id_set),
     }
 
+    # W1 仓储库存主线四表（wms 为记录系统，直通加载 + 引用完整性入 DQ）
+    # 库存粒度 SKU×仓库（决策 W1）；position/reservation/cycle_count 挂 Warehouse/SalesOrderLine
+    table("warehouses", sorted(t["wms_warehouses"], key=lambda x: x["warehouse_id"]),
+          ["warehouse_id TEXT", "type TEXT", "operator TEXT", "region TEXT",
+           "capacity_units INTEGER", "as_of_date TEXT"], "warehouse_id")
+    table("inventory_positions", sorted(t["wms_inventory_positions"],
+                                        key=lambda x: x["inventory_position_id"]),
+          ["inventory_position_id TEXT", "sku_id TEXT", "warehouse_id TEXT",
+           "available_qty INTEGER", "reserved_qty INTEGER", "in_transit_qty INTEGER",
+           "quarantine_qty INTEGER", "safety_stock INTEGER", "as_of_date TEXT"],
+          "inventory_position_id")
+    table("inventory_reservations", sorted(t["wms_inventory_reservations"],
+                                           key=lambda x: x["reservation_id"]),
+          ["reservation_id TEXT", "so_line_id TEXT", "inventory_position_id TEXT",
+           "qty INTEGER", "status TEXT", "as_of_date TEXT"], "reservation_id")
+    table("cycle_counts", sorted(t["wms_cycle_counts"], key=lambda x: x["cycle_count_id"]),
+          ["cycle_count_id TEXT", "inventory_position_id TEXT", "warehouse_id TEXT",
+           "system_qty INTEGER", "counted_qty INTEGER", "variance INTEGER", "status TEXT",
+           "as_of_date TEXT"], "cycle_count_id")
+
+    # 仓储侧 DQ（引用完整性——应全为 0）
+    wh_id_set = {r["warehouse_id"] for r in t["wms_warehouses"]}
+    invpos_id_set = {r["inventory_position_id"] for r in t["wms_inventory_positions"]}
+    line_id_set = {r["so_line_id"] for r in t["oms_so_lines"]}
+    sku_id_set = {r["sku_id"] for r in t["catalog_skus"]}
+    dq["warehouse"] = {
+        "warehouses": len(t["wms_warehouses"]),
+        "inventory_positions": len(t["wms_inventory_positions"]),
+        "inventory_reservations": len(t["wms_inventory_reservations"]),
+        "cycle_counts": len(t["wms_cycle_counts"]),
+        "position_wh_orphans": sum(1 for r in t["wms_inventory_positions"]
+                                   if r["warehouse_id"] not in wh_id_set),
+        "position_sku_orphans": sum(1 for r in t["wms_inventory_positions"]
+                                    if r["sku_id"] not in sku_id_set),
+        "reservation_orphans": sum(1 for r in t["wms_inventory_reservations"]
+                                   if r["inventory_position_id"] not in invpos_id_set
+                                   or r["so_line_id"] not in line_id_set),
+        "cycle_count_orphans": sum(1 for r in t["wms_cycle_counts"]
+                                   if r["inventory_position_id"] not in invpos_id_set
+                                   or r["warehouse_id"] not in wh_id_set),
+    }
+
     relationship_rows = build_object_relationship_rows(t, so_rows, line_rows, ship_rows, ms_rows)
     for r in relationship_rows:
         upsert_relationship(con, r["relationship_id"], r["source_type"], r["source_id"],
@@ -655,12 +699,15 @@ def main():
     # P1（采购）：RiskEvent 锚点泛化——增可空 po_id/supplier_id/affected_po_line_ids
     #   （唯一触碰核心对象处，与"加字段不联表"哲学一致）；shipment_id 随之变可空。
     #   既有列顺序不动，新列追加在尾部；R1-R6 写入走显式列名，不受影响。
+    # W1（仓储）：RiskEvent 锚点再泛化——增可空 warehouse_id（仿 po_id 锚点，既有列不动，追加尾部）。
+    #   R16-R18 用 warehouse_id + affected_so_line_ids（承载受影响业务对象 id：R16=InventoryPosition、
+    #   R17=SalesOrderLine、R18=CycleCount，与采购 affected_po_line_ids 同构，决策 W1 仅批 warehouse_id）。
     cur.execute("""CREATE TABLE risk_events (risk_event_id TEXT PRIMARY KEY, type TEXT,
         rule_id TEXT, severity TEXT, shipment_id TEXT, affected_so_line_ids TEXT,
         affected_value_usd REAL, detected_at TEXT, root_cause TEXT, status TEXT,
         resolved_at TEXT, outcome TEXT, resolution_summary TEXT,
         affected_invoice_line_ids TEXT,
-        po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT)""")
+        po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT, warehouse_id TEXT)""")
     cur.execute("""CREATE TABLE tasks (task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT,
         assignee_role TEXT, priority TEXT, due_at TEXT, proposed_action TEXT,
         proposal_params TEXT, approval_status TEXT, approved_by_role TEXT,

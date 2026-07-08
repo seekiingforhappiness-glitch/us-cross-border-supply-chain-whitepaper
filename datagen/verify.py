@@ -607,6 +607,113 @@ def main():
     print(f"  富化: payment={len(payments)} qualification={len(quals)}  "
           f"真值 R11={gt_by_rule['R11']} R12={gt_by_rule['R12']} R13={gt_by_rule['R13']}")
 
+    print("== 11. 仓储库存主线（W1 Build 1/3）==")
+    whs = load(raw_dir, "wms_warehouses")
+    inv_pos = load(raw_dir, "wms_inventory_positions")
+    reservations = load(raw_dir, "wms_inventory_reservations")
+    cyc = load(raw_dir, "wms_cycle_counts")
+    wh_gt = load(truth_dir, "expected_warehouse_risks")
+    wcfg = cfg["warehouse"]
+    winj = wcfg["inject"]
+    tol = wcfg["cycle_count_tol"]
+
+    wh_ids = {r["warehouse_id"] for r in whs}
+    pos_ids = {r["inventory_position_id"] for r in inv_pos}
+    line_ids_all = {r["so_line_id"] for r in t["oms_so_lines"]}
+    sku_ids_all = {r["sku_id"] for r in load(raw_dir, "catalog_skus")}
+
+    # 11.1 规模：5 仓（覆盖 type 枚举）、position 数=Σ桶、预留/盘点非空
+    n_pos_expected = sum(winj[k] for k in
+                         ("clean", "r16", "r16_gray", "r17", "r17_gray", "r18", "r18_gray"))
+    check("仓库 5 个且 type 覆盖 5 类枚举", len(whs) == 5
+          and {r["type"] for r in whs} == {"overseas", "bonded", "domestic", "FBA", "3PL"},
+          f"got {len(whs)} types={sorted({r['type'] for r in whs})}")
+    check("InventoryPosition 数 = Σ注入桶", len(inv_pos) == n_pos_expected,
+          f"got {len(inv_pos)} vs {n_pos_expected}")
+    check("预留/盘点非空", bool(reservations) and bool(cyc))
+
+    # 11.2 引用完整性
+    check("position 引用完整（warehouse + sku）",
+          all(r["warehouse_id"] in wh_ids and r["sku_id"] in sku_ids_all for r in inv_pos))
+    check("(sku,warehouse) 唯一（至多一条 position）",
+          len({(r["sku_id"], r["warehouse_id"]) for r in inv_pos}) == len(inv_pos))
+    check("reservation 引用完整（position + so_line）",
+          all(r["inventory_position_id"] in pos_ids and r["so_line_id"] in line_ids_all
+              for r in reservations))
+    check("cycle_count 引用完整（position + warehouse）+ variance=counted−system",
+          all(r["inventory_position_id"] in pos_ids and r["warehouse_id"] in wh_ids
+              and int(r["variance"]) == int(r["counted_qty"]) - int(r["system_qty"]) for r in cyc))
+
+    # 11.3 字段合法 + 显式 as_of
+    as_of = cfg["window"]["as_of"]
+    check("position 桶字段非负、safety>0、as_of 显式",
+          all(all(int(r[k]) >= 0 for k in ("available_qty", "reserved_qty", "in_transit_qty",
+                                           "quarantine_qty")) and int(r["safety_stock"]) > 0
+              and r["as_of_date"] == as_of for r in inv_pos))
+    check("reservation status 合法（open/allocated/released/fulfilled/backordered）",
+          all(r["status"] in ("open", "allocated", "released", "fulfilled", "backordered")
+              for r in reservations))
+    check("cycle_count status 合法（scheduled/counted/variance/reconciled）",
+          all(r["status"] in ("scheduled", "counted", "variance", "reconciled") for r in cyc))
+
+    # 11.4 ground truth：rule 合法、计数=inject、severity 合法、锚点引用完整
+    check("仓储真值 rule 仅 R16-R18",
+          all(r["rule_id"] in ("R16", "R17", "R18") for r in wh_gt))
+    wh_by_rule = defaultdict(int)
+    for r in wh_gt:
+        wh_by_rule[r["rule_id"]] += 1
+    check("R16-R18 真值计数 = inject 配置",
+          wh_by_rule["R16"] == winj["r16"] and wh_by_rule["R17"] == winj["r17"]
+          and wh_by_rule["R18"] == winj["r18"],
+          f"got {dict(wh_by_rule)} vs r16={winj['r16']} r17={winj['r17']} r18={winj['r18']}")
+    check("仓储真值 severity 合法", all(r["severity"] in ("medium", "high") for r in wh_gt))
+
+    def _wh_ref_ok(r):  # 锚点引用：R16 锚 position / R17 锚 so_line / R18 锚 cycle_count（均 + warehouse）
+        if r["warehouse_id"] not in wh_ids:
+            return False
+        if r["rule_id"] == "R16":
+            return r["inventory_position_id"] in pos_ids
+        if r["rule_id"] == "R17":
+            return r["so_line_id"] in line_ids_all
+        return r["cycle_count_id"] in {c["cycle_count_id"] for c in cyc}
+    check("仓储真值锚点引用完整（R16 position / R17 so_line / R18 cycle_count）",
+          all(_wh_ref_ok(r) for r in wh_gt),
+          f"违规: {[r['expected_warehouse_risk_id'] for r in wh_gt if not _wh_ref_ok(r)][:5]}")
+
+    # 11.5 独立 oracle：verify 侧按规则重算应检异常，真值集合必须逐一相等（灰区/干净不入真值、真值完整）
+    wp_wh = wp["warehouse"]  # 复用 section 9 重建的世界（可复现，section 1 已验证一致）
+    wp_lines = wp["lines"]
+    pos_by_id = {p["inventory_position_id"]: p for p in wp_wh["positions"]}
+    r16_oracle = {p["inventory_position_id"] for p in wp_wh["positions"]
+                  if p["available_qty"] <= p["safety_stock"]}
+    r17_oracle = set()
+    for rsv in wp_wh["reservations"]:
+        if rsv["status"] != "open":
+            continue
+        ln = wp_lines.get(rsv["so_line_id"])
+        p = pos_by_id.get(rsv["inventory_position_id"])
+        if ln and ln["line_status"] == "open" and p:
+            atp = p["available_qty"] + p["in_transit_qty"] - p["reserved_qty"]
+            if atp < rsv["qty"]:
+                r17_oracle.add(rsv["so_line_id"])
+    r18_oracle = {c["cycle_count_id"] for c in wp_wh["cycle_counts"]
+                  if c["system_qty"] > 0
+                  and abs(c["counted_qty"] - c["system_qty"]) / c["system_qty"] > tol}
+    gt_r16 = {r["inventory_position_id"] for r in wh_gt if r["rule_id"] == "R16"}
+    gt_r17 = {r["so_line_id"] for r in wh_gt if r["rule_id"] == "R17"}
+    gt_r18 = {r["cycle_count_id"] for r in wh_gt if r["rule_id"] == "R18"}
+    check("R16 真值 == 独立 oracle（available≤safety）→ 灰区不入、真值完整",
+          gt_r16 == r16_oracle, f"diff: {sorted(gt_r16 ^ r16_oracle)}")
+    check("R17 真值 == 独立 oracle（open SOL 且 ATP<需求）→ 灰区不入、真值完整",
+          gt_r17 == r17_oracle, f"diff: {sorted(gt_r17 ^ r17_oracle)}")
+    check("R18 真值 == 独立 oracle（|var|/system>tol）→ 灰区不入、真值完整",
+          gt_r18 == r18_oracle, f"diff: {sorted(gt_r18 ^ r18_oracle)}")
+    # 灰区显式存在（证明确有近阈值样本在测未来误报）：gray 桶数 > 0 且不在真值
+    n_gray = winj["r16_gray"] + winj["r17_gray"] + winj["r18_gray"]
+    check("灰区样本存在且总量 = 配置", n_gray == 6)
+    print(f"  仓储: 仓={len(whs)} position={len(inv_pos)} 预留={len(reservations)} 盘点={len(cyc)}  "
+          f"真值 R16={wh_by_rule['R16']} R17={wh_by_rule['R17']} R18={wh_by_rule['R18']}")
+
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)
 
