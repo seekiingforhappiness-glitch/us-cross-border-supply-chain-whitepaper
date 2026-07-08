@@ -267,7 +267,8 @@ def main():
                               "ap_supplier_invoice_lines", "ap_purchase_payments",
                               "srm_supplier_qualifications",
                               "wms_warehouses", "wms_inventory_positions",
-                              "wms_inventory_reservations", "wms_cycle_counts"]}
+                              "wms_inventory_reservations", "wms_cycle_counts",
+                              "srm_rfqs", "srm_rfq_lines", "srm_quotes"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
     source_events = source_event_rows(t["tms_milestones"])
     _ensure_unique_source_events(source_events)
@@ -640,6 +641,29 @@ def main():
         "cycle_count_orphans": sum(1 for r in t["wms_cycle_counts"]
                                    if r["inventory_position_id"] not in invpos_id_set
                                    or r["warehouse_id"] not in wh_id_set),
+    }
+
+    # P3 采购富化2 询价三表（srm 为记录系统，直通加载 + 引用完整性入 DQ）
+    # RFQ(单 SKU 询价)/RFQLine/Quote(供应商报价)；approved 备源 = awarded Quote → R14/R15 判据数据源。
+    table("rfqs", sorted(t["srm_rfqs"], key=lambda x: x["rfq_id"]),
+          ["rfq_id TEXT", "sku_id TEXT", "status TEXT", "created_date TEXT", "as_of_date TEXT"],
+          "rfq_id")
+    table("rfq_lines", sorted(t["srm_rfq_lines"], key=lambda x: x["rfq_line_id"]),
+          ["rfq_line_id TEXT", "rfq_id TEXT", "sku_id TEXT", "qty INTEGER"], "rfq_line_id")
+    table("quotes", sorted(t["srm_quotes"], key=lambda x: x["quote_id"]),
+          ["quote_id TEXT", "rfq_id TEXT", "supplier_id TEXT", "unit_price_usd REAL",
+           "currency TEXT", "status TEXT", "as_of_date TEXT"], "quote_id")
+    rfq_id_set = {r["rfq_id"] for r in t["srm_rfqs"]}
+    src_sku_set = {r["sku_id"] for r in t["catalog_skus"]}
+    src_sup_set = {r["supplier_id"] for r in t["srm_suppliers"]}
+    dq["sourcing"] = {
+        "rfqs": len(t["srm_rfqs"]),
+        "rfq_lines": len(t["srm_rfq_lines"]),
+        "quotes": len(t["srm_quotes"]),
+        "rfq_sku_orphans": sum(1 for r in t["srm_rfqs"] if r["sku_id"] not in src_sku_set),
+        "rfq_line_orphans": sum(1 for r in t["srm_rfq_lines"] if r["rfq_id"] not in rfq_id_set),
+        "quote_orphans": sum(1 for r in t["srm_quotes"]
+                             if r["rfq_id"] not in rfq_id_set or r["supplier_id"] not in src_sup_set),
     }
 
     relationship_rows = build_object_relationship_rows(t, so_rows, line_rows, ship_rows, ms_rows)

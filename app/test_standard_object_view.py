@@ -33,6 +33,7 @@ PLAN = "LP-00001"
 FINDING = "CF-00001"
 INVLINE = "IL-000001"
 INVPOS = "INVP-00001"   # W1 仓储：库存头寸（sku×仓库）
+RFQ = "RFQ-2026-0001"   # P3 采购富化2：询价（awarded 历史，含 RFQLine + Quote 关联）
 
 
 def check(name, cond, detail=""):
@@ -52,7 +53,7 @@ def main():
         "Shipment": SHIP, "Customer": CUST, "Sku": SKU, "SalesOrderLine": SOLINE,
         "Container": CONTAINER, "CostScenario": COSTSCEN, "Supplier": SUPPLIER,
         "ShipmentAllocation": ALLOC, "LogisticsPlan": PLAN, "ComplianceFinding": FINDING,
-        "InvoiceLine": INVLINE, "InventoryPosition": INVPOS,
+        "InvoiceLine": INVLINE, "InventoryPosition": INVPOS, "RFQ": RFQ,
     }
     for otype, oid in samples.items():
         v = sov.build_standard_view(con, otype, oid, "manager")
@@ -83,6 +84,11 @@ def main():
     check("① InventoryPosition 关联到 Warehouse 与 Sku（W1 仓储对象图可导航）",
           {"Warehouse", "Sku"} <= {g["object_type"] for g in v_pos["linked_objects"]},
           str([g["object_type"] for g in v_pos["linked_objects"]]))
+    # P3 采购富化2：RFQ 关联到 RFQLine + Quote + Sku（询价对象图可导航）
+    v_rfq = sov.build_standard_view(con, "RFQ", RFQ, "manager")
+    check("① RFQ 关联到 RFQLine/Quote/Sku（P3 询价对象图可导航）",
+          {"RFQLine", "Quote", "Sku"} <= {g["object_type"] for g in v_rfq["linked_objects"]},
+          str([g["object_type"] for g in v_rfq["linked_objects"]]))
 
     print("== ② role 脱敏（tier / 成本字段）==")
     cust_ops = sov.build_standard_view(con, "Customer", CUST, "ops")
@@ -123,14 +129,14 @@ def main():
         check(f"③ {core} → rich", sov.route_object(core) == "rich")
     for std in ("Shipment", "Customer", "Sku", "SalesOrderLine", "Container", "CostScenario",
                 "Supplier", "ShipmentMilestone", "InvoiceLine", "ExpectedCost", "LogisticsPlan",
-                "Warehouse", "InventoryPosition", "InventoryReservation", "CycleCount"):
+                "Warehouse", "InventoryPosition", "InventoryReservation", "CycleCount",
+                "RFQ", "RFQLine", "Quote"):
         check(f"③ {std} → standard", sov.route_object(std) == "standard")
     check("③ 未知类型 → unknown", sov.route_object("Nonexistent") == "unknown")
     check("③ OBJECT_REGISTRY 不含五核心（只覆盖非核心）",
           not (sov.RICH_OBJECT_TYPES & set(sov.OBJECT_REGISTRY)))
-    check("③ OBJECT_REGISTRY 覆盖 25 个非核心类型（W1 仓储 +Warehouse/InventoryPosition/"
-          "InventoryReservation/CycleCount 21→25）",
-          len(sov.OBJECT_REGISTRY) == 25, str(len(sov.OBJECT_REGISTRY)))
+    check("③ OBJECT_REGISTRY 覆盖 28 个非核心类型（P3 采购富化2 +RFQ/RFQLine/Quote 25→28）",
+          len(sov.OBJECT_REGISTRY) == 28, str(len(sov.OBJECT_REGISTRY)))
     # OBJECT_REGISTRY 值形如 (表名, 主键列, 关键展示字段)
     tbl, pkc, kf = sov.OBJECT_REGISTRY["Shipment"]
     check("③ OBJECT_REGISTRY[Shipment] = (shipments, shipment_id, 非空关键字段)",

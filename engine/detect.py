@@ -15,6 +15,7 @@ from .rules import detect_risks, SEV_ORDER
 from .cost_rules import detect_cost_anomalies
 from .procurement_rules import detect_procurement_risks
 from .warehouse_rules import detect_warehouse_risks
+from .sourcing_rules import detect_sourcing_risks
 from .graph import upsert_relationship
 
 DB = "data/ontology.sqlite"
@@ -234,6 +235,46 @@ def apply_warehouse_candidates(con, cands, as_of):
     return created
 
 
+def apply_sourcing_candidates(con, cands, as_of):
+    """P3 采购富化2 RiskEvent 写库（R14/R15）。与采购/仓储写库同构：不合并、不牵动订单行
+    （每锚点唯一 → 恒 create）。R14 锚 supplier_id + affected_po_line_ids=[sku_id]；R15 锚 po_id +
+    supplier_id + affected_invoice_line_ids。RSK 序号续既有事件之后（append，不扰动 R1-R18 序号）。
+    审计时间戳用 as_of（D8）。返回 created。"""
+    cur = con.cursor()
+    ts = f"{as_of.isoformat()}T00:00:00Z"
+    seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
+    created = 0
+
+    def _order(x):
+        plids = json.loads(x["affected_po_line_ids"] or "[]")
+        anchor = plids[0] if plids else (x.get("po_id") or x.get("supplier_id") or "")
+        return (x["rule_id"], anchor)
+
+    for c in sorted(cands, key=_order):
+        seq += 1
+        rid = f"RSK-{seq:04d}"
+        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                       root_cause, status, resolved_at, outcome, resolution_summary,
+                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
+                     c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
+                     None, None, None, c.get("affected_invoice_line_ids"),
+                     c["po_id"], c["supplier_id"], c["affected_po_line_ids"]))
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
+                       params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    ("engine", "system", "CreateRiskEvent", rid,
+                     json.dumps({"rule_id": c["rule_id"], "po_id": c["po_id"],
+                                 "supplier_id": c["supplier_id"],
+                                 "affected": json.loads(c["affected_po_line_ids"] or "[]"),
+                                 "severity": c["severity"]}, ensure_ascii=False),
+                     as_of.isoformat(), ts, "created"))
+        created += 1
+    con.commit()
+    return created
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/datagen.yaml")
@@ -256,12 +297,16 @@ def main():
     # W1 仓储 R16-R18（Build 1/3）：独立检测与写库路径（warehouse 锚点，不合并、不牵动订单行）
     wh_cands = detect_warehouse_risks(con, as_of, cfg)
     wh_created = apply_warehouse_candidates(con, wh_cands, as_of)
+    # P3 采购富化2 R14/R15（Build A）：须在 proc R7-R13 之后（R14 依赖 R7/R9 事件）。RSK 序号 append 末尾。
+    src_cands = detect_sourcing_risks(con, as_of, cfg)
+    src_created = apply_sourcing_candidates(con, src_cands, as_of)
     by_rule = {}
-    for c in cands + cost_cands + proc_cands + wh_cands:
+    for c in cands + cost_cands + proc_cands + wh_cands + src_cands:
         by_rule[c["rule_id"]] = by_rule.get(c["rule_id"], 0) + 1
     print(json.dumps({"as_of": as_of.isoformat(),
-                      "candidates": len(cands) + len(cost_cands) + len(proc_cands) + len(wh_cands),
-                      "created": created + proc_created + wh_created, "merged": merged,
+                      "candidates": len(cands) + len(cost_cands) + len(proc_cands)
+                      + len(wh_cands) + len(src_cands),
+                      "created": created + proc_created + wh_created + src_created, "merged": merged,
                       "by_rule": by_rule, "invoice_status": inv_dist},
                      ensure_ascii=False))
 

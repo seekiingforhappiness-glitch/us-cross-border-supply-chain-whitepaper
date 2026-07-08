@@ -714,6 +714,112 @@ def main():
     print(f"  仓储: 仓={len(whs)} position={len(inv_pos)} 预留={len(reservations)} 盘点={len(cyc)}  "
           f"真值 R16={wh_by_rule['R16']} R17={wh_by_rule['R17']} R18={wh_by_rule['R18']}")
 
+    print("== 12. 采购富化2 RFQ + R14/R15（P3 Build A）==")
+    rfqs = load(raw_dir, "srm_rfqs")
+    rfq_lines = load(raw_dir, "srm_rfq_lines")
+    quotes = load(raw_dir, "srm_quotes")
+    src_gt = load(truth_dir, "expected_sourcing_risks")
+    scfg = cfg["sourcing"]
+    sinj = scfg["inject"]
+    src = wp["sourcing"]                # 复用 section 9.5 重建的世界（可复现，section 1 已验证一致）
+    roles = src["roles"]
+    skus_map = {r["sku_id"]: r for r in load(raw_dir, "catalog_skus")}
+    sup_ids_all = {r["supplier_id"] for r in t["srm_suppliers"]}
+
+    # 12.1 规模 + 引用完整性
+    rfq_ids = {r["rfq_id"] for r in rfqs}
+    check("RFQ/RFQLine/Quote 非空", bool(rfqs) and bool(rfq_lines) and bool(quotes))
+    check("RFQ 引用完整（sku_id ∈ skus）+ status 合法",
+          all(r["sku_id"] in skus_map and r["status"] in
+              ("draft", "sent", "quoting", "evaluating", "awarded", "closed", "cancelled")
+              for r in rfqs))
+    check("RFQLine 引用完整（rfq_id ∈ rfqs, sku_id ∈ skus, qty>0）",
+          all(r["rfq_id"] in rfq_ids and r["sku_id"] in skus_map and int(r["qty"]) > 0
+              for r in rfq_lines))
+    check("Quote 引用完整（rfq_id ∈ rfqs, supplier_id ∈ suppliers）+ status 合法",
+          all(r["rfq_id"] in rfq_ids and r["supplier_id"] in sup_ids_all and r["status"] in
+              ("invited", "submitted", "shortlisted", "awarded", "rejected", "expired")
+              for r in quotes))
+
+    # 12.2 R15 maverick 发票并入 ap_supplier_invoices，引用真实 PO/po_line、价量匹配 → 不触 R10/R11
+    mav_inv = [r for r in sup_inv if r["supplier_invoice_id"].startswith("SINV-MVK")]
+    mav_lines = [r for r in sup_inv_lines if r["supplier_invoice_id"].startswith("SINV-MVK")]
+    pol_map = {r["po_line_id"]: r for r in po_lines}
+    check("maverick 发票引用真实 PO + supplier + biller≠PO供应商",
+          all(r["po_id"] in po_ids and r["supplier_id"] in sup_ids_all for r in mav_inv)
+          and all(r["supplier_id"] != next(p["supplier_id"] for p in t["srm_purchase_orders"]
+                                           if p["po_id"] == r["po_id"]) for r in mav_inv))
+    check("maverick 发票行价=PO行价、量=PO行量（→ 不触 R10/R11）",
+          all(r["po_line_id"] in pol_map
+              and abs(float(r["unit_price_usd"]) - float(pol_map[r["po_line_id"]]["unit_price_usd"])) < 1e-6
+              and int(r["qty"]) == int(pol_map[r["po_line_id"]]["qty"]) for r in mav_lines),
+          f"违规: {[r['supplier_invoice_line_id'] for r in mav_lines if r['po_line_id'] not in pol_map or int(r['qty']) != int(pol_map.get(r['po_line_id'],{}).get('qty',-1))][:5]}")
+    # maverick/gray 引用的 PO 必为 clean 画像（足量收货 → R11 前提排除）
+    proc_profile = wp["procurement"]["profile"]
+    check("maverick/gray 发票引用的 PO 均为 clean 画像（足量收货）",
+          all(proc_profile.get(r["po_id"]) == "clean" for r in mav_inv),
+          f"非 clean: {[(r['supplier_invoice_id'], proc_profile.get(r['po_id'])) for r in mav_inv if proc_profile.get(r['po_id']) != 'clean']}")
+
+    # 12.3 独立 oracle（verify 侧按规则重算）：R14/R15 真值必须逐一相等
+    disrupted = set(roles["disrupted"])
+    awarded_alt = roles["awarded_alt"]
+    active_skus = [k for k in skus_map if skus_map[k]["sku_status"] == "active"]
+    incumbent = {k: skus_map[k]["supplier_id"] for k in active_skus}
+    r14_oracle = set()
+    for k in active_skus:
+        approved = {incumbent[k]} | ({awarded_alt[k]} if k in awarded_alt else set())
+        if len(approved) == 1 and incumbent[k] in disrupted:
+            r14_oracle.add(k)
+    gt_r14 = {r["sku_id"] for r in src_gt if r["rule_id"] == "R14"}
+    check("R14 真值 == 独立 oracle（active 单源 且 incumbent 断供）→ 灰区不入、真值完整",
+          gt_r14 == r14_oracle, f"diff: {sorted(gt_r14 ^ r14_oracle)}")
+
+    pol_sku = {l["po_line_id"]: l["sku_id"] for l in po_lines}
+    pos_sup = {p["po_id"]: p["supplier_id"] for p in t["srm_purchase_orders"]}
+    mav_line_of = {l["supplier_invoice_id"]: l for l in mav_lines}
+    r15_oracle = set()
+    for inv in mav_inv:
+        line = mav_line_of[inv["supplier_invoice_id"]]
+        sku = pol_sku[line["po_line_id"]]
+        biller = inv["supplier_id"]
+        if biller == pos_sup[inv["po_id"]]:
+            continue
+        if biller == awarded_alt.get(sku):
+            continue                       # approved 备源 → 豁免（灰区）
+        r15_oracle.add(inv["po_id"])
+    gt_r15 = {r["po_id"] for r in src_gt if r["rule_id"] == "R15"}
+    check("R15 真值 == 独立 oracle（biller≠PO供应商 且非 approved 备源）→ 灰区不入、真值完整",
+          gt_r15 == r15_oracle, f"diff: {sorted(gt_r15 ^ r15_oracle)}")
+
+    # 12.4 计数 = inject；severity 合法；灰区不入真值
+    src_by_rule = defaultdict(int)
+    for r in src_gt:
+        src_by_rule[r["rule_id"]] += 1
+    check("R14/R15 真值计数 = inject 配置",
+          src_by_rule["R14"] == sinj["r14"] and src_by_rule["R15"] == sinj["r15"],
+          f"got R14={src_by_rule['R14']} R15={src_by_rule['R15']} vs r14={sinj['r14']} r15={sinj['r15']}")
+    check("采购富化2 真值 rule 仅 R14/R15 + severity 合法",
+          all(r["rule_id"] in ("R14", "R15") and r["severity"] in ("medium", "high")
+              for r in src_gt))
+    # 灰区：r14_gray（单源但健康）、多源 SKU、在建目标 均不入 R14 真值
+    check("R14 灰区不入真值（r14_gray 单源健康）", not (set(roles["r14_gray"]) & gt_r14),
+          f"泄漏: {sorted(set(roles['r14_gray']) & gt_r14)}")
+    check("多源 SKU 不入 R14 真值（2+ approved 供应商）",
+          not (set(roles["multi_source_skus"]) & gt_r14),
+          f"泄漏: {sorted(set(roles['multi_source_skus']) & gt_r14)}")
+    check("在建 RFQ 目标仍单源→仍在 R14 真值（未 awarded 不加备源）",
+          all(k in gt_r14 for k in roles["r14_targets"][:sinj["r14_inflight"]]))
+    # R15 灰区（approved 备源 biller）不入真值
+    gray_gt_pos = {inv["po_id"] for inv in mav_inv
+                   if inv["supplier_invoice_id"] in roles["r15_gray_invoices"]}
+    check("R15 灰区（approved 备源 biller）不入真值", not (gray_gt_pos & gt_r15),
+          f"泄漏: {sorted(gray_gt_pos & gt_r15)}")
+    check("R15 灰区注入数 = 配置", len(roles["r15_gray_invoices"]) == sinj["r15_gray"],
+          f"got {len(roles['r15_gray_invoices'])}")
+    print(f"  询价: RFQ={len(rfqs)} RFQLine={len(rfq_lines)} Quote={len(quotes)}  "
+          f"maverick 发票={len(mav_inv)}(灰区{len(roles['r15_gray_invoices'])})  "
+          f"真值 R14={src_by_rule['R14']} R15={src_by_rule['R15']}  多源SKU={len(roles['multi_source_skus'])}")
+
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)
 

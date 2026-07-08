@@ -172,8 +172,14 @@
   ③**Shipment 延误(R1-R3)→查目的仓现货→拆单先发+余量 backorder（业务问题落点，控制塔把仓储/采购/延误连起来）**。
   **controller 独立复核**：warehouse_loop 全绿（连接点+延误现货救援+越权杀手 wh-agent[manager] approve 被拒）、
   R1-R18 全绿、ROLE_PERMS/maker-checker/FORBIDDEN/agent/tools diff=0、全套回归绿、三角色 UI 0 异常。
-  **→ 仓储成第 5 业务场景（延误/准入/费用/采购/仓储），R1-R18 全 P/R=1.000。剩 Warehouse 富工作台+agent（可选）
-  + 采购 RFQ/单一来源/maverick 富化（Daniel 已提，待续）。**
+  **→ 仓储成第 5 业务场景（延误/准入/费用/采购/仓储），R1-R18 全 P/R=1.000。**
+- **采购富化 P3 Build A（RFQ 询价 + R14 单一来源 + R15 maverick 模型+数据+引擎）已完成并通过 controller review**：
+  决策日志 P3（Daniel 请求批准，P1 推迟清单项）。ontology v0.8.0 新增 RFQ(17)/RFQLine(17)/Quote(40) + R14/R15 规则
+  （锚点复用 supplier_id/po_id）。`datagen/sourcing.py`+`engine/sourcing_rules.py`（R14 读既有 R7/R9 事件判断断供、
+  R15 supplier_invoice 无 approved PO）。真值独立存 `expected_sourcing_risks.csv`（使 procurement 真值 md5 d08428… 不变）。
+  **controller 独立复核**：R14/R15 全 P/R=1.000、灰区 0 误报、两真值确定性、**既有 R1-R13/R16-R18 全 P/R=1.000 未扰动**、
+  标准视图 28、全套回归绿。子代理妥善处理 RFQ 缩写表名（ontology 声明显式 table 避免 r_f_q 误拆）。
+  **Build B（动作 initiate_second_source/block_non_po_payment/backfill_po + 闭环）待续。**
 
 ## v0.4 进度
 

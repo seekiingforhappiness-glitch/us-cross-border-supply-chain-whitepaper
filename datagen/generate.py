@@ -20,6 +20,7 @@ from . import admission as ADM
 from . import cost as COST
 from . import procurement as PROC
 from . import warehouse as WH
+from . import sourcing as SRC
 from .design_cases import apply_design_cases
 from .noise import apply_noise, apply_doc_refs
 from .oracle import sweep
@@ -49,6 +50,10 @@ def build(cfg):
     # W1 仓储库存主线（Build 1/3）：独立随机流（seed+warehouse.seed_offset），既有数据零扰动
     wh_rng = random.Random(cfg["seed"] + cfg["warehouse"]["seed_offset"])
     WH.build_warehouse_world(w, cfg, wh_rng)
+    # P3 采购富化2（Build A）：RFQ 询价 + R14 单一来源 + R15 maverick——独立随机流
+    # （seed+sourcing.seed_offset），须在 procurement 之后（依赖其 po_lines + R7/R9 真值）。
+    src_rng = random.Random(cfg["seed"] + cfg["sourcing"]["seed_offset"])
+    SRC.build_sourcing_world(w, cfg, src_rng)
     # v0.6 专题二 H3：milestone 单证号（booking_no/container_no）填充 + doc_ref_typo。
     # 独立随机流（seed+3000），须在 cost 建柜之后（primary 柜号已就位）。
     doc_rng = random.Random(cfg["seed"] + 3000)
@@ -200,16 +205,31 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                          ["grn_line_id", "grn_id", "po_line_id", "received_qty",
                                           "accepted_qty", "rejected_qty", "qc_status", "defect_ppm",
                                           "received_date", "as_of_date", "created_at"])
+    # P3 采购富化2：R15 maverick 发票并入 ap_supplier_invoices（引用真实 PO/po_line，价量匹配
+    # → 不触 R10/R11；既有 61 张合规发票行原序原字节在前，绕流程发票 append 在后）。
+    src = w["sourcing"]
     tables["ap_supplier_invoices"] = (sorted(proc["supplier_invoices"],
-                                             key=lambda x: x["supplier_invoice_id"]),
+                                             key=lambda x: x["supplier_invoice_id"])
+                                      + sorted(src["maverick_invoices"],
+                                               key=lambda x: x["supplier_invoice_id"]),
                                       ["supplier_invoice_id", "supplier_id", "po_id",
                                        "vendor_invoice_no", "issue_date", "currency", "total_usd",
                                        "status", "as_of_date", "created_at"])
     tables["ap_supplier_invoice_lines"] = (sorted(proc["supplier_invoice_lines"],
-                                                  key=lambda x: x["supplier_invoice_line_id"]),
+                                                  key=lambda x: x["supplier_invoice_line_id"])
+                                           + sorted(src["maverick_invoice_lines"],
+                                                    key=lambda x: x["supplier_invoice_line_id"]),
                                            ["supplier_invoice_line_id", "supplier_invoice_id",
                                             "po_line_id", "qty", "unit_price_usd", "amount_usd",
                                             "as_of_date", "created_at"])
+    # P3 采购富化2：RFQ 询价三表（srm_ = 供应商关系系统）
+    tables["srm_rfqs"] = (sorted(src["rfqs"], key=lambda x: x["rfq_id"]),
+                          ["rfq_id", "sku_id", "status", "created_date", "as_of_date"])
+    tables["srm_rfq_lines"] = (sorted(src["rfq_lines"], key=lambda x: x["rfq_line_id"]),
+                               ["rfq_line_id", "rfq_id", "sku_id", "qty"])
+    tables["srm_quotes"] = (sorted(src["quotes"], key=lambda x: x["quote_id"]),
+                            ["quote_id", "rfq_id", "supplier_id", "unit_price_usd", "currency",
+                             "status", "as_of_date"])
     # 采购富化 P2：预付款（ap_ = 应付账款/资金）+ 供应商资质（srm_ = 供应商关系系统）
     tables["ap_purchase_payments"] = (sorted(proc["payments"], key=lambda x: x["payment_id"]),
                                       ["payment_id", "po_id", "payment_type", "amount_usd",
@@ -255,6 +275,11 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
           ["expected_warehouse_risk_id", "rule_id", "type", "warehouse_id", "sku_id",
            "inventory_position_id", "so_line_id", "cycle_count_id", "severity",
            "anomaly_value_usd", "note"])
+    # P3 采购富化2 ground truth（R14/R15；独立文件——R14 需 sku_id 锚点不入 R7-R13 schema，
+    # 故既有 expected_procurement_risks.csv 逐字节不变，守 §5 铁律。仅 datagen/verify/evaluate 可读）
+    _dump(truth / "expected_sourcing_risks.csv", src["anomalies"],
+          ["expected_sourcing_risk_id", "rule_id", "type", "sku_id", "supplier_id", "po_id",
+           "severity", "anomaly_value_usd", "note"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

@@ -55,7 +55,9 @@ def _build_type_meta(onto: dict) -> dict:
     for obj in onto.get("objects", []):
         t = obj["type"]
         meta[t] = {
-            "table": _table_for(t),
+            # 显式 obj["table"] 优先（acronym 类型如 RFQ/RFQLine 的 CamelCase→snake 会误拆为
+            # r_f_q，故 ontology 直接声明 table；未声明则回退 _table_for 约定，既有对象零改动）。
+            "table": obj.get("table") or _table_for(t),
             "pk": obj["primaryKey"],
             "title_key": obj.get("titleKey") or None,
         }
@@ -118,6 +120,10 @@ KEY_FIELDS = {
     "InventoryReservation": ["so_line_id", "inventory_position_id", "qty", "status"],
     "CycleCount": ["inventory_position_id", "warehouse_id", "system_qty", "counted_qty",
                    "variance", "status"],
+    # P3 采购富化2 询价对象（决策日志 P3）：标准视图展示字段
+    "RFQ": ["sku_id", "status", "created_date"],
+    "RFQLine": ["rfq_id", "sku_id", "qty"],
+    "Quote": ["rfq_id", "supplier_id", "unit_price_usd", "status"],
 }
 
 # 非核心对象注册表：type → (表名, 主键列, 关键展示字段)。表名/主键来自 ontology 派生（TYPE_META），
@@ -164,6 +170,14 @@ FK_SUPPLEMENT = {
     "CycleCount": [("cycle_count_on_position", "InventoryPosition", "fk_out",
                     "inventory_position_id"),
                    ("cycle_count_in_warehouse", "Warehouse", "fk_out", "warehouse_id")],
+    # P3 采购富化2：RFQ→RFQLine/Quote/Sku；RFQLine→RFQ/Sku；Quote→RFQ/Supplier（对象图可双向导航）
+    "RFQ": [("rfq_has_line", "RFQLine", "fk_in", "rfq_id"),
+            ("rfq_has_quote", "Quote", "fk_in", "rfq_id"),
+            ("rfq_for_sku", "Sku", "fk_out", "sku_id")],
+    "RFQLine": [("rfq_has_line", "RFQ", "fk_out", "rfq_id"),
+                ("rfq_line_for_sku", "Sku", "fk_out", "sku_id")],
+    "Quote": [("rfq_has_quote", "RFQ", "fk_out", "rfq_id"),
+              ("quote_from_supplier", "Supplier", "fk_out", "supplier_id")],
 }
 
 

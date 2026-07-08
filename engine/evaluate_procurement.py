@@ -1,10 +1,13 @@
-"""采购异常 KPI 评估：python3 -m engine.evaluate_procurement（R7-R10 主线 + R11-R13 富化 P2）
+"""采购异常 KPI 评估：python3 -m engine.evaluate_procurement
+（R7-R10 主线 + R11-R13 富化 P2 + R14-R15 采购富化2 P3）。
 
-检出的采购 risk_events 对照 data/truth/expected_procurement_risks.csv（本脚本属评估层，允许读
-truth；引擎检测绝不读 truth——§5 铁律）。
+检出的采购 risk_events 对照 data/truth/expected_procurement_risks.csv（R7-R13）+
+expected_sourcing_risks.csv（R14/R15）。本脚本属评估层，允许读 truth；引擎检测绝不读 truth——§5 铁律。
+R14/R15 真值独立成文件：R14 需 sku_id 锚点，不入 R7-R13 schema → 既有 R7-R13 真值文件逐字节不变。
 
 匹配锚点按规则（R7-R10 与既有逐字节一致——仍是 po_line_id 锚）：
-  R7-R11 → po_line_id（检出取 affected_po_line_ids[0]）；R12 → po_id；R13 → supplier_id。
+  R7-R11 → po_line_id（检出取 affected_po_line_ids[0]）；R12 → po_id；R13 → supplier_id；
+  R14 → sku_id（检出取 affected_po_line_ids[0]，即 [sku_id] 载体）；R15 → po_id。
   真值每锚点一行；灰区/干净样本不在真值，被检出即 false positive → 计入误报。
 
 KPI（每规则）：precision ≥ 0.90 且 recall ≥ 0.90 → PASS（R7-R10 仍须 1.000，不得扰动）。
@@ -17,23 +20,26 @@ import sqlite3
 import sys
 
 FAILS = []
-PROC_RULES = ("R7", "R8", "R9", "R10", "R11", "R12", "R13")
+PROC_RULES = ("R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15")
 GATE_P = 0.90
 GATE_R = 0.90
 
 
 def _anchor_exp(r):
-    """真值行锚点：R12→po_id，R13→supplier_id，其余→po_line_id。"""
-    if r["rule_id"] == "R12":
+    """真值行锚点：R12/R15→po_id，R13→supplier_id，R14→sku_id，其余→po_line_id。"""
+    if r["rule_id"] in ("R12", "R15"):
         return r["po_id"]
     if r["rule_id"] == "R13":
         return r["supplier_id"]
+    if r["rule_id"] == "R14":
+        return r["sku_id"]
     return r["po_line_id"]
 
 
 def _anchor_det(r):
-    """检出事件锚点：R12→po_id，R13→supplier_id，其余→affected_po_line_ids[0]。"""
-    if r["rule_id"] == "R12":
+    """检出事件锚点：R12/R15→po_id，R13→supplier_id，R14→affected_po_line_ids[0](=sku_id)，
+    其余→affected_po_line_ids[0]。"""
+    if r["rule_id"] in ("R12", "R15"):
         return r["po_id"]
     if r["rule_id"] == "R13":
         return r["supplier_id"]
@@ -50,10 +56,14 @@ def check(name, cond, detail=""):
 def main():
     with open("data/truth/expected_procurement_risks.csv", encoding="utf-8") as f:
         expected = list(csv.DictReader(f))
+    # R14/R15 真值独立文件（P3）——追加进同一评估口径（R7-R13 文件 byte-identical）
+    with open("data/truth/expected_sourcing_risks.csv", encoding="utf-8") as f:
+        expected += list(csv.DictReader(f))
     con = sqlite3.connect("data/ontology.sqlite")
     con.row_factory = sqlite3.Row
     detected = [dict(r) for r in con.execute(
-        "SELECT * FROM risk_events WHERE rule_id IN ('R7','R8','R9','R10','R11','R12','R13')")]
+        "SELECT * FROM risk_events WHERE rule_id IN "
+        "('R7','R8','R9','R10','R11','R12','R13','R14','R15')")]
 
     exp_map = {(_anchor_exp(r), r["rule_id"]): r for r in expected}
     det_map = {(_anchor_det(r), r["rule_id"]): r for r in detected}

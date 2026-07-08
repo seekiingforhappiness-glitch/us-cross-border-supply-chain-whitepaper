@@ -108,6 +108,19 @@ warehouse:                      # W1 仓储库存准确主线（Build 1/3）—�
   clean_reservations: 8         # 干净预留（status=allocated/fulfilled，不进 R17 域）演示用
   clean_cycle_counts: 6         # 干净盘点（counted=system，reconciled）演示用
 
+sourcing:                       # P3 采购富化2：RFQ 询价 + R14 单一来源 + R15 maverick——独立随机流 seed+6000
+  seed_offset: 6000             # 独立随机流偏移（既有数据零扰动，§7 可复现）
+  single_source_recent_days: 90 # R14：仅计 detected_at 落 [as_of-N, as_of] 的 R7/R9 事件（近期断供窗口）
+  single_source_high_usd: 100000 # R14：单一来源敞口(该 SKU 的 PO 采购额) > 此值 → high，否则 medium
+  maverick_high_usd: 100000     # R15：绕流程发票额 > 此值 → high，否则 medium
+  inject:                       # 注入画像计数（固定，可复现；verify 精确断言）
+    r14: 4                       # 单一来源(仅 1 个 approved 供应商) 且该供应商近期有 R7/R9 → 断供风险
+    r14_gray: 3                  # 灰区：单一来源但供应商无近期 R7/R9（健康）→ 不触发
+    r14_inflight: 2              # 在建 RFQ（未 awarded）——第二来源在途，目标仍单源（不改 R14 判定）
+    clean_multi_source: 3        # 干净：2+ approved 供应商（已 awarded 历史询价建立备源）→ 不触发
+    r15: 4                       # 绕流程采购：发票供应商≠PO 供应商 且非该 SKU 的 approved 备源
+    r15_gray: 1                  # 灰区：发票供应商≠PO 供应商 但为该 SKU approved 备源 → 豁免（不触发）
+
 scoring:                        # v0.6 专题一 Y1 风险评分模型（H1/H2）
   split_ratio: 0.7              # 按 shipment_id 的 sha256 十六进制排序取前 70% 训练
   lr: 0.5                       # 全批量梯度下降步长

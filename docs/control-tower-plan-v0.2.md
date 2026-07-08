@@ -209,6 +209,17 @@ SalesOrderLine open→allocated ③Shipment 延误(R1-R3)→查目的仓现货�
 **推迟（另行批准）**：R19 呆滞、R20 超库容、R21 批次过期(需 lot)、R22 错分配、wh_ops 子角色。铁律不变：引擎禁读真值、
 真值存 data/truth/、既有 R1-R13 R/P=1.000 不得扰动、agent 不越权。
 
+**P3 — 采购富化 2：RFQ 询价 + R14 单一来源 + R15 maverick（2026-07-08，Daniel 请求批准；P1 推迟清单项）。**
+Daniel 批准把 P1 推迟的 RFQ/单一来源/maverick 落地，model-first，全复用既有 RiskEvent→Task→治理骨架。
+新增对象：`RFQ`(询价，draft→sent→quoting→evaluating→awarded→closed)、`RFQLine`、`Quote`(供应商报价，
+invited→submitted→shortlisted→awarded/rejected/expired)。新增规则：**R14 single_source**（某 active SKU 仅 1 个
+approved 供应商 且该供应商近 N 天有 R7/R9 事件 → 断供风险）、**R15 maverick_spend**（supplier_invoice 无匹配
+approved PO / 非 approved 供应商 → 绕流程采购）。锚点复用 supplier_id/po_id（不加核心列）。
+新增动作：`initiate_second_source`（R14→建 RFQ 启动第二来源）、`block_non_po_payment`/`backfill_po`（R15），
+走既有 assign→propose→approve 闭环 + maker-checker（approve 仍仅 manager）。
+默认取舍：容差/近期窗口(N 天)入 config；RFQ/RFQLine/Quote 走**标准视图**（不建富工作台）。
+铁律不变：引擎禁读真值、真值存 data/truth/、既有 R1-R18 R/P=1.000 不得扰动、agent 不越权。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。
