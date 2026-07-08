@@ -17,7 +17,7 @@
 - [x] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
 - [x] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
 - [x] **8. 多区域 demo 数据**：让行级数据范围（region）可见地过滤（守真值 md5、engine R/P 不变）
-- [ ] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
+- [x] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
 - [ ] **10. `docs/field-gap-analysis.md` + retrospective 更新**到当前全貌
 - [ ] **11. 一页纸（可视化 Artifact）** for 面客：五场景控制塔全景图
 - [ ] **12. 接手/onboarding 文档**：新会话/新模型 5 分钟上手路径
@@ -37,3 +37,4 @@
 - 迭代 6 — 新建 app/test_agent_security.py 统一对抗安全 sweep（6 对象 agent × 6 角色 tool_defs 无审批类；6 agent × 3 关键角色 × 4 审批类 × 4 注入变体 = 288 次 dispatch 全 refused + 目标三态不变；manager 亦被拒；7 条边界/负例：未知工具/越域读/超角色写/动作层双闸/FORBIDDEN⊇四审批类；292 条 denied 全溯源 ai-agent）— controller 独立复核全绿：git tracked diff=0（只加测试）、test_agent_security 全通过、既有回归(object_workbench/warehouse/scope_parity/agent.evaluate)无退化、R1-R18 未动 — 见 loop 提交
 - 迭代 7 — app/actions.py 行为保持重构：抽 2 私有 helper（`_bulk_set_status` 合并 6 处等价单列批量回写、`_distinct_invoice_col` 合并 2 处 invoice_lines 父列去重），行数 595→594；子代理诚实标注不宜合并处（lazy-import 委派/多列 SET+outbox/JOIN 查询保持内联）— controller 独立复核全绿：只动 actions.py(净 -1 行)、ROLE_PERMS/ADM_PERMS/FORBIDDEN 0 改动、五场景闭环+test_agent_security+scope_parity 全通过(退出码 0；grep 的 error 命中系「无 error」断言假阳性)、R1-R18+agent.evaluate 未动 — 见 loop 提交
 - 迭代 8 — 新建 app/test_region_scope.py 证明多区域行级数据范围「可见过滤」（27 断言）：manager=Global 可见 20 含 US+CN 两区；CN 运营(u-ops-cn)只看 CN=2、exclude 全部 US；US 运营只看 US=18、exclude CN；分区干净无泄漏(US∩CN=∅、US∪CN=20=全集、两区均非空)；Python 谓词==SQL LIKE 口径一致(18==18/2==2)；region_of_locode 边界。**§5 铁律守住：根本没碰 datagen，TRUTH_MD5_IDENTICAL（8 真值文件逐字节不变）**。诚实跳过需 3 文件 UI 改动的可选 region surface（记为后续小切片）— controller 独立复核全绿：git status 仅新测试、datagen/engine/ontology/truth 0 改动、md5 独立重算一致、相关回归+R1-R18 全退出 0 — 见 loop 提交
+- 迭代 9 — agent 评估集补采购/仓储覆盖（22→29 题）：evaluate.py 加 po_briefing/warehouse_briefing 两 type 分支（focus 目标对象→复用 object_workbench focus briefing 取真实事实，focus 用后还原不污染会话）；新增 7 题（采购 4：R7延误/R10价量/R12预付款敞口/采购fabrication；仓储 3：R16断货&R18盘点/R17不可履约/仓储fabrication），采购+仓储各含 1 编造防护题。**grade() 判定一字未改（不放水）**。— controller 独立复核全绿：只改 evaluate.py+eval_cases.yaml、grade 判定 0 改动、29 题全通过、**亲自跑判定严反证（Q23 注入假事实"交期延误_999_天_ZZZ"→进 missing→会 FAIL，证明 expected_contains 咬合真实对象数据非手写）**、truth md5 不变、scope_parity/agent_security/R1-R18 全退出 0 — 见 loop 提交

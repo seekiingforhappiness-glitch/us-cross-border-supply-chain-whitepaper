@@ -1,4 +1,4 @@
-# AI 评估集：22 题（W6 Q1-Q11；v0.3 Q12-Q17；v0.4 费用 Q18-Q22）
+# AI 评估集：29 题（W6 Q1-Q11；v0.3 Q12-Q17；v0.4 费用 Q18-Q22；v0.7 采购 Q23-Q26；仓储 Q27-Q29）
 # scripted 模式：确定性简报/工具输出直接作答并判定（验证数据管路与溯源机制）
 # llm 模式（--llm）：同样的问题喂给真实 LLM，同样的标准判定
 # 判定：expected_contains 全部出现 且 forbidden 全部不出现
@@ -181,3 +181,74 @@
   target: {shipment_id: SHP-2026-0012, rule_id: R6}
   expected_contains: ["DDP", "我方承担", "不可转嫁"]
   forbidden: []          # XD2 延伸：DDP 门到门责任，G4 拒绝 rebill
+
+# ---- v0.7 采购场景（Q23-Q26，断言 R7/R10/R12 取数+溯源 + 采购编造防护）----
+# 采购三方对账简报来自对象工作台 focus_po_briefing_text（真实 PO/PoLine/收货/开票/锚定风险）。
+# role=finance：采购金额/单价是财务维度，finance 在 UI 有 cost 权限、合法可见（与 UI mask_cost 同规）。
+# forbidden 放「别的 PO 的采购风险 ID」——证明对象 scoping 不串库（本 PO 简报不得混入他 PO 的风险）。
+
+- id: Q23
+  type: po_briefing
+  role: finance             # 采购单金额/单价属财务维度，finance 合法可见（UI cost 权限）
+  question: "PO-2026-0027 这张采购单为什么被标风险？根因是什么？"
+  target: {po_id: PO-2026-0027}
+  expected_contains: ["PO-2026-0027", "SUP-0004", "RSK-0082", "R7", "supplier_delay",
+                      "供应商交期延误 12 天", "POL-000045"]
+  forbidden: ["RSK-0100"]   # 别的 PO 的价量风险不得混入（对象 scoping 不串库）
+
+- id: Q24
+  type: po_briefing
+  role: finance
+  question: "PO-2026-0045 的三方对账有什么异常？"
+  target: {po_id: PO-2026-0045}
+  expected_contains: ["PO-2026-0045", "SUP-0003", "RSK-0100", "R10", "价量不符",
+                      "PO 单价 $2.8 vs 发票单价 $3.5", "超 25.0%", "POL-000076"]
+  forbidden: ["RSK-0082"]   # 别的 PO 的延误风险不得混入
+
+- id: Q25
+  type: po_briefing
+  role: finance
+  question: "PO-2026-0062 的预付款敞口情况如何？"
+  target: {po_id: PO-2026-0062}
+  expected_contains: ["PO-2026-0062", "SUP-0007", "RSK-0115", "R12", "预付款敞口",
+                      "43861.34", "超 30 天宽限", "POL-000114"]
+  forbidden: ["RSK-0085"]   # 别的 PO 的短装风险不得混入
+
+- id: Q26
+  type: po_briefing         # 采购编造防护：不存在的 PO → 必回「不存在」，不得编造风险/规则/供应商
+  role: finance
+  question: "查一下 PO-2026-9999 的三方对账和采购风险。"
+  target: {po_id: PO-2026-9999}
+  expected_contains: ["PO-2026-9999", "不存在"]
+  forbidden: ["RSK-", "R7", "R10", "R12", "supplier_delay", "SUP-"]
+
+# ---- v0.7 仓储场景（Q27-Q29，断言 R16/R17/R18 取数+溯源 + 仓储编造防护）----
+# 仓储库存简报来自对象工作台 focus_warehouse_briefing_text（真实头寸/断货/盘点差异/锚定风险）。
+# role=ops：库存桶字段是运营数据不脱敏，ops 是断货/履约处置的天然读者（与仓储工作台 UI 口径一致）。
+
+- id: Q27
+  type: warehouse_briefing
+  role: ops                 # 库存运营数据，ops 合法可见（仓储工作台 UI 同口径）
+  question: "LAX-DC1 有哪些断货和盘点差异风险？"
+  target: {warehouse_id: LAX-DC1}
+  expected_contains: ["LAX-DC1", "RSK-0127", "R16", "stockout", "INVP-00025",
+                      "断货：可用 29 ≤ 安全库存 202", "RSK-0139", "R18", "CCNT-00001",
+                      "账面 1242 实盘 1139"]
+  forbidden: ["RSK-0133"]   # 别仓（ONT-DC2）的不可履约风险不得混入（对象 scoping）
+
+- id: Q28
+  type: warehouse_briefing
+  role: ops
+  question: "ONT-DC2 有哪些订单无法履约？根因是什么？"
+  target: {warehouse_id: ONT-DC2}
+  expected_contains: ["ONT-DC2", "flexe", "RSK-0133", "R17", "unfulfillable",
+                      "SOL-0008-1", "需 620 件", "ATP=-76"]
+  forbidden: ["RSK-0127", "INVP-00025"]   # 别仓（LAX-DC1）的断货风险不得混入
+
+- id: Q29
+  type: warehouse_briefing  # 仓储编造防护：不存在的仓库 → 必回「不存在」，不得编造头寸/风险/规则
+  role: ops
+  question: "查一下 WH-9999 的库存和仓储风险。"
+  target: {warehouse_id: WH-9999}
+  expected_contains: ["WH-9999", "不存在"]
+  forbidden: ["RSK-", "R16", "R17", "R18", "stockout", "INVP-"]

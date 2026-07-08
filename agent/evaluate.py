@@ -92,6 +92,27 @@ def scripted_answer(session, case):
         if out.get("ok"):
             return f"已执行 {tgt['tool']}: {out['object_id']}；副作用: {'；'.join(out['side_effects'])}"
         return f"执行失败：{out.get('error')}"
+    if t == "po_briefing":
+        # 采购切片：把本会话 focus 到目标 PO，复用对象工作台确定性三方对账简报（真实
+        # PoLine/收货/开票/锚定采购风险 R7-R13，金额随 role 脱敏；不存在的 PO 返回「不存在」
+        # 而不编造）。focus 用后即还原，避免跨题污染共享会话。
+        from app.object_workbench import focus_po_briefing_text
+        prev = session.focus_po_id
+        session.focus_po_id = tgt["po_id"]
+        try:
+            return focus_po_briefing_text(session)
+        finally:
+            session.focus_po_id = prev
+    if t == "warehouse_briefing":
+        # 仓储切片：把本会话 focus 到目标仓，复用对象工作台确定性库存简报（真实头寸/断货/
+        # 盘点差异/锚定仓储风险 R16-R18；不存在的仓库返回「不存在」而不编造）。focus 用后还原。
+        from app.object_workbench import focus_warehouse_briefing_text
+        prev = session.focus_warehouse_id
+        session.focus_warehouse_id = tgt["warehouse_id"]
+        try:
+            return focus_warehouse_briefing_text(session)
+        finally:
+            session.focus_warehouse_id = prev
     return "未知题型"
 
 
