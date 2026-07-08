@@ -575,6 +575,139 @@ def focus_po_briefing_text(session):
     return "\n".join(lines)
 
 
+# ========== Warehouse 富工作台（仓储切片，复用已验证五次的模式）==========
+def warehouse_available_actions(role, risks_with_tasks):
+    """对本仓每个锚定仓储风险(R16-R18)，按 ROLE_PERMS + 风险/任务状态推导可用 action（复用 available_actions）。
+
+    仓储 RiskEvent 走既有 assign→propose→approve 闭环（处置类型 suggest_substitution/adjust_inventory/
+    escalate_replenishment 是 ProposeMitigation 的提案），与控制塔风险同一权限矩阵——故直接复用
+    available_actions（不复制权限）。approve/close 永远人来点，agent 拿不到（原则2）。返回 {risk_event_id: [actions]}。"""
+    return {r["risk_event_id"]: available_actions(role, r["status"], r.get("tasks", []))
+            for r in risks_with_tasks}
+
+
+def build_warehouse_workbench(con, warehouse_id, role):
+    """组装仓库中心视图：Warehouse 属性 + 该仓 InventoryPosition 列表（available/reserved/in_transit +
+    ATP + 低于 safety_stock 标红）+ InventoryReservation + CycleCount(variance) + 锚定本仓的
+    仓储 RiskEvent(R16-R18) + 每风险角色可用 action。
+
+    脱敏随 role（与既有口径一致）：库存桶字段（数量）是运营数据不脱敏（ops 需据此处置断货/履约）；
+    本域各仓储表无 _usd 字段，仅派生的「在手库存金额 inventory_value_usd=available×SKU 单价」按
+    _can_see_cost 脱敏（与 UI mask_cost / 标准视图 MONEY_FIELDS 同规：finance/manager 可见，其余掩码），
+    风险 affected_value_usd 与其它工作台同规对所有角色可见。返回纯 dict，可单测、可被 render_* 复用。"""
+    wh_row = _rows(con, "SELECT * FROM warehouses WHERE warehouse_id=?", warehouse_id)
+    if not wh_row:
+        return {"error": f"仓库 {warehouse_id} 不存在"}
+    wh = wh_row[0]
+    cost_visible = _can_see_cost(role)
+
+    def money(v):
+        return MASK if (v is not None and not cost_visible) else v
+
+    sku_price = {r["sku_id"]: r["unit_price_usd"] for r in
+                 _rows(con, "SELECT sku_id, unit_price_usd FROM skus")}
+    positions = []
+    for p in _rows(con, """SELECT inventory_position_id, sku_id, available_qty, reserved_qty,
+                           in_transit_qty, safety_stock FROM inventory_positions WHERE warehouse_id=?
+                           ORDER BY inventory_position_id""", warehouse_id):
+        val = round(p["available_qty"] * float(sku_price.get(p["sku_id"]) or 0.0), 2)
+        positions.append({
+            "inventory_position_id": p["inventory_position_id"], "sku_id": p["sku_id"],
+            "available_qty": p["available_qty"], "reserved_qty": p["reserved_qty"],
+            "in_transit_qty": p["in_transit_qty"], "safety_stock": p["safety_stock"],
+            "atp": p["available_qty"] + p["in_transit_qty"] - p["reserved_qty"],
+            "below_safety": p["available_qty"] <= p["safety_stock"],
+            "inventory_value_usd": money(val)})
+    reservations = _rows(con, """SELECT res.reservation_id, res.so_line_id, res.inventory_position_id,
+                          res.qty, res.status FROM inventory_reservations res
+                          JOIN inventory_positions p ON p.inventory_position_id=res.inventory_position_id
+                          WHERE p.warehouse_id=? ORDER BY res.reservation_id""", warehouse_id)
+    cycle_counts = _rows(con, """SELECT cycle_count_id, inventory_position_id, system_qty,
+                          counted_qty, variance, status FROM cycle_counts WHERE warehouse_id=?
+                          ORDER BY cycle_count_id""", warehouse_id)
+
+    # 锚定本仓的仓储风险(R16-R18) + 处置任务 + 每风险角色可用 action（锚点 warehouse_id；
+    # 受影响对象 id 承载在 affected_so_line_ids：R16=inventory_position_id / R17=so_line_id / R18=cycle_count_id）
+    risks_view, all_actions = [], set()
+    for r in _rows(con, """SELECT * FROM risk_events WHERE warehouse_id=?
+                           ORDER BY risk_event_id""", warehouse_id):
+        tasks = _rows(con, """SELECT task_id, status, approval_status, assignee_role,
+                              assignee_user_id, proposed_action FROM tasks WHERE risk_event_id=?
+                              ORDER BY task_id""", r["risk_event_id"])
+        acts = available_actions(role, r["status"], tasks)
+        all_actions |= set(acts)
+        risks_view.append({
+            "risk_event_id": r["risk_event_id"], "rule_id": r["rule_id"], "type": r["type"],
+            "severity": r["severity"], "status": r["status"],
+            "affected_value_usd": r["affected_value_usd"], "root_cause": r["root_cause"],
+            "affected_object_ids": json.loads(r["affected_so_line_ids"] or "[]"),
+            "tasks": tasks, "available_actions": acts})
+
+    return {
+        "warehouse": {k: wh[k] for k in ("warehouse_id", "type", "operator", "region",
+                                         "capacity_units")},
+        "positions": positions,
+        "reservations": reservations,
+        "cycle_counts": cycle_counts,
+        "anchored_risks": risks_view,
+        "available_actions": sorted(all_actions),
+        "cost_visible": cost_visible,
+        "role": role,
+    }
+
+
+def make_warehouse_agent_session(role, warehouse_id, db_path="data/ontology.sqlite"):
+    """构造预 scope 到本仓 + 当前 role 的对象级 agent 会话——同一 permission-aware 框架，
+    只注入 role 与 focus_warehouse_id，不新造 agent。帮分析库存/断货/现货可用性，起草断货补货/
+    现货拆单/盘点调整提案；approve/close 不在其工具集内（原则2，FORBIDDEN_TOOLS：agent 只分析/提案不审批）。"""
+    return AgentSession(db_path=db_path, role=role, focus_warehouse_id=warehouse_id)
+
+
+def focus_warehouse_briefing_text(session):
+    """无 API key 确定性 fallback：对 focus 的仓库生成库存简报（低于安全库存头寸 + 盘点差异 +
+    锚定仓储风险 + 处置建议，每条带对象 ID 出处，审批须人工——原则2）。不依赖任何 LLM。"""
+    wid = session.focus_warehouse_id
+    if not wid:
+        return "本会话未 focus 到任何 warehouse"
+    b = session.focus_warehouse_bundle()
+    if "error" in b:
+        return b["error"]
+    wh = b["warehouse"]
+    positions, ccs, risks = b["positions"], b["cycle_counts"], b["anchored_risks"]
+    low = [p for p in positions if p["below_safety"]]
+    variance_ccs = [c for c in ccs if c["variance"] != 0]
+    active_res = [r for r in b["reservations"] if r["status"] not in ("released", "fulfilled")]
+    lines = [f"[{wid}] 仓储库存简报（AI 建议，审批/关闭须人工——原则2）",
+             f"仓库类型 {wh['type']} / 运营方 {wh['operator']} / 区域 {wh['region']} / "
+             f"容量 {wh['capacity_units']} / 数据出处对象 warehouses.{wid}",
+             f"库存概览（数据出处对象 inventory_positions）：共 {len(positions)} 个头寸，"
+             f"其中 {len(low)} 个低于安全库存；活跃预留 {len(active_res)} 条；"
+             f"盘点差异 {len(variance_ccs)} 处。"]
+    if low:
+        lines.append("低于安全库存头寸（断货，建议 escalate_replenishment 升级补货）：")
+        for p in low:
+            lines.append(f"  · {p['inventory_position_id']}（{p['sku_id']}）可用 {p['available_qty']} "
+                         f"≤ 安全 {p['safety_stock']}（在途 {p['in_transit_qty']}，ATP {p['atp']}）")
+    if variance_ccs:
+        lines.append("盘点差异（数据出处对象 cycle_counts，建议 adjust_inventory 按实盘调整）：")
+        for c in variance_ccs:
+            lines.append(f"  · {c['cycle_count_id']}（{c['inventory_position_id']}）账面 "
+                         f"{c['system_qty']} 实盘 {c['counted_qty']}（差 {c['variance']}，{c['status']}）")
+    if risks:
+        lines.append("锚定仓储风险（R16-R18，数据出处对象 risk_events，锚点 warehouse_id）：")
+        for r in risks:
+            anchors = json.loads(r["affected_so_line_ids"] or "[]")
+            lines.append(f"  · {r['risk_event_id']} {r['rule_id']} {r['type']}（{r['severity']}，"
+                         f"{r['status']}，影响 ${r['affected_value_usd']}，受影响 {anchors}）："
+                         f"{r['root_cause']}")
+        lines.append("建议：断货(R16)→escalate_replenishment / 不可履约(R17)→suggest_substitution"
+                     "（现货拆单先发+余量 backorder）/ 盘点差异(R18)→adjust_inventory；均须走"
+                     " assign→propose→approve，needs_human_approval: true（AI 不审批）。")
+    else:
+        lines.append("锚定仓储风险：无（本仓 R16-R18 未检出异常）。")
+    return "\n".join(lines)
+
+
 # ---------- Streamlit 渲染（延迟 import st；仅 UI 用，纯逻辑测试不触及）----------
 def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, render_table):
     """在风险队列内渲染对象工作台：① 风险属性 ② 关联对象 ③ 角色可用 action ④ 对象级 agent 面板。
@@ -936,6 +1069,87 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
     q = st.text_input("向对象级 AI 提问（focus 已锁定本 PO）", key=f"pwb_q_{po_id}")
     if st.button("询问（确定性简报作答，无 key 可跑）", key=f"pwb_ask_{po_id}"):
         st.text(focus_po_briefing_text(sess))
+        if q:
+            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
+                       f"「{q}」自由问答，工具集与脱敏不变。）")
+
+
+def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_factory, render_table):
+    """在对象浏览器内渲染仓库对象工作台：① Warehouse 属性 ② 该仓 InventoryPosition（含 ATP + 低于
+    安全库存标红）+ InventoryReservation + CycleCount(variance) ③ 锚定本仓的仓储风险(R16-R18) +
+    角色可用 action ④ 对象级 agent 面板（预 scope 到本仓，帮分析库存/断货/现货可用性，permission-aware，不审批）。
+
+    与 render_po_object_workbench 同结构（复用已验证模式）。库存数量为运营字段不脱敏；派生的在手库存
+    金额随 role 脱敏（与 UI mask_cost 同规）。"""
+    import streamlit as st
+
+    con = db_factory()
+    wb = build_warehouse_workbench(con, warehouse_id, role)
+    if "error" in wb:
+        st.warning(wb["error"])
+        return
+    wh = wb["warehouse"]
+    st.markdown(f"### 🔬 对象工作台 · {wh['warehouse_id']}")
+    st.caption("以 Warehouse 为中心的富视图：属性 + 库存头寸/预留/盘点 + 锚定仓储风险(R16-R18) + "
+               "该角色可用动作 + 对象级 AI（预 scope 到本仓 + 当前角色，permission-aware）")
+
+    # ① 仓库属性
+    low_n = sum(1 for p in wb["positions"] if p["below_safety"])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("类型", wh["type"])
+    c2.metric("库存头寸", len(wb["positions"]))
+    c3.metric("低于安全库存", low_n)
+    c4.metric("盘点差异", sum(1 for c in wb["cycle_counts"] if c["variance"] != 0))
+    st.markdown(f"**运营方** `{wh['operator']}`　区域 `{wh['region']}`　容量 `{wh['capacity_units']}`")
+    if not wb["cost_visible"]:
+        st.caption(f"在手库存金额对角色 {role} 脱敏（🔒 inventory_value_usd）——finance/manager 可见"
+                   "（与费用工作台 mask_cost / 标准视图同规；数量字段为运营数据不脱敏）。")
+
+    # ② 库存头寸（低于 safety_stock 标红）+ 预留 + 盘点
+    st.markdown("**库存头寸（available / reserved / in_transit vs safety_stock；⚠=低于安全库存）**")
+    render_table([{"头寸": p["inventory_position_id"], "SKU": p["sku_id"],
+                   "可用": p["available_qty"], "预留": p["reserved_qty"], "在途": p["in_transit_qty"],
+                   "ATP": p["atp"], "安全库存": p["safety_stock"],
+                   "在手金额$": p["inventory_value_usd"],
+                   "断货": "⚠" if p["below_safety"] else ""} for p in wb["positions"]])
+    st.markdown("**关联 · 库存预留（Reservation）**")
+    render_table([{"预留": r["reservation_id"], "订单行": r["so_line_id"],
+                   "头寸": r["inventory_position_id"], "数量": r["qty"], "状态": r["status"]}
+                  for r in wb["reservations"]])
+    st.markdown("**关联 · 循环盘点（CycleCount，variance≠0 为差异）**")
+    render_table([{"盘点单": c["cycle_count_id"], "头寸": c["inventory_position_id"],
+                   "账面": c["system_qty"], "实盘": c["counted_qty"], "差异": c["variance"],
+                   "状态": c["status"]} for c in wb["cycle_counts"]])
+
+    # ③ 锚定仓储风险 + 角色可用 action
+    st.markdown("**锚定本仓的仓储风险（R16 断货 / R17 不可履约 / R18 盘点差异）**")
+    if wb["anchored_risks"]:
+        render_table([{"风险": r["risk_event_id"], "规则": r["rule_id"], "类型": r["type"],
+                       "级别": r["severity"], "状态": r["status"], "影响$": r["affected_value_usd"],
+                       "受影响对象": "、".join(r["affected_object_ids"]),
+                       "可用动作": "、".join(r["available_actions"]) or "—"}
+                      for r in wb["anchored_risks"]])
+    else:
+        st.caption("（本仓未检出 R16-R18 异常）")
+    acts = wb["available_actions"]
+    st.markdown(f"**该角色（{role}）在本仓锚定风险上可发起的动作**："
+                + ("、".join(acts) if acts else "（无——该角色对本仓风险状态无可发起动作）"))
+    st.caption("仓储风险走既有闭环：派发（A3，运营）→提案 escalate_replenishment（R16）/"
+               "suggest_substitution（R17 现货拆单先发）/adjust_inventory（R18 按实盘调整）"
+               "（A4，ProposeMitigation 权限）→审批（A5，仅经理，maker-checker）；审批/关闭永远人来点，"
+               "AI 只提案不审批（原则2）。执行入口在风险台派发 + 任务台「提案/审批」表单。")
+
+    # ④ 对象级 agent 面板（预 scope 到本仓）
+    st.markdown("**对象级 AI 助手**")
+    sess = make_warehouse_agent_session(role, warehouse_id)
+    st.caption(f"本会话工具集（role={role}，focus={warehouse_id}）："
+               + "、".join(sorted(sess.allowed_tools))
+               + "　— approve/close 永不在内（agent 只分析库存/断货/现货可用性、起草提案，不审批）。")
+    with st.expander("查看确定性仓储库存简报（无需 API key，每条带对象 ID 出处）", expanded=False):
+        st.text(focus_warehouse_briefing_text(sess))
+    q = st.text_input("向对象级 AI 提问（focus 已锁定本仓）", key=f"wwb_q_{warehouse_id}")
+    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"wwb_ask_{warehouse_id}"):
+        st.text(focus_warehouse_briefing_text(sess))
         if q:
             st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
                        f"「{q}」自由问答，工具集与脱敏不变。）")

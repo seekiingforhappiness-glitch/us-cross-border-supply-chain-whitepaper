@@ -5,7 +5,7 @@
    属性 + 关联对象非空
 ② role 脱敏生效（ops 看 Customer 时 tier 掩码；ops 看含成本对象 CostScenario 时成本掩码；
    finance/manager 可见）
-③ route_object：五核心 → rich（含 PurchaseOrder）、其余注册类型 → standard
+③ route_object：六核心 → rich（含 PurchaseOrder/Warehouse）、其余注册类型 → standard
 ④ 标准视图不含任何 action（只读，read_only=True、无 available_actions/actions 键）
 ⑤ 未知对象类型 / 不存在 id 优雅处理
 
@@ -124,19 +124,19 @@ def main():
     check("② compliance 看 Supplier.uflpa_risk_flag 可见",
           sup_comp["properties"]["uflpa_risk_flag"] != sov.MASK)
 
-    print("== ③ route_object：五核心 → rich、其余 → standard ==")
-    for core in ("RiskEvent", "AdmissionCase", "Task", "Invoice", "PurchaseOrder"):
+    print("== ③ route_object：六核心 → rich、其余 → standard ==")
+    for core in ("RiskEvent", "AdmissionCase", "Task", "Invoice", "PurchaseOrder", "Warehouse"):
         check(f"③ {core} → rich", sov.route_object(core) == "rich")
     for std in ("Shipment", "Customer", "Sku", "SalesOrderLine", "Container", "CostScenario",
                 "Supplier", "ShipmentMilestone", "InvoiceLine", "ExpectedCost", "LogisticsPlan",
-                "Warehouse", "InventoryPosition", "InventoryReservation", "CycleCount",
+                "InventoryPosition", "InventoryReservation", "CycleCount",
                 "RFQ", "RFQLine", "Quote"):
         check(f"③ {std} → standard", sov.route_object(std) == "standard")
     check("③ 未知类型 → unknown", sov.route_object("Nonexistent") == "unknown")
-    check("③ OBJECT_REGISTRY 不含五核心（只覆盖非核心）",
+    check("③ OBJECT_REGISTRY 不含六核心（只覆盖非核心）",
           not (sov.RICH_OBJECT_TYPES & set(sov.OBJECT_REGISTRY)))
-    check("③ OBJECT_REGISTRY 覆盖 28 个非核心类型（P3 采购富化2 +RFQ/RFQLine/Quote 25→28）",
-          len(sov.OBJECT_REGISTRY) == 28, str(len(sov.OBJECT_REGISTRY)))
+    check("③ OBJECT_REGISTRY 覆盖 27 个非核心类型（Warehouse 升富对象：28→27）",
+          len(sov.OBJECT_REGISTRY) == 27, str(len(sov.OBJECT_REGISTRY)))
     # OBJECT_REGISTRY 值形如 (表名, 主键列, 关键展示字段)
     tbl, pkc, kf = sov.OBJECT_REGISTRY["Shipment"]
     check("③ OBJECT_REGISTRY[Shipment] = (shipments, shipment_id, 非空关键字段)",

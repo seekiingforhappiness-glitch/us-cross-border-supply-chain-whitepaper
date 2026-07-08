@@ -927,8 +927,13 @@ def render_obj_tab():
 
     otype = st.selectbox("对象类型", types, key="obj_type_sel")
     route = sov.route_object(otype)
+    # Warehouse 是富对象但无独立工作台标签，故其对象中心入口就在本对象浏览器内直接渲染富工作台
+    # （focus 机制 + 对象级 agent，同 PO/RiskEvent 等切片）；其余富对象的动作/AI 在各自标签。
+    wh_inline = otype == "Warehouse"
     st.caption(f"对象类型 `{otype}` · 路由 `{route}` · "
-               + ("有富工作台（动作/对象级 AI 在对应标签）；此处只读浏览与对象图导航"
+               + ("仓储富工作台（库存/预留/盘点 + 锚定 R16-R18 + 对象级 AI）在此直接渲染"
+                  if wh_inline else
+                  "有富工作台（动作/对象级 AI 在对应标签）；此处只读浏览与对象图导航"
                   if route == "rich" else "标准只读视图（自动生成，属性 + 关联对象）"))
 
     table = sov.TYPE_META[otype]["table"]
@@ -948,8 +953,13 @@ def render_obj_tab():
         st.session_state["obj_nav"] = (target_type, target_id)
         st.rerun()
 
-    with db() as con:
-        sov.render_standard_view(con, otype, oid, role, render_table, on_navigate=_navigate)
+    if wh_inline:
+        # 仓储对象工作台（同 focus 机制：点一个 Warehouse → 富工作台 + 预 scope 对象级 agent）
+        st.session_state["focus_warehouse_id"] = oid
+        object_workbench.render_warehouse_object_workbench(oid, role, actor, AS_OF, db, render_table)
+    else:
+        with db() as con:
+            sov.render_standard_view(con, otype, oid, role, render_table, on_navigate=_navigate)
 
 # ---------- DQ 处置（M6）----------
 def render_dq_tab():

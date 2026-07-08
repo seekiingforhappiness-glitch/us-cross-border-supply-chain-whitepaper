@@ -18,9 +18,10 @@ from pathlib import Path
 
 from agent.tools import _can_see_tier, _can_see_cost, COST_FIELDS, MASK
 
-# 五个核心对象走富工作台；route_object 对它们返回 'rich'，其余注册类型返回 'standard'。
-# PurchaseOrder 为采购切片（Build 3）新增的富对象（PO 三方对账工作台 + permission-aware agent）。
-RICH_OBJECT_TYPES = {"RiskEvent", "AdmissionCase", "Task", "Invoice", "PurchaseOrder"}
+# 六个核心对象走富工作台；route_object 对它们返回 'rich'，其余注册类型返回 'standard'。
+# PurchaseOrder 为采购切片（Build 3）新增的富对象（PO 三方对账工作台 + permission-aware agent）；
+# Warehouse 为仓储切片新增的富对象（库存头寸/预留/盘点 + 锚定 R16-R18 + permission-aware agent）。
+RICH_OBJECT_TYPES = {"RiskEvent", "AdmissionCase", "Task", "Invoice", "PurchaseOrder", "Warehouse"}
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent.parent / "ontology" / "control-tower-ontology.json"
 

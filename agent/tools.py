@@ -172,7 +172,8 @@ class AgentSession:
 
     def __init__(self, db_path="data/ontology.sqlite", config_path="config/datagen.yaml",
                  role=AI_ROLE, focus_risk_event_id=None, focus_admission_case_id=None,
-                 focus_task_id=None, focus_invoice_id=None, focus_po_id=None):
+                 focus_task_id=None, focus_invoice_id=None, focus_po_id=None,
+                 focus_warehouse_id=None):
         self.con = sqlite3.connect(db_path)
         self.con.row_factory = sqlite3.Row
         cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
@@ -188,6 +189,9 @@ class AgentSession:
         # PurchaseOrder focus（采购对象工作台切片，Build 3）：采购 RiskEvent 无 shipment，
         # 用 po_id 锚点做对象 scoping（与 shipment 邻居锚点并列，检索聚焦本 PO 的采购风险）。
         self.focus_po_id = focus_po_id
+        # Warehouse focus（仓储对象工作台切片）：仓储 RiskEvent(R16-R18) 无 shipment/po_id，
+        # 用 warehouse_id 锚点做对象 scoping（检索聚焦本仓的库存/预留/盘点及锚定风险）。
+        self.focus_warehouse_id = focus_warehouse_id
         self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
@@ -227,11 +231,15 @@ class AgentSession:
             sql += " AND severity=?"
             params.append(severity)
         # 对象 scoping：focus 时检索默认聚焦该对象及其邻居，不是全库。
-        # PO focus（采购）用 po_id 锚点（采购 RiskEvent 无 shipment）；其余用 shipment 邻居锚点。
+        # PO focus（采购）用 po_id 锚点、Warehouse focus（仓储）用 warehouse_id 锚点（这两类采购/
+        # 仓储 RiskEvent 无 shipment）；其余用 shipment 邻居锚点。
         focus_ship = self._focus_shipment_id()
         if self.focus_po_id:
             sql += " AND po_id=?"
             params.append(self.focus_po_id)
+        elif self.focus_warehouse_id:
+            sql += " AND warehouse_id=?"
+            params.append(self.focus_warehouse_id)
         elif focus_ship:
             sql += " AND shipment_id=?"
             params.append(focus_ship)
@@ -239,6 +247,8 @@ class AgentSession:
         out = {"count": len(rows), "risks": rows}
         if self.focus_po_id:
             out["focus_scope"] = {"po_id": self.focus_po_id}
+        elif self.focus_warehouse_id:
+            out["focus_scope"] = {"warehouse_id": self.focus_warehouse_id}
         elif focus_ship:
             out["focus_scope"] = {"risk_event_id": self.focus_risk_event_id,
                                   "shipment_id": focus_ship}
@@ -576,6 +586,47 @@ class AgentSession:
                               "risk_event_ids": [r["risk_event_id"] for r in anchored_risks]},
                 "note": f"object-scoped to {pid} (三方对账); cost fields "
                         f"{'visible' if cost_visible else 'masked'} for role={self.role}"}
+
+    def focus_warehouse_bundle(self):
+        """对象 scoping 汇总（仓储切片）：把检索聚焦到本会话 focus 的 Warehouse 及其邻居
+        （该仓 InventoryPosition、经头寸挂靠的 InventoryReservation、CycleCount、锚定本仓的
+        R16-R18 RiskEvent），而非全库。库存桶字段（available/reserved/in_transit/safety）为运营
+        数据、不脱敏（ops 需据此处置断货/履约）；本域无 _usd 字段，故无成本脱敏。审批/关闭不在此
+        （原则2）。无 focus 返回 error。"""
+        wid = self.focus_warehouse_id
+        if not wid:
+            return {"error": "本会话未 focus 到任何 warehouse"}
+        wh = self._rows("SELECT * FROM warehouses WHERE warehouse_id=?", wid)
+        if not wh:
+            return {"error": f"仓库 {wid} 不存在"}
+        wh = wh[0]
+        positions = self._rows(
+            """SELECT inventory_position_id, sku_id, available_qty, reserved_qty, in_transit_qty,
+                      safety_stock FROM inventory_positions WHERE warehouse_id=?
+               ORDER BY inventory_position_id""", wid)
+        for p in positions:
+            p["atp"] = p["available_qty"] + p["in_transit_qty"] - p["reserved_qty"]
+            p["below_safety"] = p["available_qty"] <= p["safety_stock"]
+        reservations = self._rows(
+            """SELECT res.reservation_id, res.so_line_id, res.inventory_position_id, res.qty,
+                      res.status FROM inventory_reservations res
+               JOIN inventory_positions p ON p.inventory_position_id=res.inventory_position_id
+               WHERE p.warehouse_id=? ORDER BY res.reservation_id""", wid)
+        cycle_counts = self._rows(
+            """SELECT cycle_count_id, inventory_position_id, system_qty, counted_qty, variance,
+                      status FROM cycle_counts WHERE warehouse_id=? ORDER BY cycle_count_id""", wid)
+        anchored_risks = self._rows(
+            """SELECT risk_event_id, rule_id, type, severity, status, affected_value_usd,
+                      root_cause, affected_so_line_ids FROM risk_events WHERE warehouse_id=?
+               ORDER BY risk_event_id""", wid)
+        return {"focus_warehouse_id": wid, "warehouse": wh, "positions": positions,
+                "reservations": reservations, "cycle_counts": cycle_counts,
+                "anchored_risks": anchored_risks,
+                "neighbors": {"warehouse_id": wid,
+                              "inventory_position_ids": [p["inventory_position_id"]
+                                                         for p in positions],
+                              "risk_event_ids": [r["risk_event_id"] for r in anchored_risks]},
+                "note": f"object-scoped to {wid} (库存/预留/盘点/风险); role={self.role}"}
 
     def explain_relationship_path(self, source_type, source_id, target_type, target_id, max_depth):
         try:
