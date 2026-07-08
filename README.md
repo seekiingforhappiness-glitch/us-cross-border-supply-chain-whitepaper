@@ -64,6 +64,7 @@ python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理�
 
 | 想…… | 看 |
 | --- | --- |
+| **面客一页纸（全景图，浏览器直接打开）** | `docs/control-tower-overview.html`（自包含单文件，五场景/R1-R18/可信 AI/治理护城河） |
 | **面客演示（5 分钟台本）** | `docs/demo-walkthrough.md` |
 | 看架构（Mermaid 图） | `docs/architecture.md` |
 | 当前状态 / 任何模型接手 | `STATUS.md`（顶部摘要） |
