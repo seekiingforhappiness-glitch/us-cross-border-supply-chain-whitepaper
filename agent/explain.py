@@ -9,12 +9,21 @@ from datetime import date, timedelta
 
 
 def build_risk_briefing(session, risk_event_id):
-    """返回 {summary, facts, recommendations, citations}；risk 不存在则返回 error。"""
+    """返回 {summary, facts, recommendations, citations}；risk 不存在则返回 error。
+
+    本简报是**货运中心**视图。非货运锚定的风险（采购/仓储/资金类，RiskEvent.shipment_id 可空）
+    没有货运上下文，此时优雅降级为提示（原直接 `ctx["shipment"]` 会 KeyError 崩溃）——这条路径
+    经由 Task 富工作台可达：任务台列全部任务，选中一个父风险为采购/仓储的任务再看简报即触发。
+    """
     risk = session.get_risk(risk_event_id)
     if "error" in risk:
         return risk
     impact = session.get_impact_chain(risk_event_id)
     ctx = session.get_shipment_context(risk["shipment_id"])
+    if "error" in ctx:  # shipment_id 为空 / 悬空 FK：无货运上下文，友好降级不崩溃
+        return {"error": f"风险 {risk_event_id}（规则 {risk['rule_id']}、类型 {risk['type']}）"
+                         "未锚定有效货运，无法生成货运中心简报；"
+                         "请到对应对象工作台（采购单 / 仓库 / 发票）查看其处置。"}
     sp = ctx["shipment"]
     citations = {risk_event_id, risk["shipment_id"]} \
         | {a["so_line_id"] for a in impact.get("affected", [])} \

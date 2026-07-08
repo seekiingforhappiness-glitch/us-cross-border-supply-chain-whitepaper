@@ -1069,8 +1069,14 @@ def render_adm_tab():
                    "术语": a["incoterm_candidate"], "风险": a["risk_level"] or "-",
                    "状态": a["status"], "决定": a["decision"] or "-"} for a in acs],
                  height=240)
-    asel = st.selectbox("查看案件", [a["admission_case_id"] for a in acs],
-                        index=[a["admission_case_id"] for a in acs].index("AC-2026-0031"))
+    if not acs:
+        st.info("当前无准入案件（销售建案后可在此查看与处置）。")
+        return
+    # 演示锚点 AC-2026-0031 默认置顶；若该案不存在（空库/新数据）退回首项，不再 .index() 抛
+    # ValueError（与风险台 SHP-2026-0099 的 next((...),0) 安全默认同规）。happy-path 索引不变。
+    _acs_ids = [a["admission_case_id"] for a in acs]
+    _adm_demo_idx = _acs_ids.index("AC-2026-0031") if "AC-2026-0031" in _acs_ids else 0
+    asel = st.selectbox("查看案件", _acs_ids, index=_adm_demo_idx)
     ac = next(x for x in acs if x["admission_case_id"] == asel)
     st.markdown(f"**{ac['case_title']}**　状态 `{ac['status']}`　风险 `{ac['risk_level'] or '-'}`"
                 + (f"　决定 `{ac['decision']}`：{ac['decision_reason']}" if ac["decision"] else ""))
