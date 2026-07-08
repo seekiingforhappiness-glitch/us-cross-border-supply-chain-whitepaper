@@ -69,6 +69,7 @@ python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理�
 | 看架构（Mermaid 图） | `docs/architecture.md` |
 | **首次接手 / 5 分钟上手** | `ONBOARDING.md`（导航图：一条命令验全绿、心智模型、目录图、会咬你的规则） |
 | 当前状态 / 任何模型接手 | `STATUS.md`（顶部摘要） |
+| **发版/面客自检门（全绿证据集）** | `docs/release-checklist.md`（一键复现 + 23 模块全绿 + 真值 md5 可证不变） |
 | 查全部决策与理由 | `docs/control-tower-plan-v0.2.md §4`（决策日志 D/E/F/M/P1-P3/W1，append-only） |
 | 协作规则（AI 会话从这开始） | `AGENTS.md` |
 | 领域知识参考 | `美国跨境供应链实战白皮书_可视化增强版.html` |
