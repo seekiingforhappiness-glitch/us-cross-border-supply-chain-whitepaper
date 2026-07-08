@@ -3,7 +3,8 @@
 护栏（plan §11-W6 / v0.1 手册 AI 原则）：
 1. proposal-only：写动作只暴露 assign_task 与 propose_mitigation；
    approve_mitigation / close_risk_event **永不注册**——诱导越权时 dispatcher 拒绝并写审计
-2. AI 以 ops 角色读数据（Customer.tier 对其同样脱敏——权限对人对 AI 一视同仁）
+2. 一个 permission-aware 框架：Session 接受当前 role（默认 ops，向后兼容）+ 可选 focus_risk_event_id；
+   工具集按 ROLE_PERMS/域 scoping，字段脱敏随 role 变，focus 时检索/工具聚焦该对象及其邻居
 3. 一切工具调用走 app.actions 的同一套校验与审计，AI 没有后门
 """
 import json
@@ -11,18 +12,55 @@ import sqlite3
 
 import yaml
 
-from app.actions import assign_task, propose_mitigation, _log
+from app.actions import assign_task, propose_mitigation, _log, ROLE_PERMS
 from engine.graph import explain_path
 
 AI_ACTOR = "ai-agent"
-AI_ROLE = "ops"
-# 审批/关闭/拒接类动作永不向 AI 开放（v0.2 E5 + v0.3 AD2 红线）
+AI_ROLE = "ops"  # 默认角色（不传 role 时的向后兼容值）
+# 审批/关闭/拒接类动作永不向任何 role 的 AI 会话开放（v0.2 E5 + v0.3 AD2 红线，原则2）
 FORBIDDEN_TOOLS = {"approve_mitigation", "close_risk_event",
                    "approve_quote_decision", "reject_or_request_more_info"}
 COST_FIELDS = {"quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
                "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
                "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
                "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"}
+MASK = "🔒无权查看"
+
+# --- 角色 → 工具集 scoping（对象工作台切片：给同一框架注入 role，不复制平行 agent）---
+# 读工具按域分组：风险/物流域对所有 role 开放（RiskEvent 对象工作台核心）；成本、准入域按
+# role 相关性 scoping。ops 保留全域（历史基线，不回归 agent.evaluate）；cs 无成本域（"无 cost 相关"）；
+# finance 可成本域；manager 全域只读。写工具白名单完全由 app.actions.ROLE_PERMS 决定（不复制权限）。
+RISK_READ_TOOLS = {"list_open_risks", "get_risk", "get_shipment_context",
+                   "get_impact_chain", "get_audit_trail", "explain_relationship_path"}
+COST_READ_TOOLS = {"list_invoices", "get_invoice_context"}
+ADMISSION_READ_TOOLS = {"list_admission_cases", "get_admission_context"}
+COST_READ_ROLES = {"ops", "finance", "manager"}
+ADMISSION_READ_ROLES = {"ops", "finance", "manager", "sales", "compliance"}
+WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation"}
+
+
+def allowed_tools_for_role(role):
+    """该 role 会话可用的工具集：读工具按域 scoping + 写工具经 ROLE_PERMS gate。
+    approve/close 对任何 role 都不在此集合（FORBIDDEN_TOOLS，原则2：agent 只提案不审批）。"""
+    tools = set(RISK_READ_TOOLS)
+    if role in COST_READ_ROLES:
+        tools |= COST_READ_TOOLS
+    if role in ADMISSION_READ_ROLES:
+        tools |= ADMISSION_READ_TOOLS
+    for tool, perm in WRITE_TOOL_PERM.items():
+        if role in ROLE_PERMS[perm]:
+            tools.add(tool)
+    return tools
+
+
+def _can_see_tier(role):
+    """Customer.tier 脱敏规则（与 UI mask_tier 同规）：cs/manager 可见，其余脱敏。"""
+    return role in ("cs", "manager")
+
+
+def _can_see_cost(role):
+    """成本字段脱敏规则（与 UI mask_cost 同规）：finance/manager 可见，其余脱敏。"""
+    return role in ("finance", "manager")
 
 # Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）
 TOOL_DEFS = [
@@ -91,24 +129,54 @@ TOOL_DEFS = [
 class AgentSession:
     """一次 AI 会话的工具执行环境。所有调用统一经 dispatch，越权/未知工具拒绝并审计。"""
 
-    def __init__(self, db_path="data/ontology.sqlite", config_path="config/datagen.yaml"):
+    def __init__(self, db_path="data/ontology.sqlite", config_path="config/datagen.yaml",
+                 role=AI_ROLE, focus_risk_event_id=None):
         self.con = sqlite3.connect(db_path)
         self.con.row_factory = sqlite3.Row
         cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
         self.as_of = cfg["window"]["as_of"]
         self.buf = cfg["buffers"]["customs_days"] + cfg["buffers"]["lastmile_days"]
+        # permission-aware 注入：当前 role 决定工具集 + 脱敏；focus 决定对象 scoping
+        self.role = role
+        self.focus_risk_event_id = focus_risk_event_id
+        self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
         return [dict(r) for r in self.con.execute(sql, a)]
+
+    def _focus_shipment_id(self):
+        """focus 风险所属 shipment（对象 scoping 的邻居锚点）；无 focus/不存在返回 None。"""
+        if not self.focus_risk_event_id:
+            return None
+        r = self._rows("SELECT shipment_id FROM risk_events WHERE risk_event_id=?",
+                       self.focus_risk_event_id)
+        return r[0]["shipment_id"] if r else None
+
+    def tool_defs(self):
+        """按会话 role/focus 暴露的工具定义子集（供 LLM 注册；与 dispatch gating 对齐，
+        approve/close 从不出现在其中）。"""
+        return [t for t in TOOL_DEFS if t["name"] in self.allowed_tools]
 
     # ---------- 查询工具（只读） ----------
     def list_open_risks(self, severity=None):
         sql = """SELECT risk_event_id, type, rule_id, severity, shipment_id,
                         affected_value_usd, status FROM risk_events
                  WHERE status NOT IN ('resolved','escalated')"""
-        rows = self._rows(sql + " AND severity=?" if severity else sql,
-                          *( [severity] if severity else [] ))
-        return {"count": len(rows), "risks": rows}
+        params = []
+        if severity:
+            sql += " AND severity=?"
+            params.append(severity)
+        # 对象 scoping：focus 时检索默认聚焦该 risk 及其邻居（同一 shipment 上的风险），不是全库
+        focus_ship = self._focus_shipment_id()
+        if focus_ship:
+            sql += " AND shipment_id=?"
+            params.append(focus_ship)
+        rows = self._rows(sql, *params)
+        out = {"count": len(rows), "risks": rows}
+        if focus_ship:
+            out["focus_scope"] = {"risk_event_id": self.focus_risk_event_id,
+                                  "shipment_id": focus_ship}
+        return out
 
     def get_risk(self, risk_event_id):
         r = self._rows("SELECT * FROM risk_events WHERE risk_event_id=?", risk_event_id)
@@ -122,15 +190,19 @@ class AgentSession:
                            is_duplicate FROM shipment_milestones WHERE shipment_id=?
                            ORDER BY event_time""", shipment_id)
         chain = self._rows("""SELECT a.so_line_id, a.allocated_qty, l.promised_delivery_date,
-                              l.line_status, so.so_id, c.customer_id
+                              l.line_status, so.so_id, c.customer_id, c.tier
                               FROM shipment_allocations a
                               JOIN sales_order_lines l ON l.so_line_id=a.so_line_id
                               JOIN sales_orders so ON so.so_id=l.so_id
                               JOIN customers c ON c.customer_id=so.customer_id
                               WHERE a.shipment_id=?""", shipment_id)
-        # 权限：AI 以 ops 角色工作，tier 不可见（与 UI 同一规则）
+        # 字段脱敏随 role 变（与 UI mask_tier 同规）：cs/manager 可见 tier，其余脱敏
+        tier_visible = _can_see_tier(self.role)
+        for row in chain:
+            if not tier_visible:
+                row["tier"] = MASK
         return {"shipment": sp[0], "milestones": ms, "onboard_lines": chain,
-                "note": "customer tier masked for role=ops"}
+                "note": f"customer tier {'visible' if tier_visible else 'masked'} for role={self.role}"}
 
     def get_impact_chain(self, risk_event_id):
         r = self.get_risk(risk_event_id)
@@ -142,13 +214,37 @@ class AgentSession:
         ph = ",".join("?" * len(lids))
         rows = self._rows(f"""SELECT l.so_line_id, l.qty, l.unit_price_usd,
                               l.promised_delivery_date, l.line_status, l.reschedule_count,
-                              so.so_id, c.customer_id, c.customer_name
+                              so.so_id, c.customer_id, c.customer_name, c.tier
                               FROM sales_order_lines l
                               JOIN sales_orders so ON so.so_id=l.so_id
                               JOIN customers c ON c.customer_id=so.customer_id
                               WHERE l.so_line_id IN ({ph})""", *lids)
+        tier_visible = _can_see_tier(self.role)
+        for row in rows:
+            if not tier_visible:
+                row["tier"] = MASK
         return {"risk_event_id": risk_event_id, "shipment_id": r["shipment_id"],
                 "affected_value_usd": r["affected_value_usd"], "affected": rows}
+
+    def focus_bundle(self):
+        """对象 scoping 汇总：把检索聚焦到本会话 focus 的 risk 及其邻居（影响链上的
+        shipment / SO 行 / 客户），而非全库。无 focus 返回 error。"""
+        rid = self.focus_risk_event_id
+        if not rid:
+            return {"error": "本会话未 focus 到任何 risk"}
+        risk = self.get_risk(rid)
+        if "error" in risk:
+            return risk
+        impact = self.get_impact_chain(rid)
+        ctx = self.get_shipment_context(risk["shipment_id"])
+        neighbors = {
+            "shipment_id": risk["shipment_id"],
+            "affected_so_line_ids": [a["so_line_id"] for a in impact.get("affected", [])],
+            "customer_ids": sorted({a["customer_id"] for a in impact.get("affected", [])}),
+        }
+        return {"focus_risk_event_id": rid, "risk": risk, "impact": impact,
+                "shipment_context": ctx, "neighbors": neighbors,
+                "note": f"object-scoped to {rid} and neighbors; role={self.role}"}
 
     def get_audit_trail(self, object_id):
         rows = self._rows("""SELECT actor, role, action, params_json, as_of_date, result
@@ -169,22 +265,29 @@ class AgentSession:
         if not case:
             return {"error": f"准入案件 {admission_case_id} 不存在"}
         case = case[0]
-        cust = self._rows("""SELECT customer_id, customer_name, business_model, ior_capability,
-                             broker_status FROM customers WHERE customer_id=?""",
-                          case["customer_id"])[0]  # credit_terms/risk_tier 对 ops 角色不返回
+        # 字段脱敏随 role：credit_terms/risk_tier 仅 tier 可见角色（cs/manager）返回
+        tier_visible = _can_see_tier(self.role)
+        cust_cols = "customer_id, customer_name, business_model, ior_capability, broker_status"
+        if tier_visible:
+            cust_cols += ", credit_terms, risk_tier"
+        cust = self._rows(f"SELECT {cust_cols} FROM customers WHERE customer_id=?",
+                          case["customer_id"])[0]
         finds = self._rows("SELECT * FROM compliance_findings WHERE admission_case_id=?",
                            admission_case_id)
         plans = self._rows("SELECT * FROM logistics_plans WHERE admission_case_id=?",
                            admission_case_id)
+        cost_visible = _can_see_cost(self.role)
         scens = []
         for p in plans:
             for s in self._rows("SELECT * FROM cost_scenarios WHERE logistics_plan_id=?",
                                 p["logistics_plan_id"]):
-                # 成本字段按角色脱敏：AI 以 ops 角色工作，与 UI 同规（AD4）
-                scens.append({k: ("🔒无权查看" if k in COST_FIELDS else v) for k, v in s.items()})
+                # 成本字段按角色脱敏（与 UI mask_cost 同规，AD4）：finance/manager 可见，其余脱敏
+                scens.append(dict(s) if cost_visible else
+                             {k: (MASK if k in COST_FIELDS else v) for k, v in s.items()})
         return {"case": case, "customer": cust, "findings": finds, "plans": plans,
                 "cost_scenarios": scens,
-                "note": "cost fields masked for role=ops; credit_terms/risk_tier not returned"}
+                "note": f"cost fields {'visible' if cost_visible else 'masked'} for role={self.role}; "
+                        f"credit_terms/risk_tier {'returned' if tier_visible else 'not returned'}"}
 
     def list_invoices(self, status=None):
         sql = """SELECT invoice_id, vendor_type, vendor_name, shipment_id, total_usd,
@@ -241,23 +344,29 @@ class AgentSession:
             "edges": [edge.__dict__ for edge in path],
         }
 
-    # ---------- 写动作（仅 proposal-only 白名单） ----------
+    # ---------- 写动作（仅 proposal-only 白名单；role 随会话注入，动作层再校验一次） ----------
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
         return assign_task(self.con, risk_event_id, assignee_role, priority, due_at,
-                           actor=AI_ACTOR, role=AI_ROLE, as_of=self.as_of)
+                           actor=AI_ACTOR, role=self.role, as_of=self.as_of)
 
     def _propose_mitigation(self, task_id, proposed_action, proposal_params):
         return propose_mitigation(self.con, task_id, proposed_action, proposal_params,
-                                  actor=AI_ACTOR, role=AI_ROLE, as_of=self.as_of)
+                                  actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+
+    def _audit_denied(self, tool_name, args, result):
+        """把一次被拒的调用写入 action_log（越权/越域一律留痕，AI 没有静默后门）。"""
+        cur = self.con.cursor()
+        target = str(args.get("task_id") or args.get("risk_event_id") or
+                     args.get("admission_case_id") or args.get("invoice_id") or "?")
+        _log(cur, AI_ACTOR, self.role, tool_name, target, args, self.as_of, result)
+        self.con.commit()
 
     # ---------- 统一调度 ----------
     def dispatch(self, tool_name, args):
+        # 原则2：审批/关闭类对任何 role 永不开放——最先拦截并审计（诱导越权 → 拒绝 + 留痕）
         if tool_name in FORBIDDEN_TOOLS:
-            cur = self.con.cursor()
-            _log(cur, AI_ACTOR, AI_ROLE, tool_name, str(args.get("task_id") or
-                 args.get("risk_event_id") or "?"), args, self.as_of,
-                 "denied: tool not exposed to AI (proposal-only guardrail)")
-            self.con.commit()
+            self._audit_denied(tool_name, args,
+                               "denied: tool not exposed to AI (proposal-only guardrail)")
             return {"refused": True,
                     "reason": "该动作未向 AI 开放：审批与关闭必须由人执行（proposal-only 护栏），"
                               "本次尝试已记录审计"}
@@ -274,6 +383,17 @@ class AgentSession:
                     "propose_mitigation": self._propose_mitigation}
         if tool_name not in handlers:
             return {"refused": True, "reason": f"未注册的工具 {tool_name}"}
+        # 按 role scoping：已知工具但不在本会话角色工具集 → 拒绝并审计（越权写 / 越域读）
+        if tool_name not in self.allowed_tools:
+            is_write = tool_name in WRITE_TOOL_PERM
+            self._audit_denied(tool_name, args,
+                               f"denied: tool not available to role={self.role}"
+                               + (" (over-role write)" if is_write else " (out-of-domain read)"))
+            return {"refused": True,
+                    "reason": f"工具 {tool_name} 未向角色 {self.role} 开放"
+                              + ("（越权写：该动作权限不含此角色，须换有权角色，动作层同步拦截）"
+                                 if is_write else "（越域读：不在本角色数据域）")
+                              + "，本次尝试已记录审计"}
         try:
             return handlers[tool_name](**args)
         except TypeError as e:

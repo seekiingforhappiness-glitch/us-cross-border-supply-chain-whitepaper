@@ -41,10 +41,12 @@ try:
     from app.rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
     from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                                 risk_in_region_scope, scope_for_role)
+    from app import object_workbench
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                             risk_in_region_scope, scope_for_role)
+    import object_workbench
 
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
@@ -700,6 +702,10 @@ def render_risk_tab():
             if st.form_submit_button("关闭"):
                 show_result(close_risk_event(db(), sel, outcome, summary,
                                              actor=actor, role=role, as_of=AS_OF))
+        # 对象工作台入口：点选的 risk → 进入 RiskEvent 富工作台（session_state 存 focus）
+        st.divider()
+        st.session_state["focus_risk_event_id"] = sel
+        object_workbench.render_object_workbench(sel, role, actor, AS_OF, db, render_table)
 
 # ---------- 任务处理台 ----------
 def render_task_tab():

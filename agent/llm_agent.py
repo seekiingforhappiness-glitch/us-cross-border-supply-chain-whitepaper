@@ -40,7 +40,8 @@ def _run_openai(question, session, max_turns, verbose):
     client = OpenAI()
     model = os.environ.get("AGENT_MODEL", "gpt-5.5")
     messages = [{"role": "user", "content": question}]
-    tools = _openai_tools(TOOL_DEFS)
+    # 只向模型暴露本会话 role/focus 允许的工具（与 dispatch gating 对齐，approve/close 不在其中）
+    tools = _openai_tools(session.tool_defs())
 
     for _ in range(max_turns):
         resp = client.responses.create(model=model, instructions=SYSTEM_PROMPT,
@@ -79,7 +80,7 @@ def _run_anthropic(question, session, max_turns, verbose):
     session = session or AgentSession()
     messages = [{"role": "user", "content": question}]
     for _ in range(max_turns):
-        resp = _call_anthropic(messages, TOOL_DEFS)
+        resp = _call_anthropic(messages, session.tool_defs())
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
         if not tool_uses:
             return "".join(b.text for b in resp.content if b.type == "text")
