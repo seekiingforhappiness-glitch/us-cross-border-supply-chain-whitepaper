@@ -18,7 +18,7 @@
 - [x] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
 - [x] **8. 多区域 demo 数据**：让行级数据范围（region）可见地过滤（守真值 md5、engine R/P 不变）
 - [x] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
-- [ ] **10. `docs/field-gap-analysis.md` + retrospective 更新**到当前全貌
+- [x] **10. `docs/field-gap-analysis.md` + retrospective 更新**到当前全貌
 - [ ] **11. 一页纸（可视化 Artifact）** for 面客：五场景控制塔全景图
 - [ ] **12. 接手/onboarding 文档**：新会话/新模型 5 分钟上手路径
 - [ ] **13. 健壮性 pass**：streamlit 启动/空数据/边界输入的优雅处理 + 冒烟测试
@@ -38,3 +38,4 @@
 - 迭代 7 — app/actions.py 行为保持重构：抽 2 私有 helper（`_bulk_set_status` 合并 6 处等价单列批量回写、`_distinct_invoice_col` 合并 2 处 invoice_lines 父列去重），行数 595→594；子代理诚实标注不宜合并处（lazy-import 委派/多列 SET+outbox/JOIN 查询保持内联）— controller 独立复核全绿：只动 actions.py(净 -1 行)、ROLE_PERMS/ADM_PERMS/FORBIDDEN 0 改动、五场景闭环+test_agent_security+scope_parity 全通过(退出码 0；grep 的 error 命中系「无 error」断言假阳性)、R1-R18+agent.evaluate 未动 — 见 loop 提交
 - 迭代 8 — 新建 app/test_region_scope.py 证明多区域行级数据范围「可见过滤」（27 断言）：manager=Global 可见 20 含 US+CN 两区；CN 运营(u-ops-cn)只看 CN=2、exclude 全部 US；US 运营只看 US=18、exclude CN；分区干净无泄漏(US∩CN=∅、US∪CN=20=全集、两区均非空)；Python 谓词==SQL LIKE 口径一致(18==18/2==2)；region_of_locode 边界。**§5 铁律守住：根本没碰 datagen，TRUTH_MD5_IDENTICAL（8 真值文件逐字节不变）**。诚实跳过需 3 文件 UI 改动的可选 region surface（记为后续小切片）— controller 独立复核全绿：git status 仅新测试、datagen/engine/ontology/truth 0 改动、md5 独立重算一致、相关回归+R1-R18 全退出 0 — 见 loop 提交
 - 迭代 9 — agent 评估集补采购/仓储覆盖（22→29 题）：evaluate.py 加 po_briefing/warehouse_briefing 两 type 分支（focus 目标对象→复用 object_workbench focus briefing 取真实事实，focus 用后还原不污染会话）；新增 7 题（采购 4：R7延误/R10价量/R12预付款敞口/采购fabrication；仓储 3：R16断货&R18盘点/R17不可履约/仓储fabrication），采购+仓储各含 1 编造防护题。**grade() 判定一字未改（不放水）**。— controller 独立复核全绿：只改 evaluate.py+eval_cases.yaml、grade 判定 0 改动、29 题全通过、**亲自跑判定严反证（Q23 注入假事实"交期延误_999_天_ZZZ"→进 missing→会 FAIL，证明 expected_contains 咬合真实对象数据非手写）**、truth md5 不变、scope_parity/agent_security/R1-R18 全退出 0 — 见 loop 提交
+- 迭代 10 — retrospective.md + field-gap-analysis.md 追加当前全貌（**append 保留历史快照，不重写历史件**）：retrospective 加 0-v7（采购 P1-P3/仓储 W1 两域 + 对象中心转向 6 富工作台 + RiskEvent 锚点多态化 + 现货救延误跨场景连接 + P2 R7 数据缺口如实修）、0-v8（loop 驱动 §4 加固纪律：只做 §4 不擅开新域、controller 独立重跑、四条红线）；field-gap 加 §5（采购/仓储域相对真实 ERP/WMS 的已知简化 + 面客诚实话术）。**controller 自核对全绿**：13 个引用对象名逐一有真实表支撑、抓到并修正 1 处规则号事实错误（field-gap 误写"资质过期(R12)"→实为 R13；R11=开票超收/R12=预付款/R13=资质）、纯文档只改 2 docs、0 代码/规则/真值改动 — 见 loop 提交

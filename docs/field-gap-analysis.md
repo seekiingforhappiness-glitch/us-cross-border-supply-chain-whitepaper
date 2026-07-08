@@ -71,3 +71,37 @@ source identity、idempotency 与 raw payload lineage，不引入真实 carrier 
 datagen 六模块加字段与生成逻辑（约半天）；ontology manual §2.7/§2.8 与 JSON 的 Shipment/
 ShipmentMilestone 属性表同步（走 AGENTS §3 变更协议）；DEMO 案例断言不受影响（新字段不进断言）；
 affected_value 口径从目录价改为行成交价（oracle 与 W4 引擎同步，写入规则澄清）。
+
+---
+
+## 5. 采购 / 仓储域字段差距（当前全貌补充，2026-07-08）
+
+原文 §1-§4 是**延误域**的字段调研快照（W2）。后续新增采购（R7-R15）、仓储（R16-R18）两域，
+同样是基于真实调研的**高真实感合成数据**，未接真实系统。此处如实记录这两域相对真实源系统的
+已知简化，供 FDE 面客时诚实说明"哪些是模拟、真实部署要接什么"。
+
+### 5.1 采购域（真实源=ERP 采购模块 / 供应商门户 / AP 系统）
+
+| 我们的对象 | 真实世界更复杂之处 | 真实来源 | 现状取舍 |
+| --- | --- | --- | --- |
+| PurchaseOrder / PoLine | 付款条款(Net30/60)、币种与汇率锁、PO 级 incoterm、税金、修订版本(PO revision) | ERP（SAP/Oracle/NetSuite）采购模块 | 简化为核心对账字段；三方对账容差(tolerance)用固定阈值，真实按品类/供应商分档配置 |
+| GoodsReceipt / GoodsReceiptLine | ASN 预到货通知、质检(QC hold)、部分收货多次入库、退货(RTV) | WMS/收货系统 | 已补行级 received_date（P2 修复）；QC/ASN 未建模 |
+| SupplierInvoice | OCR 抓取、发票匹配例外工作流、税务合规(VAT/withholding) | AP 自动化(Tipalti/Bill.com) | 简化为三方对账所需字段；开票超收货量(R11) 已建模 |
+| SupplierQualification | 真实资质来自合规/风控系统的证书库(ISO/验厂/信用) 带有效期与自动预警 | 合规 GRC 系统 | 资质过期(R13)已建模；证书类型简化 |
+| RFQ / Quote | 多轮报价、评分卡、审批链、电子签 | 寻源平台(Coupa/Ariba) | 单一来源(R14)/maverick(R15)已建模；多轮谈判简化 |
+
+### 5.2 仓储域（真实源=WMS / 库存系统）
+
+| 我们的对象 | 真实世界更复杂之处 | 真实来源 | 现状取舍 |
+| --- | --- | --- | --- |
+| Warehouse / InventoryPosition | 库位(bin/location)层级、批次(lot)/序列号(serial)、库龄(FEFO/FIFO)、多货主(3PL) | WMS（Manhattan/Blue Yonder/自研） | 简化为 SKU×仓库的可用/预留/在途/安全库存；无库位/批次 |
+| InventoryReservation | 预留优先级、软/硬预留、ATP(available-to-promise) 实时计算 | OMS/库存中台 | 预留驱动履约已建模；ATP 用快照非实时 |
+| CycleCount | 循环盘点排程、ABC 分类、差异根因(RCA)工作流、账实调整审批 | WMS 盘点模块 | 盘点差异(R18)已建模；排程/ABC 简化 |
+| （断货/不可履约 R16/R17） | 补货建议、采购触发点(ROP)、多仓调拨(transfer order) | 补货引擎 | 断货检测已建模；自动补货/调拨未做（现货救延误走人审批的 SuggestSubstitution） |
+
+### 5.3 诚实结论（面客话术）
+
+这两域证明的是**方法可迁移**——同一 RiskEvent→Task 治理闭环、同一对象中心 + 可信 AI 模式，
+能承接采购、仓储与延误/费用/准入并列，且跨域连成一张网（采购收货→库存→履约→延误现货救援）。
+真实部署时，datagen 的合成对象换成 ERP/WMS 的真实抽取（ETL/CDC 入湖 → 管道 ER/MDM → 同一 ontology），
+业务规则与动作层**不变**。**未做的不是不会做，是刻意不在学习型原型里造真实集成**（反目标，见 Tier 3 精神）。

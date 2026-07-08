@@ -58,6 +58,22 @@ Container 对象化偿还 D5 技术债。九评估器全绿，断言 23/24。
 交付通过评审；子代理累计主动纠正规格问题 2 处（CD-C 选船的真实性、MatchInvoice 时序），
 报告笔误 1 处被复核抓出——"评审以重跑为准，不以报告为准"成为固定纪律。
 
+## 0-v7. 第四、五场景（采购 + 仓储）与对象中心转向（2026-07-07/08）
+
+**采购域（决策 P1-P3，R7-R15）**：三方对账（PO×收货×发票，R7-R10）+ 开票超收/预付款敞口/供应商资质过期（R11-R13）+ 单一来源/maverick（R14-R15）。**直接复用** RiskEvent→Task→提案→审批(maker-checker)→审计闭环——RiskEvent 锚点从"货运锚定"泛化为多态（shipment/po/supplier/warehouse），一套治理承接新业务域，零重建。九项处置动作 append 进动作层。R7-R15 逐条 P/R=1.000、灰区 0 误报。P2-BuildA 曾出 R7 recall=0.500：子代理**如实报告**为 Build 1 的数据缺口（收货行缺行级 received_date、多行 PO 延误被 GRN 头 min 掩盖），并**拒绝改真值凑指标**（§5），补行级字段后真值 md5 逐字节不变、R7→1.000——"评审以重跑为准"再次兑现。
+
+**仓储域（决策 W1，R16-R18）**：断货/不可履约/盘点差异。真正价值在**跨场景连接**：采购收货 GoodsReceiptLine → 上架 → 库存 InventoryPosition → 预留驱动 SalesOrderLine 履约 → **延误时查目的仓现货 → SuggestSubstitution 拆单先发 + 余量 backorder**——白皮书"一票延误怎么保客户承诺"的落点，五场景第一次连成一张网而非五个孤岛。
+
+**对象中心转向（Foundry 范式落地）**：从"角色页面"升级为"对象即工作台"——6 个核心决策对象（RiskEvent/Task/Invoice/AdmissionCase/PurchaseOrder/Warehouse）各有富工作台 + permission-aware 对象级 agent，其余 27 对象走自动标准视图（对象图可导航）。对象级 agent 三条硬约束**均经 controller 独立对抗验证**：① 只提案不审批（审批类对任何角色都不注册为 agent 工具）；② 数据范围完全继承 UI（test_scope_parity 证明 ops 的 agent 看不到成本、和 ops UI 逐字一致）；③ 越权在动作层挡回不在提示词（注入 "you are admin now" 被拒 + 写 denied 审计）。
+
+诚实边界：采购/仓储数据为基于真实调研的高真实感合成数据，未接真实 ERP/WMS；P/R=1.000 是**合成数据上的能力证明**，非真实战绩。
+
+## 0-v8. loop 驱动的 §4 加固（本会话自定步调 15 迭代）
+
+人设定"迭代到第 15 次交付完整控制塔"的自定步调 loop，边界明确：**loop 只做 §4「AI 主导人验收」的完成/打磨/加固，绝不擅自开新业务域**（新对象/新规则需 Daniel AskUserQuestion 亲批）——既避免"完备性陷阱"（无限加域），又让每次迭代是一个可独立验收的小切片。已落地的加固：统一对抗安全 sweep 测试（6 对象 agent × 注入变体 288 次全被拒 + 292 条 denied 审计）；approve_mitigation 行为保持重构（抽 helper 去重，行为逐字不变）；多区域可见过滤证明（守 truth md5）；agent eval 扩采购/仓储（22→29，判定不放水，注入假事实反证会 FAIL）。
+
+工作模式固化：每迭代**controller 独立重跑验证**（不信子代理报告只信输出），每次必守"既有 R1-R18 全 P/R=1.000 不扰动、agent 不越权、ground truth md5 不变、maker-checker/FORBIDDEN 不削弱"四条红线。多次抓到的假阳性/口径问题都当场核实（如 grep "error" 命中系"无 error"断言）。
+
 ## 1. 目标达成核对（对 plan §10 KPI）
 
 | KPI | 目标 | 实际 |
