@@ -158,6 +158,13 @@ AI/redaction、业务扩展等）仍须另行批准。
 simulation-first；不真实修复源系统、不回写外部系统、不新增噪声类型、风险规则、真实主数据合并、
 outbox 或 AI/redaction。M7+（outbox、AI/redaction、业务扩展等）仍须另行批准。
 
+**M7 — 模拟集成写回 outbox（2026-07-07，人以"继续"批准）。**
+批准范围仅限成熟度升级 Task 7：在 SQLite 内增加 simulation-first 的 `integration_outbox`，
+用 deterministic idempotency key 记录已批准业务动作的模拟写回请求，并支持标记成功，使“状态已回写”
+从口头假设变成可审计、可重放、可去重的内部队列。取舍：更接近成熟控制塔与外部系统集成的安全边界，
+但不接真实 ERP/TMS/QMS、不发送网络请求、不新增真实 retry worker、不改变既有业务规则或 KPI。
+M8+（业务扩展决策、AI/redaction、成熟工作台等）仍须另行批准。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

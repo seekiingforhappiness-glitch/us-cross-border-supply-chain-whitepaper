@@ -4,6 +4,15 @@
 动作全部经 app/actions.py（权限、前置校验、审计在动作层，UI 只是壳）。
 字段级权限（manual §6）：ops 不可见 Customer.tier；cs 不可见 est_cost_usd。
 """
+import sys
+from pathlib import Path
+
+# streamlit run 只把脚本目录 app/ 放进 sys.path；显式补入项目根，
+# 否则 app/actions.py 顶层 `from pipeline.outbox import ...` 会 ModuleNotFoundError。
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import html
 import json
 import sqlite3

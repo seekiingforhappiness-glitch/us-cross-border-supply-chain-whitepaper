@@ -15,6 +15,7 @@ from .event_envelope import normalize_event
 from .er import resolve, resolve_milestones
 from .mdm import CrosswalkEntry, resolve_crosswalk
 from .dq_issues import create_unresolved_milestone_issues
+from .outbox import ensure_integration_outbox
 from engine.graph import upsert_relationship
 
 RAW = Path("data/raw")
@@ -593,6 +594,7 @@ def main():
     cur.execute("""CREATE TABLE action_log (log_id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT,
         role TEXT, action TEXT, target_object_id TEXT, params_json TEXT, as_of_date TEXT,
         timestamp TEXT, result TEXT)""")
+    ensure_integration_outbox(con)
     cur.execute("""CREATE TABLE dq_issues (
         dq_issue_id TEXT PRIMARY KEY,
         source_table TEXT NOT NULL,

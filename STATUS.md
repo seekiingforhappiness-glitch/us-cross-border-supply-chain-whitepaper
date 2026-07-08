@@ -21,7 +21,7 @@
 - **成熟控制塔全面升级计划已进入逐 Task 审批执行**：计划路径
   `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
   `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M6 已完成，
-  M7+ 未获批前不改 ontology/规则/业务范围
+  M7 已实现待 controller review；M8+ 未获批前不改 ontology/规则/业务范围
   （MA 系列只是验收检查）。
 - **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
   已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
@@ -52,6 +52,11 @@
   子代理规格/质量复审均已通过，质量复审指出的 DQ 幂等冲突、事务回滚、默认队列筛选和 detail
   JSON 容错均已修复；验证：DQ loop、datagen、pipeline、engine、app、agent 回归全绿，engine 仍为
   Recall=1.000 / Precision=1.000。
+- **M7 Task 7 已实现，待 controller review**：Daniel 已批准模拟集成写回 outbox；本次范围限定为
+  SQLite `integration_outbox`、deterministic idempotency key、success/failure 状态标记、
+  已批准 reschedule 动作的模拟写回与脚本测试/断言同步。不接真实 ERP/TMS/QMS，不发送网络请求，
+  不新增 retry worker，不推进 M8+。子代理验证：outbox、pipeline.evaluate、engine.evaluate、
+  closed_loop 全绿；待主会话规格/质量复核。
 
 ## v0.4 进度
 

@@ -1,6 +1,6 @@
 # Maturity Upgrade Demo Assertions
 
-当前状态：M1-M6 已完成；M7+ 未获批准前不改 ontology、规则或业务范围。
+当前状态：M1-M6 已完成；M7 已实现待 controller review；M8+ 未获批准前不改 ontology、规则或业务范围。
 
 这些条目是验收检查，不是批准决策。批准决策仍以 Daniel 批准后的 plan/control-tower decision log 为准。
 
@@ -16,7 +16,7 @@
 - [x] MA4-MDM. external ID → internal ID crosswalk 可查看 resolved/ambiguous/unresolved 计数，ambiguous 不自动猜测。
 - [x] MA4-GRAPH. Shipment → Customer 可通过 object_relationships/explain_path 返回可解释路径。
 - [x] MA5. booking_no/container_no 解析失败时进入 DQ issue，而不是被静默丢弃。
-- [ ] MA6. 对同一 source message 重放不会创建重复 RiskEvent 或重复 writeback。
+- [x] MA6. 对同一 approved reschedule writeback 重放不会创建重复 `integration_outbox` row。
 
 ## W9 Operations
 
