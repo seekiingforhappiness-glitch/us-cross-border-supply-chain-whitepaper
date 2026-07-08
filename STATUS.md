@@ -179,7 +179,12 @@
   R15 supplier_invoice 无 approved PO）。真值独立存 `expected_sourcing_risks.csv`（使 procurement 真值 md5 d08428… 不变）。
   **controller 独立复核**：R14/R15 全 P/R=1.000、灰区 0 误报、两真值确定性、**既有 R1-R13/R16-R18 全 P/R=1.000 未扰动**、
   标准视图 28、全套回归绿。子代理妥善处理 RFQ 缩写表名（ontology 声明显式 table 避免 r_f_q 误拆）。
-  **Build B（动作 initiate_second_source/block_non_po_payment/backfill_po + 闭环）待续。**
+- **采购富化 P3 Build B（R14/R15 处置动作 + 闭环）已完成并通过 controller review**：`app/sourcing_actions.py`
+  + approve_mitigation 加 sourcing 分支（initiate_second_source R14→建/标 RFQ 启动第二来源 / block_non_po_payment R15→
+  maverick 发票 on_hold / backfill_po R15→补追溯 PO 关联），走既有闭环 + maker-checker。**controller 独立复核**：
+  sourcing_loop 全绿（R14/R15 闭环 + 越权杀手 src-agent[manager] approve 被拒）、R1-R18 全绿、
+  ROLE_PERMS/maker-checker/FORBIDDEN/agent-tools diff=0、全套回归绿、三角色 UI 0 异常。
+  **→ 采购域完整（R7-R15 九规则：三方对账+预付款+资质+单一来源+maverick）；控制塔 5 场景、31 对象、R1-R18 全 P/R=1.000。**
 
 ## v0.4 进度
 

@@ -48,6 +48,11 @@ PARAM_SCHEMAS = {
     "suggest_substitution": {"reason"},              # 延误(R1-R3)/R17：目的仓现货拆单先发 + 余量 backorder（杀手锏）
     "adjust_inventory": {"reason"},                  # R18：按 CycleCount.counted 调整 InventoryPosition + reconciled
     "escalate_replenishment": {"reason"},            # R16：升级补货（在途补足安全库存缺口）
+    # P3 采购富化2 处置提案类型扩展（R14 单一来源 / R15 maverick；决策日志 P3，Build B）：
+    # 同走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "initiate_second_source": {"reason"},            # R14：对断供 SKU 建/标一条 RFQ(status=sent) 启动第二来源
+    "block_non_po_payment": {"reason"},              # R15：把 maverick supplier_invoice 标 on_hold 拦截付款
+    "backfill_po": {"reason"},                       # R15：为 maverick 发票补一张追溯 PurchaseOrder 并关联（合规补单）
 }
 # 采购处置动作 → PoLine.line_status 目标态（审批通过后回写受影响 PoLine 的可见状态）。
 # dispute_supplier_invoice 不改 PoLine（改 supplier_invoices.status=disputed），故不在此表。
@@ -71,6 +76,13 @@ PROCUREMENT_ACTIONS = (set(PO_LINE_STATUS_ON_APPROVE) | {"dispute_supplier_invoi
 #   adjust_inventory R18(cycle_count 锚) → InventoryPosition + CycleCount.status=reconciled；
 #   escalate_replenishment R16(inventory_position 锚) → InventoryPosition.in_transit_qty。
 WAREHOUSE_ACTIONS = {"suggest_substitution", "adjust_inventory", "escalate_replenishment"}
+# P3 采购富化2 处置动作（决策日志 P3，Build B）——审批后回写受影响采购/询价对象「可见状态」，非判风险
+# （R14/R15 检测由 engine.detect_sourcing_risks 从事实重算，绝不信 rfq/invoice/po 状态字段，同「不信状态字段」铁律）。
+# 回写逻辑在 app.sourcing_actions.apply_sourcing_disposition（approve_mitigation 事务内调用），锚点：
+#   initiate_second_source R14(supplier_id 锚, sku 载体在 affected_po_line_ids[0]) → RFQ.status=sent（建/标询价）；
+#   block_non_po_payment  R15(po_id 锚, maverick 行在 affected_invoice_line_ids) → supplier_invoices.status=on_hold；
+#   backfill_po           R15 → 新建追溯 PurchaseOrder(supplier=biller) + supplier_invoices 重指向关联（合规补单）。
+SOURCING_ACTIONS = {"initiate_second_source", "block_non_po_payment", "backfill_po"}
 # cost-manual §4 A5 G4 incoterm 责任门禁矩阵（与 ontology JSON incotermRebillMatrix 同步）：
 # rebill_customer 仅当受影响行费种 ⊆ 该票 incoterm 的可转嫁集合。
 REBILL_MATRIX = {
@@ -512,6 +524,16 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                     except ImportError:
                         from warehouse_actions import apply_warehouse_disposition
                     effects.extend(apply_warehouse_disposition(cur, act, risk, affected, params, as_of))
+                elif act in SOURCING_ACTIONS:
+                    # P3 采购富化2 处置（Build B）：R14 锚 supplier_id + sku 载体(affected_po_line_ids[0])，
+                    # R15 锚 po_id + maverick 行(affected_invoice_line_ids)；无 SO 行副作用。审批后按已批准方案
+                    # 回写受影响 RFQ/supplier_invoice/purchase_order 的「可见状态」（事实回写，非判风险——检测仍由
+                    # engine 从事实重算）。lazy import 避免 actions↔sourcing_actions 循环 import；helper 只用 cur。
+                    try:
+                        from .sourcing_actions import apply_sourcing_disposition
+                    except ImportError:
+                        from sourcing_actions import apply_sourcing_disposition
+                    effects.extend(apply_sourcing_disposition(cur, act, risk, params, as_of))
                 cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
                                approved_by_role=?, action_taken=? WHERE task_id=?""",
                             (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
