@@ -1,8 +1,9 @@
-"""控制塔 UI（W5）：streamlit run app/streamlit_app.py
+"""控制塔 UI（W5 + RBAC 深化）：streamlit run app/streamlit_app.py
 
-四视图：风险队列 / 任务处理台 / 对象详情 / 审计日志 + 角色切换器。
-动作全部经 app/actions.py（权限、前置校验、审计在动作层，UI 只是壳）。
-字段级权限（manual §6）：ops 不可见 Customer.tier；cs 不可见 est_cost_usd。
+真·角色导航：不同角色登录后只渲染自己的工作台 tab（见 app/rbac_nav.ROLE_WORKSPACE），
+不是全渲染再脱敏。经理额外拥有 KPI 总览落地页。
+动作全部经 app/actions.py（权限、前置校验、审计在动作层，UI 只是壳）——导航层不放宽任何动作权限。
+字段级权限（manual §6）：ops 不可见 Customer.tier；cs 不可见 est_cost_usd（保留）。
 """
 import sys
 from pathlib import Path
@@ -35,6 +36,11 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
     from admission_actions import (create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario,
                                    approve_quote_decision, reject_or_request_more_info)
+
+try:
+    from app.rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
+except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
+    from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
 
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
@@ -492,11 +498,12 @@ def render_command_header(role, n_open):
     priced_cases = rows("SELECT count(*) c FROM admission_cases WHERE status='priced'")[0]["c"]
     role_label = {"ops": "物流运营", "cs": "客户成功", "manager": "经理", "sales": "销售",
                   "compliance": "合规", "finance": "财务"}[role]
+    meta = ROLE_WORKSPACE_META.get(role, ROLE_WORKSPACE_META["manager"])
     st.markdown(f"""
     <div class="command-header">
         <div class="command-title">
-            <h1>跨境供应链控制塔</h1>
-            <p>角色 {role_label} / 数据域 Global / 对象层 ontology.sqlite</p>
+            <h1>{html.escape(meta['name'])}</h1>
+            <p>跨境供应链控制塔 · 角色 {role_label} · 数据域 {html.escape(meta['domain'])}</p>
         </div>
         <div class="command-clock">
             simulation clock
@@ -529,6 +536,7 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     role = st.selectbox("当前角色", ["ops", "cs", "manager", "sales", "compliance", "finance"],
+                        key="role",
                         format_func=lambda r: {"ops": "物流运营 ops", "cs": "客户成功 cs",
                                                "manager": "经理 manager", "sales": "销售 sales",
                                                "compliance": "合规 compliance",
@@ -544,24 +552,79 @@ if "flash" in st.session_state:  # 上一动作的成功回执
 COST_TYPES = {"rate_overbilling", "duplicate_charge", "unplanned_charge"}
 INV_STATUS_ICON = {"received": "IN ", "under_review": "REV ", "approved": "OK ", "disputed": "DSP "}
 
+# 数据范围（呈现层）：按角色相关性把「本台焦点」风险类型置顶并标注，不删任何数据。
+# 仅影响风险队列呈现次序/标注；动作层权限不受此影响。
+ROLE_RISK_FOCUS = {
+    "ops": {"delay_breach", "stalled", "docs_missing"},   # 运营处置全部物流类
+    "cs": {"delay_breach", "stalled"},                    # 客户成功关注交付延误
+    "compliance": {"docs_missing"},                       # 合规关注单证缺失
+}
+
 render_command_header(role, n_open)
 
-tab_risk, tab_task, tab_cost, tab_obj, tab_dq, tab_adm, tab_log = st.tabs(
-    ["风险队列", "任务处理台", "费用工作台", "对象详情", "DQ 处置", "准入工作台", "审计日志"])
+# ---------- KPI 总览（manager 专属落地页）----------
+def render_kpi_tab():
+    st.caption("经理总览：全域运营健康快照，来自现有对象表只读聚合（不新增对象/表）。")
+    open_risk = rows("SELECT count(*) c FROM risk_events "
+                     "WHERE status NOT IN ('resolved','escalated')")[0]["c"]
+    esc_cand = rows("SELECT count(*) c FROM tasks "
+                    "WHERE sla_state='overdue' OR escalation_level>0")[0]["c"]
+    dq_open = rows("SELECT count(*) c FROM dq_issues WHERE status!='closed'")[0]["c"]
+    adm_wip = rows("SELECT count(*) c FROM admission_cases "
+                   "WHERE status NOT IN ('approved','rejected')")[0]["c"]
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("开放风险", open_risk)
+    k2.metric("升级候选", esc_cand, help="任务 SLA 逾期或已升级")
+    k3.metric("DQ 待处置", dq_open)
+    k4.metric("准入在办", adm_wip, help="未 approved/rejected 的准入案件")
+
+    c_left, c_right = st.columns(2)
+    with c_left:
+        st.markdown("**任务 SLA 状态分布**")
+        sla = {r["s"]: r["c"] for r in rows(
+            "SELECT COALESCE(sla_state,'(未知)') s, count(*) c FROM tasks GROUP BY sla_state")}
+        sla_rows = [{"SLA 状态": s, "任务数": sla.get(s, 0)}
+                    for s in ("open", "due_today", "overdue")]
+        if "(未知)" in sla:
+            sla_rows.append({"SLA 状态": "(未知)", "任务数": sla["(未知)"]})
+        render_table(sla_rows)
+        st.markdown("**发票状态分布**")
+        render_table([{"发票状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}",
+                       "数量": x["c"]} for x in rows(
+            "SELECT status, count(*) c FROM invoices GROUP BY status ORDER BY status")])
+    with c_right:
+        st.markdown("**开放风险按类型**")
+        render_table([{"风险类型": x["type"], "开放数": x["c"]} for x in rows(
+            "SELECT type, count(*) c FROM risk_events "
+            "WHERE status NOT IN ('resolved','escalated') GROUP BY type ORDER BY c DESC")])
+        st.markdown("**准入案件按状态**")
+        render_table([{"准入状态": x["status"], "数量": x["c"]} for x in rows(
+            "SELECT status, count(*) c FROM admission_cases GROUP BY status ORDER BY c DESC")])
+
 
 # ---------- 风险队列 ----------
-with tab_risk:
+def render_risk_tab():
     show_closed = st.checkbox("显示已关闭", value=False)
     where = "" if show_closed else "WHERE r.status NOT IN ('resolved','escalated')"
     risks = rows(f"""SELECT r.*, s.eta_initial, s.eta_current, s.delay_days, s.destination_port
                      FROM risk_events r JOIN shipments s ON s.shipment_id=r.shipment_id {where}
                      ORDER BY CASE r.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 ELSE 2 END,
                               r.affected_value_usd DESC""")
-    render_table([{"风险": r["risk_event_id"], "级别": f"{SEV_ICON[r['severity']]}{r['severity']}",
-                   "类型": r["type"], "规则": r["rule_id"], "货运": r["shipment_id"],
-                   "延误(天)": r["delay_days"], "影响金额($)": r["affected_value_usd"],
-                   "状态": r["status"]} for r in risks],
-                 height=260)
+    # 数据范围：把「本台焦点」风险类型稳定置顶并标注（不删数据，只调呈现）。
+    focus = ROLE_RISK_FOCUS.get(role)
+    if focus:
+        st.caption(f"本台焦点：{'、'.join(sorted(focus))}（已置顶标注 ◆，其余风险仍完整可见）")
+        risks = sorted(risks, key=lambda r: 0 if r["type"] in focus else 1)
+
+    def risk_row(r):
+        row = {"风险": r["risk_event_id"], "级别": f"{SEV_ICON[r['severity']]}{r['severity']}",
+               "类型": r["type"], "规则": r["rule_id"], "货运": r["shipment_id"],
+               "延误(天)": r["delay_days"], "影响金额($)": r["affected_value_usd"],
+               "状态": r["status"]}
+        if focus:
+            row["焦点"] = "◆ 本台" if r["type"] in focus else ""
+        return row
+    render_table([risk_row(r) for r in risks], height=260)
     if risks:
         demo_idx = next((i for i, r in enumerate(risks) if r["shipment_id"] == "SHP-2026-0099"), 0)
         sel = st.selectbox("查看风险", [r["risk_event_id"] for r in risks], index=demo_idx)
@@ -613,7 +676,7 @@ with tab_risk:
                                              actor=actor, role=role, as_of=AS_OF))
 
 # ---------- 任务处理台 ----------
-with tab_task:
+def render_task_tab():
     tasks = rows("""SELECT t.*, r.severity, r.shipment_id, r.status risk_status, r.type risk_type,
                     r.affected_invoice_line_ids
                     FROM tasks t JOIN risk_events r ON r.risk_event_id=t.risk_event_id
@@ -691,7 +754,7 @@ with tab_task:
                                                    actor=actor, role=role, as_of=AS_OF))
 
 # ---------- 费用工作台（v0.4）----------
-with tab_cost:
+def render_cost_tab():
     st.caption("发票对账工作台：状态由 MatchInvoice（系统）与 A5 审批门径驱动，UI 只读呈现。")
     stat_filter = st.selectbox("发票状态筛选", ["全部", "received", "under_review", "approved", "disputed"])
     where_inv = "" if stat_filter == "全部" else f"WHERE iv.status='{stat_filter}'"
@@ -732,7 +795,7 @@ with tab_cost:
                       for x in ilines])
 
 # ---------- 对象详情 ----------
-with tab_obj:
+def render_obj_tab():
     ships = rows("SELECT shipment_id FROM shipments ORDER BY shipment_id")
     ssel = st.selectbox("Shipment", [s["shipment_id"] for s in ships],
                         index=[s["shipment_id"] for s in ships].index("SHP-2026-0099"))
@@ -770,7 +833,7 @@ with tab_obj:
                    "客户等级": mask_tier(x["tier"], role)} for x in chain])
 
 # ---------- DQ 处置（M6）----------
-with tab_dq:
+def render_dq_tab():
     show_closed_dq = st.checkbox("显示已关闭 DQ issue", value=False)
     where_dq = "" if show_closed_dq else "WHERE d.status!='closed'"
     dq_items = rows(f"""SELECT d.*, u.booking_no, u.container_no, u.event_type, u.source_system, u.reason
@@ -810,7 +873,7 @@ with tab_dq:
                                            actor=actor, role=role, as_of=AS_OF))
 
 # ---------- 准入工作台（v0.3）----------
-with tab_adm:
+def render_adm_tab():
     if role == "sales":
         with st.expander("➕ 新建准入案件（B1，销售）"):
             with st.form("b1"):
@@ -945,7 +1008,7 @@ with tab_adm:
                         b6_r, actor=actor, role=role, as_of=AS_OF))
 
 # ---------- 审计日志 ----------
-with tab_log:
+def render_log_tab():
     only_bad = st.checkbox("只看被拒/越权", value=False)
     logs = rows(f"""SELECT * FROM action_log {"WHERE result != 'ok' AND result NOT IN ('created','merged')" if only_bad else ""}
                     ORDER BY log_id DESC LIMIT 200""")
@@ -953,3 +1016,15 @@ with tab_log:
                    "对象": x["target_object_id"], "参数": x["params_json"],
                    "as_of": x["as_of_date"], "结果": x["result"]} for x in logs],
                  height=420)
+
+
+# ---------- 真·角色导航：按 ROLE_WORKSPACE 只渲染该角色可见的工作台 tab ----------
+TAB_RENDERERS = {
+    "kpi": render_kpi_tab, "risk": render_risk_tab, "task": render_task_tab,
+    "cost": render_cost_tab, "obj": render_obj_tab, "dq": render_dq_tab,
+    "adm": render_adm_tab, "log": render_log_tab,
+}
+_keys = visible_tabs(role)
+for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):
+    with _tab:
+        TAB_RENDERERS[_key]()

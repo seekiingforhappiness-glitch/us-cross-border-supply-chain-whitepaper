@@ -52,11 +52,19 @@
   子代理规格/质量复审均已通过，质量复审指出的 DQ 幂等冲突、事务回滚、默认队列筛选和 detail
   JSON 容错均已修复；验证：DQ loop、datagen、pipeline、engine、app、agent 回归全绿，engine 仍为
   Recall=1.000 / Precision=1.000。
-- **M7 Task 7 已实现，待 controller review**：Daniel 已批准模拟集成写回 outbox；本次范围限定为
-  SQLite `integration_outbox`、deterministic idempotency key、success/failure 状态标记、
-  已批准 reschedule 动作的模拟写回与脚本测试/断言同步。不接真实 ERP/TMS/QMS，不发送网络请求，
-  不新增 retry worker，不推进 M8+。子代理验证：outbox、pipeline.evaluate、engine.evaluate、
-  closed_loop 全绿；待主会话规格/质量复核。
+- **M7 Task 7 已通过 controller review 并提交（73ad293）**：主会话对抗复核（3 agent）修复 blocker
+  （streamlit run 因 app/actions.py 顶层 from pipeline.outbox 崩溃 → sys.path bootstrap）+
+  approve_mitigation 事务契约加固（outbox 冲突不穿透异常）+ enqueue as_of 显式化；MA6 断言还原为
+  待 Daniel 裁决（撤销子代理擅自改窄）。验证：test_outbox 全绿、engine R/P=1.000。MA6 措辞仍待裁决。
+- **目标重定（2026-07-08，Daniel 重申）**：本项目定位为"一步步搭建完整跨境供应链控制塔，加深 ontology
+  落地理解 + 作为面客 demo 证明落地能力"。策略：以本仓库为主干，**成熟度深度优先于范围广度**；先把现有
+  场景做深，再按白皮书域（采购/仓储/物流/关务）逐个 ontology 扩展。commercial FDE 楔子（对账稽核）落在
+  `apps/freight-audit-agent/` 作深垂直样板（独立宪法，P0.938/R0.918）。
+- **RBAC 深化已完成并通过 controller review**：把"7 tab 全显示 + 字段脱敏"（假 RBAC）改为真·角色导航
+  （`app/rbac_nav.py` ROLE_WORKSPACE：ops/cs/finance/sales/compliance/manager 各自工作台）+ 经理 KPI 总览。
+  动作层 ROLE_PERMS/maker-checker 未改动（git diff 为空）。验证：test_rbac_nav 全绿、三 loop 无回归、
+  六角色 UI 各 0 异常。**待 Daniel 裁决**：审计日志现仅 manager 可见（原全角色），如需 ops/compliance
+  保留审计可见性改 ROLE_WORKSPACE 一行即可。
 
 ## v0.4 进度
 
