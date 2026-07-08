@@ -42,11 +42,13 @@ try:
     from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                                 risk_in_region_scope, scope_for_role)
     from app import object_workbench
+    from app import standard_object_view as sov
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                             risk_in_region_scope, scope_for_role)
     import object_workbench
+    import standard_object_view as sov
 
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
@@ -845,43 +847,50 @@ def render_cost_tab():
         st.session_state["focus_invoice_id"] = isel
         object_workbench.render_invoice_object_workbench(isel, role, actor, AS_OF, db, render_table)
 
-# ---------- 对象详情 ----------
+# ---------- 对象详情：通用对象浏览器（标准对象视图兜底层）----------
 def render_obj_tab():
-    ships = rows("SELECT shipment_id FROM shipments ORDER BY shipment_id")
-    ssel = st.selectbox("Shipment", [s["shipment_id"] for s in ships],
-                        index=[s["shipment_id"] for s in ships].index("SHP-2026-0099"))
-    sp = rows("SELECT * FROM shipments WHERE shipment_id=?", ssel)[0]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("状态", sp["status"], f"来源字段: {sp['status_source']}" if sp["status_source"] != sp["status"] else None)
-    c2.metric("ETA", sp["eta_current"], f"{sp['delay_days']}天延误" if sp["delay_days"] else None,
-              delta_color="inverse")
-    c3.metric("清关", sp["customs_status"], f"缺: {sp['missing_docs']}" if sp["missing_docs"] else None,
-              delta_color="inverse")
-    c4.metric("贸易术语", sp["incoterm"], "已加急" if sp["expedite_flag"] else None)
-    st.caption(f"{sp['carrier_name'] or sp['carrier_scac']} | {sp['vessel_voyage'] or '船名缺失'} | "
-               f"箱 {sp['container_no']} {sp['container_type']} | "
-               f"{sp['origin_port_locode']} → {sp['destination_port_locode']} | "
-               f"订舱 {sp['booking_no']} | 提单 {sp['mbl_no']}")
-    st.markdown("**事件流（判重后）**")
-    ms = rows("""SELECT event_time, event_type, event_classifier, event_locode, new_eta,
-                 source_system, is_duplicate FROM shipment_milestones
-                 WHERE shipment_id=? ORDER BY event_time""", ssel)
-    render_table([{"时间": m["event_time"], "事件": m["event_type"],
-                   "ACT/EST": m["event_classifier"], "地点": m["event_locode"],
-                   "新ETA": m["new_eta"] or "-", "来源": m["source_system"],
-                   "重复?": "!" if m["is_duplicate"] else ""} for m in ms])
-    st.markdown("**影响链：船上货 → 订单行 → 客户**")
-    chain = rows("""SELECT a.so_line_id, a.allocated_qty, l.promised_delivery_date, l.line_status,
-                    l.reschedule_count, so.so_id, c.customer_name, c.tier, k.sku_name
-                    FROM shipment_allocations a
-                    JOIN sales_order_lines l ON l.so_line_id=a.so_line_id
-                    JOIN sales_orders so ON so.so_id=l.so_id
-                    JOIN customers c ON c.customer_id=so.customer_id
-                    JOIN skus k ON k.sku_id=l.sku_id WHERE a.shipment_id=?""", ssel)
-    render_table([{"订单行": x["so_line_id"], "商品": x["sku_name"], "分配量": x["allocated_qty"],
-                   "承诺日": x["promised_delivery_date"], "改期次数": x["reschedule_count"],
-                   "行状态": x["line_status"], "订单": x["so_id"], "客户": x["customer_name"],
-                   "客户等级": mask_tier(x["tier"], role)} for x in chain])
+    """通用对象浏览器：选对象类型 + 选 id → 富工作台类型给入口提示、其余渲染标准只读视图。
+
+    标准视图（app/standard_object_view.py）是「Foundry 标准对象视图」兜底：非核心对象自动生成的
+    只读视图（属性 + 关联对象，可点击导航）。四个富工作台对象（RiskEvent/AdmissionCase/Task/Invoice）
+    的动作/对象级 AI 仍在各自标签，此处只做只读浏览与对象图导航（不重复渲染其 keyed 富工作台部件）。
+    """
+    types = sov.navigable_types()
+    # 关联对象导航：读挂起的跳转目标（点关联对象按钮时写入），设定类型 + id 的 widget 状态
+    pending = st.session_state.pop("obj_nav", None)
+    if pending:
+        st.session_state["obj_type_sel"] = pending[0]
+        st.session_state[f"obj_id_sel_{pending[0]}"] = pending[1]
+    st.session_state.setdefault("obj_type_sel", "Shipment")
+    st.session_state.setdefault("obj_id_sel_Shipment", "SHP-2026-0099")  # 保留演示锚点
+    if st.session_state["obj_type_sel"] not in types:
+        st.session_state["obj_type_sel"] = "Shipment"
+
+    otype = st.selectbox("对象类型", types, key="obj_type_sel")
+    route = sov.route_object(otype)
+    st.caption(f"对象类型 `{otype}` · 路由 `{route}` · "
+               + ("有富工作台（动作/对象级 AI 在对应标签）；此处只读浏览与对象图导航"
+                  if route == "rich" else "标准只读视图（自动生成，属性 + 关联对象）"))
+
+    table = sov.TYPE_META[otype]["table"]
+    pk = sov.TYPE_META[otype]["pk"]
+    ids = [r[pk] for r in rows(f"SELECT {pk} FROM {table} ORDER BY {pk} LIMIT 500")]
+    cur_id = st.session_state.get(f"obj_id_sel_{otype}")
+    if cur_id and cur_id not in ids and rows(f"SELECT 1 FROM {table} WHERE {pk}=?", cur_id):
+        ids = [cur_id] + ids  # 导航目标不在前 500 时补进选项首位，避免 selectbox 报错
+    if not ids:
+        st.warning(f"{otype} 暂无数据")
+        return
+    if len(ids) >= 500:
+        st.caption("（该类型对象较多，选择框仅列前 500；可经关联对象按钮导航到其余对象）")
+    oid = st.selectbox("对象 ID", ids, key=f"obj_id_sel_{otype}")
+
+    def _navigate(target_type, target_id):
+        st.session_state["obj_nav"] = (target_type, target_id)
+        st.rerun()
+
+    with db() as con:
+        sov.render_standard_view(con, otype, oid, role, render_table, on_navigate=_navigate)
 
 # ---------- DQ 处置（M6）----------
 def render_dq_tab():

@@ -107,6 +107,13 @@
   对所有角色返回同样数据（维持 W6"对账数据对 AI 非敏感"口径，未 role-mask）——**非安全越权**（agent 不能动作，
   且 ops 导航无 cost tab 触达不到）；若要 agent 完全继承 UI 数据范围（Foundry 理想），需给 get_invoice_context 按角色
   脱敏并同步改 agent eval 期望。
+- **标准对象视图兜底层已完成并通过 controller review**：`app/standard_object_view.py`——给全部 15 个非核心对象类型
+  自动生成标准视图（属性 + 关联对象导航，按 role 脱敏，**只读、无 action、无 agent**）；`route_object` 4 核心→富工作台、
+  其余→标准视图（Foundry "standard view 兜底 + configured view 少数配" 范式）。对象详情 tab 泛化为通用对象浏览器
+  （rich 类型在浏览器内给只读标准视图 + 指向专用标签，避免 widget key 冲突；动作/AI 入口仍在各自专用标签）。
+  **controller 独立复核**：15/15 非核心类型 build 非空标准视图（Shipment 7 关联/SalesOrderLine 4 关联等）、只读无 action 键、
+  Customer.tier 对 ops 脱敏 cs 可见、四富工作台+所有既有测试无回归、engine R/P=1.000、六角色 UI 0 异常。
+  **→ 全部 19 对象类型现均有"归宿"：4 核心富工作台+permission-aware agent，15 非核心标准视图，对象图可导航。**
 
 ## v0.4 进度
 
