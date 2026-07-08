@@ -8,11 +8,11 @@
 
 - **阶段：5 个业务场景一本体，全部落地并通过 controller review**。场景：延误运营(R1-R3) / 费用稽核(R4-R6) /
   准入合规(门禁 G1-G4) / 采购(R7-R15：三方对账+预付款+资质+单一来源+maverick) / 仓储库存(R16-R18)。
-  **18 条风险规则全 P/R=1.000**；31 个对象类型；ontology **v0.8.0**。
+  **18 条风险规则全 P/R=1.000**；33 个对象类型；ontology **v0.8.0**。
 - **成熟度做到教科书级**：真·角色导航(6 角色各自工作台) + 行级数据范围 + 经理 KPI + maker-checker + 审计 + 可插拔 LLM；
-  **5 个对象富工作台(RiskEvent/Task/Invoice/AdmissionCase/PurchaseOrder) + permission-aware 对象级 agent**
+  **6 个对象富工作台(RiskEvent/Task/Invoice/AdmissionCase/PurchaseOrder/Warehouse) + permission-aware 对象级 agent**
   (agent 数据范围==UI、越权被动作层挡回、prompt 注入 "you are admin" 被拒——均已 controller 独立对抗验证) +
-  26 个自动标准视图(对象图可导航)。
+  27 个自动标准视图(对象图可导航)。
 - **跨场景连成一张网**：采购收货→上架→库存→预留驱动 SalesOrderLine 履约 → 延误时查目的仓现货拆单先发+余量改期
   （白皮书业务问题落点）。
 - **工作模式**：主会话(controller)规划+对抗复核（"不信报告只信输出"，每次独立重跑），Opus 子代理执行；

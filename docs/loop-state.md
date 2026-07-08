@@ -20,7 +20,7 @@
 - [x] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
 - [x] **10. `docs/field-gap-analysis.md` + retrospective 更新**到当前全貌
 - [x] **11. 一页纸（可视化 Artifact）** for 面客：五场景控制塔全景图
-- [ ] **12. 接手/onboarding 文档**：新会话/新模型 5 分钟上手路径
+- [x] **12. 接手/onboarding 文档**：新会话/新模型 5 分钟上手路径
 - [ ] **13. 健壮性 pass**：streamlit 启动/空数据/边界输入的优雅处理 + 冒烟测试
 - [ ] **14. 全链端到端验证 + release checklist**：一键复现全绿证据集
 - [ ] **15. 最终整合**：release notes + STATUS 收官 + 全评估器全绿快照
@@ -40,3 +40,4 @@
 - 迭代 9 — agent 评估集补采购/仓储覆盖（22→29 题）：evaluate.py 加 po_briefing/warehouse_briefing 两 type 分支（focus 目标对象→复用 object_workbench focus briefing 取真实事实，focus 用后还原不污染会话）；新增 7 题（采购 4：R7延误/R10价量/R12预付款敞口/采购fabrication；仓储 3：R16断货&R18盘点/R17不可履约/仓储fabrication），采购+仓储各含 1 编造防护题。**grade() 判定一字未改（不放水）**。— controller 独立复核全绿：只改 evaluate.py+eval_cases.yaml、grade 判定 0 改动、29 题全通过、**亲自跑判定严反证（Q23 注入假事实"交期延误_999_天_ZZZ"→进 missing→会 FAIL，证明 expected_contains 咬合真实对象数据非手写）**、truth md5 不变、scope_parity/agent_security/R1-R18 全退出 0 — 见 loop 提交
 - 迭代 10 — retrospective.md + field-gap-analysis.md 追加当前全貌（**append 保留历史快照，不重写历史件**）：retrospective 加 0-v7（采购 P1-P3/仓储 W1 两域 + 对象中心转向 6 富工作台 + RiskEvent 锚点多态化 + 现货救延误跨场景连接 + P2 R7 数据缺口如实修）、0-v8（loop 驱动 §4 加固纪律：只做 §4 不擅开新域、controller 独立重跑、四条红线）；field-gap 加 §5（采购/仓储域相对真实 ERP/WMS 的已知简化 + 面客诚实话术）。**controller 自核对全绿**：13 个引用对象名逐一有真实表支撑、抓到并修正 1 处规则号事实错误（field-gap 误写"资质过期(R12)"→实为 R13；R11=开票超收/R12=预付款/R13=资质）、纯文档只改 2 docs、0 代码/规则/真值改动 — 见 loop 提交
 - 迭代 11 — 面客一页纸可视化 Artifact（五场景控制塔全景图）：专属视觉方向=塔台雷达仪表盘（深仪表 navy + 塔台信标琥珀唯一重点色 + 蓝偏中性灰 + 等宽承载规则号/LOCODE 技术语汇），刻意避开 AI 套路（无 cream+terracotta/无紫蓝渐变/无孤立荧光绿）；双主题 token 化、雷达扫掠唯一动效 respect reduced-motion。内容=核心命题指标 + 五场景网格 + 现货救延误链 + 可信 AI 三约束 + 治理护城河 + 一键复现 + 诚实边界。数字先核对代码防编造（6 富工作台/29 eval/33 对象/R1-R18）。已发布 Artifact + 存入仓库 docs/control-tower-overview.html（自包含单文件 24KB、0 外部引用本地可开）+ README 加指针 — controller 核对：hero 截图渲染精良、自包含校验 0 外链、纯前端交付无代码/规则/真值改动 — 见 loop 提交
+- 迭代 12 — 新建 ONBOARDING.md（5 分钟上手导航图：这是什么+诚实边界 / 一条命令验全绿的复现路径 / 心智模型对象-关系-动作+一条风险队列共用+对象即工作台+跨场景网 / 目录图 / 会咬你的规则 §3人裁决+§5真值只读+controller纪律+四条红线+streamlit完整重启 / 安全改一处套路）；**顺带修正 STATUS.md 顶部摘要过时数字（唯一状态源纠错：Warehouse 已在迭代1 升第6富工作台，31对象→33/5富→6/26标准→27，与 architecture.md/README/代码一致）**；AGENTS §0 + README 加发现性指针 — controller 核对：先从代码确证 33对象=27标准(OBJECT_REGISTRY)+6富(RICH，二者不相交)/v0.8.0、ONBOARDING 引用的 13 个模块逐一存在、纯文档 0 代码/规则/真值改动 — 见 loop 提交

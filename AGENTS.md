@@ -10,6 +10,8 @@
 2. `STATUS.md`（当前状态、进行中任务、阻塞项——唯一状态源）
 3. `docs/control-tower-plan-v0.2.md`（执行依据，按当前任务精读相关章节）
 
+首次接手可先读 `ONBOARDING.md`（5 分钟导航图：一条命令验全绿、心智模型、目录图、会咬你的规则）——它是导航，权威状态仍以 `STATUS.md` 为准。
+
 按需再读：`ontology/control-tower-ontology.json`、`docs/demo-assertions.md`、`docs/weekly-notes/`。
 `docs/cross-border-ontology-manual.md` 与 `ontology/sku-admission-ontology.json` 是 v0.1 资产：**只读**，仅作模板参考。
 
