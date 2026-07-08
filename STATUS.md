@@ -73,6 +73,13 @@
   "看得见的过滤效果"为空；子代理的"mine⊆all 严格子集"断言实为空集⊆空集、通过得 vacuous。要让数据范围在
   demo 里真正可见地过滤，下一步需 **enrich demo 数据**（多区域 + 多实名 owner + 预置分派任务）——这也更贴近
   真实控制塔（多区域多 owner）。
+- **enrich demo 运营快照已完成并通过 controller review**：`datagen/seed_demo_ops.py`（build+detect 之后跑）
+  把检出风险填成 20 个任务的运营快照——9 个实名 owner（含 2 CN）、SLA 三态混合（overdue 4/due_today 4/open 12）、
+  4 个升级候选、任务态混合。`DEMO_ROSTER` 仅 append 5 个实名 owner（第一个 ops/US 不变，既有 resolve/assign 行为不变）。
+  **严守边界**：只写 tasks/action_log 运营态，未碰 ground truth（真值在 data/truth/*，seed 不触及）；避让 SHP-2026-0099
+  + CD-A..E 设计案例（保 Daniel 走查与 loop fixture）。**controller 独立全链复核**：三评估器仍 R/P=1.000、
+  scoping 现非空（manager=20 vs ops-mine=6 严格子集）、幂等、六测试全绿、RSK-0068 仍 open 无 task。
+  复现链新增一步：`engine.detect` 之后跑 `python3 -m datagen.seed_demo_ops`。
 
 ## v0.4 进度
 
@@ -131,6 +138,7 @@ python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate
 python3 -m engine.detect && python3 -m engine.evaluate
 python3 -m app.test_closed_loop
 python3 -m agent.evaluate
+python3 -m datagen.seed_demo_ops   # enrich demo 运营快照（多 owner/SLA/升级），让 UI 一打开是"活的"
 streamlit run app/streamlit_app.py
 ```
 

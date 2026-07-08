@@ -2,12 +2,12 @@
 
 验证 app/data_scope（纯函数 + 对真实库临时副本的视图级过滤）：
 ① scope_predicate 逐 role/mode 返回正确过滤（manager=all 无过滤；ops mine=仅自己 assignee）
-② 对真实库：manager 任务数 ≥ 某 ops actor「我的任务」数，且「我的任务」⊆ 全部（严格子集）
+② 对真实库（运营快照种子填充）：manager 全量 ≥ ops「我的任务」，且「我的任务」严格子集
 ③ mode=all 恢复全集（python 谓词 与 SQL WHERE 两条路等价）
 ④ 过滤是视图级：跑前后 tasks 表行数不变（不删数据）
 ⑤ ROLE_PERMS 断言不变（未改动作层）
 
-不改任何对象/规则/KPI；只读断言 + 临时副本。
+不改任何对象/规则/KPI；只读断言 + 临时副本（种子在副本上幂等运行，绝不污染真实库）。
 """
 import shutil
 import sqlite3
@@ -15,9 +15,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-import yaml
+from datagen.seed_demo_ops import PROTECTED_SHIPMENT
+from datagen.seed_demo_ops import run as seed_demo_ops
 
-from .actions import ROLE_PERMS, assign_task
+from .actions import ROLE_PERMS
 from .data_scope import (MODE_LABELS, default_mode, region_of_locode,
                          resolve_actor, risk_in_region_scope, scope_for_role,
                          scope_predicate)
@@ -102,36 +103,29 @@ def main():
     check("risk 本区域：US actor 命中 US 目的地",
           risk_in_region_scope(scope_predicate("ops", "u-ops-us", "US", "team"), "USLAX"))
 
-    print("== ②③④ 对真实库临时副本：视图级过滤 + 子集 + 全集恢复 ==")
-    cfg = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
-    as_of = cfg["window"]["as_of"]
+    print("== ②③④ 对真实库临时副本（运营快照种子）：视图级过滤 + 子集 + 全集恢复 ==")
     tmp = Path(tempfile.mkdtemp()) / "scope.sqlite"
     shutil.copy("data/ontology.sqlite", tmp)
+    # 在副本上幂等跑种子，保证有运营快照可测；即便真实库尚未 seed，本测试仍自足且不污染真实库
+    seed_demo_ops(db_path=str(tmp))
     con = sqlite3.connect(tmp)
     con.row_factory = sqlite3.Row
 
-    open_rids = [r["risk_event_id"] for r in con.execute(
-        "SELECT risk_event_id FROM risk_events WHERE status='open' ORDER BY risk_event_id LIMIT 8")]
-    # 4 个派给 ops（→u-ops-us），2 个派给 cs（→u-cs-us）；actor 均为 ops 角色（AssignTask 权限）
-    for rid in open_rids[:4]:
-        assign_task(con, rid, "ops", "P2", as_of, actor="daniel", role="ops", as_of=as_of)
-    for rid in open_rids[4:6]:
-        assign_task(con, rid, "cs", "P2", as_of, actor="daniel", role="ops", as_of=as_of)
-
     rows_before = con.execute("SELECT count(*) FROM tasks").fetchone()[0]
     all_tasks = _fetch_tasks(con)
-    check("测试数据已建（6 个任务）", len(all_tasks) == 6, str(len(all_tasks)))
+    check("种子已填运营快照（tasks 非空）", len(all_tasks) > 0, str(len(all_tasks)))
 
-    ops_scope = scope_for_role("ops")            # mine
+    ops_scope = scope_for_role("ops")            # mine，actor=u-ops-us
     mgr_scope = scope_for_role("manager")        # all
     ops_mine = [t for t in all_tasks if ops_scope.matches_task(t)]
     mgr_all = [t for t in all_tasks if mgr_scope.matches_task(t)]
 
-    check("② manager(all) 任务数 ≥ ops(mine) 任务数",
-          len(mgr_all) >= len(ops_mine), f"{len(mgr_all)} vs {len(ops_mine)}")
+    check("② manager(all) 看到全部任务", len(mgr_all) == len(all_tasks))
+    check("② manager(all) 任务数 > ops(mine) 任务数（切角色有区别）",
+          len(mgr_all) > len(ops_mine), f"{len(mgr_all)} vs {len(ops_mine)}")
     check("② ops mine ⊆ 全部",
           {t["task_id"] for t in ops_mine} <= {t["task_id"] for t in all_tasks})
-    check("② ops mine 严格子集（有 cs 任务不归 ops）",
+    check("② ops mine 严格子集且非空（他人任务不归 ops）",
           0 < len(ops_mine) < len(all_tasks), f"{len(ops_mine)}/{len(all_tasks)}")
     check("② ops mine 全部 assignee = u-ops-us",
           all(t["assignee_user_id"] == "u-ops-us" for t in ops_mine))
@@ -149,10 +143,16 @@ def main():
     check("③ manager all SQL 命中全集", _sql_scoped(con, mgr_scope) ==
           {t["task_id"] for t in all_tasks})
 
-    # ④ 过滤是视图级：跑前后 tasks 表行数不变
+    # SHP-2026-0099 的 R1 风险：种子不占用，仍 open 且无 task（Daniel 手工走查专用）
+    prot_tasks = con.execute(
+        """SELECT count(*) c FROM tasks t JOIN risk_events r ON r.risk_event_id=t.risk_event_id
+           WHERE r.shipment_id=?""", (PROTECTED_SHIPMENT,)).fetchone()[0]
+    check(f"{PROTECTED_SHIPMENT} 无任何 task（种子未占用走查风险）", prot_tasks == 0, str(prot_tasks))
+
+    # ④ 过滤是视图级：跑前后 tasks 表行数不变（动态基线，不删数据）
     rows_after = con.execute("SELECT count(*) FROM tasks").fetchone()[0]
     check("④ 过滤前后 tasks 表行数不变（只过滤不删）",
-          rows_before == rows_after == 6, f"{rows_before}->{rows_after}")
+          rows_before == rows_after and rows_after > 0, f"{rows_before}->{rows_after}")
     con.close()
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")

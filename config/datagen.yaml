@@ -64,6 +64,11 @@ mdm:                            # M4 simulated crosswalk，不接企业 MDM
   ambiguous_sku_external_id: "ERP-SKU-AMBIG-USB-C-20W"
   unresolved_vendor_external_id: "VENDOR-404"
 
+demo_ops:                       # enrich demo 运营快照种子（datagen.seed_demo_ops）——只写 tasks/action_log
+  seed: 20260808                # 固定随机种子，可复现（§7）
+  n_control_tower: 14           # R1-R3 派给 ops/cs/CN 的任务数
+  n_cost: 6                     # R4-R6 派给 finance 的任务数
+
 output:
   raw_dir: "data/raw"
   truth_dir: "data/truth"       # 仅 datagen/verify 与 W4 评估可读；pipeline/engine 禁读

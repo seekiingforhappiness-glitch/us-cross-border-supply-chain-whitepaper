@@ -62,6 +62,13 @@ DEMO_ROSTER = [
     Owner(actor_id="u-manager-us", role="manager", region="US", active=True),
     Owner(actor_id="u-fin-us", role="finance", region="US", active=True),
     Owner(actor_id="u-ops-cn", role="ops", region="CN", active=True),
+    # 实名 owner（enrich demo）：仅 append，第一个 ops/US 仍是 u-ops-us，
+    # 故 resolve_actor / assign_owner 既有行为不变，只为运营快照提供更多分派对象。
+    Owner(actor_id="u-ops-us-amelia", role="ops", region="US", active=True),
+    Owner(actor_id="u-ops-us-diego", role="ops", region="US", active=True),
+    Owner(actor_id="u-cs-us-priya", role="cs", region="US", active=True),
+    Owner(actor_id="u-fin-us-marcus", role="finance", region="US", active=True),
+    Owner(actor_id="u-ops-cn-lin", role="ops", region="CN", active=True),
 ]
 
 
