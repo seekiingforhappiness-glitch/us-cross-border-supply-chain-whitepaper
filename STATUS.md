@@ -1,28 +1,27 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-07
+更新时间：2026-07-08
 
 ## 当前位置
 
-- 阶段：**v0.2 + v0.3 + v0.4 全部收官**。三场景一本体：19 对象/23 关系/6 状态机/6 规则/
-  12 动作/6 角色；断言 24/24 + 22/22 + 23/24（XE3 记失败）；九评估器全绿；评估 22 题。
-- 工作模式：Fable 规划评审 + Opus 执行（X2-X4 三次委托全部一次过审）。
-- **v0.5 作品集打磨已完成**：架构图/演示台本/一页纸/案例文章 + README 导航。
-- **v0.6 收尾双专题已完成**（final-plan-v0.6，H1-H3）：
-  Y1 风险评分模型——手写 LR 零依赖，早警 AUC 0.969；静态 0.75 诊断为快照删失混杂（H1 勘误）
-  Y2 单证号级 ER——milestone 源表去内部 ID，解析率 98.3%，typo 停车表 1:1，known-loss 如实计数
-- **候选清单已清空。项目全部完成**：十评估器全绿，~6,000 行，28 次提交。
-  剩余事项全部只有人能做：LLM 实测（配 OpenAI API key）、录屏、git push、通读并个人化 article.md。
-- **OpenAI LLM provider 已配置**：`agent.llm_agent` 默认 `AGENT_PROVIDER=openai` +
-  `AGENT_MODEL=gpt-5.5`；Anthropic provider 保留。注意：ChatGPT/Codex 订阅通道只适用于
-  Codex 客户端，项目 Python 代码真实 LLM 调用仍需 `OPENAI_API_KEY`。
-- **控制塔 UI 视觉升级已完成**：基于生成概念图重做 Streamlit 设计系统，暗色未来感命令中心、
-  真实 KPI 顶栏、深色表格、侧栏/Tab/Form/Button 统一样式；动作逻辑与数据层未改。
-- **成熟控制塔全面升级计划已进入逐 Task 审批执行**：计划路径
-  `docs/superpowers/plans/2026-07-07-control-tower-maturity-upgrade.md`；approval pack 路径
-  `docs/control-tower-maturity-gap-assessment.md`、`docs/demo-assertions-maturity.md`；M1-M6 已完成，
-  M7 已实现待 controller review；M8+ 未获批前不改 ontology/规则/业务范围
-  （MA 系列只是验收检查）。
+> **顶部摘要（2026-07-08 刷新，任何接手模型先读这段）。** 下方历史 bullet(M1-M7/P1-P3/W1/口径收敛)保留为详细过程；决策日志见 `docs/control-tower-plan-v0.2.md §4`。
+
+- **阶段：5 个业务场景一本体，全部落地并通过 controller review**。场景：延误运营(R1-R3) / 费用稽核(R4-R6) /
+  准入合规(门禁 G1-G4) / 采购(R7-R15：三方对账+预付款+资质+单一来源+maverick) / 仓储库存(R16-R18)。
+  **18 条风险规则全 P/R=1.000**；31 个对象类型；ontology **v0.8.0**。
+- **成熟度做到教科书级**：真·角色导航(6 角色各自工作台) + 行级数据范围 + 经理 KPI + maker-checker + 审计 + 可插拔 LLM；
+  **5 个对象富工作台(RiskEvent/Task/Invoice/AdmissionCase/PurchaseOrder) + permission-aware 对象级 agent**
+  (agent 数据范围==UI、越权被动作层挡回、prompt 注入 "you are admin" 被拒——均已 controller 独立对抗验证) +
+  26 个自动标准视图(对象图可导航)。
+- **跨场景连成一张网**：采购收货→上架→库存→预留驱动 SalesOrderLine 履约 → 延误时查目的仓现货拆单先发+余量改期
+  （白皮书业务问题落点）。
+- **工作模式**：主会话(controller)规划+对抗复核（"不信报告只信输出"，每次独立重跑），Opus 子代理执行；
+  每个新域/富化走 §3（联网调研→设计提案→Daniel AskUserQuestion 批准→决策日志 P1/P2/P3/W1→才写代码）。
+- **LLM**：无 API key 时确定性 fallback，端到端可跑；真实 LLM 调用需 `OPENAI_API_KEY`（`agent.llm_agent` 默认 openai）。
+- **复现（完整链）**：`python3 -m datagen.generate && python3 -m pipeline.build_ontology && python3 -m engine.detect &&
+  python3 -m datagen.seed_demo_ops && streamlit run app/streamlit_app.py`（改代码后**完整重启** streamlit，别热重载）。
+  评估器 engine.evaluate/evaluate_cost/evaluate_procurement/evaluate_warehouse 全 R/P=1.000；真值只在 `data/truth/`、引擎禁读。
+- **面客走查台本**：`docs/demo-walkthrough.md`（5 分钟故事：切角色→点对象→对象级 agent→现货救延误→越权被挡）。
 - **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
   已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
 - **M2 Task 2 已完成并通过 controller review**：Daniel 已批准 demo named owner + SLA state +
