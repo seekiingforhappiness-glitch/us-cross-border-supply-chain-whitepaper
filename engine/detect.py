@@ -93,7 +93,12 @@ def apply_candidates(con, cands, as_of):
         else:
             seq += 1
             rid = f"RSK-{seq:04d}"
-            cur.execute("""INSERT INTO risk_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            # 显式列名（不用位置 VALUES）：P1 采购锚点新增 po_id/supplier_id/affected_po_line_ids
+            # 列后，R1-R6 写入不受列数变化影响；三个采购列此处留空（Build 2 才写）。
+            cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                           shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                           root_cause, status, resolved_at, outcome, resolution_summary,
+                           affected_invoice_line_ids) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (rid, c["type"], c["rule_id"], c["severity"], c["shipment_id"],
                          c["affected_so_line_ids"], c["affected_value_usd"], c["detected_at"],
                          c["root_cause"], "open", None, None, None, c_inv))

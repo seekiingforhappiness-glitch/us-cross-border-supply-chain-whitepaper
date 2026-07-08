@@ -53,6 +53,24 @@ cost:                           # v0.4 费用闭环（X2）参数
   overbilling_rate: 0.08        # 随机超收注入比例（→R4）
   duplicate_rate: 0.04          # 随机重复计费注入比例（→R5）
 
+procurement:                    # P1 采购三方对账（Build 1/3）——独立随机流 seed+4000
+  seed_offset: 4000             # 独立随机流偏移（既有数据零扰动，§7 可复现）
+  lines_per_po_weights: {1: 0.40, 2: 0.35, 3: 0.25}
+  qty_range: [500, 5000]
+  ready_window: ["2026-05-21", "2026-07-15"]  # po_line.expected_ready_date 取样窗口
+  receipt_delay_tol_days: 3     # R7：received_date > expected_ready_date + 容差 → 供应商交期延误
+  short_qty_tol: 0.03           # R8：accepted/received_qty < po_line.qty×(1−容差) → 短装
+  defect_ppm_threshold: 3000    # R9：defect_ppm > 阈值 或 qc_status=failed → QC 不合格
+  price_tol: 0.02               # R10：|inv 单价 − po 单价|/po 单价 > 容差 → 价量不符
+  partial_receipt_rate: 0.40    # clean/gray 内分批收货（2 张 GRN）比例——演示分批
+  inject:                       # 注入画像计数（固定，可复现；verify 精确断言）；n_pos=Σ=52
+    clean: 12                   # 全干净（准时/足量/QC 合格/价量相符）→ 不进真值
+    gray: 9                     # 灰区（各维度容差内波动）→ 不进真值（测未来误报）
+    r7: 8                       # 供应商交期延误
+    r8: 8                       # 短装
+    r9: 7                       # QC 不合格
+    r10: 8                      # 价量不符
+
 scoring:                        # v0.6 专题一 Y1 风险评分模型（H1/H2）
   split_ratio: 0.7              # 按 shipment_id 的 sha256 十六进制排序取前 70% 训练
   lr: 0.5                       # 全批量梯度下降步长

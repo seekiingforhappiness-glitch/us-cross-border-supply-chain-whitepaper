@@ -165,6 +165,23 @@ outbox 或 AI/redaction。M7+（outbox、AI/redaction、业务扩展等）仍须
 但不接真实 ERP/TMS/QMS、不发送网络请求、不新增真实 retry worker、不改变既有业务规则或 KPI。
 M8+（业务扩展决策、AI/redaction、成熟工作台等）仍须另行批准。
 
+**P1 — 采购(procurement)业务域第一个纵向切片（2026-07-08，Daniel 经 AskUserQuestion 批准）。**
+联网调研（SAP Ariba/Coupa/Dynamics 365/UC Berkeley SoD/Alibaba Trade Assurance）后，Daniel 批准把
+跨境采购(P2P)接入控制塔，走 model-first。核心：采购异常与延误/费用异常同构，**全复用**
+`RiskEvent→Task→动作→审计` + maker-checker + 对象工作台+agent，不新增治理机制。
+Daniel 的两个业务裁决：① **加采购单行 PoLine**（支持一单多 SKU + 分批收货 + 逐行三方对账；
+**本项覆盖 D2 的单 SKU PO 约束**，为采购稽核核心能力）；② 第一版范围 = **三方对账主线 4 类**
+（R7 供应商交期延误 / R8 短装 / R9 QC 不合格 / R10 价量不符）。
+controller 默认取舍（Daniel 未否决，随此记录）：RiskEvent 锚点由"货运锚定"泛化为**可空
+po_id/supplier_id**（与"加字段不联表"哲学一致，唯一触碰核心对象处）；SupplierInvoice **独立对象**
+（不复用货运 Invoice，避免污染费用场景）；采购动作归现有 **ops/finance/compliance**（暂不新增 buyer 角色）；
+容差/阈值全进 `config/*.yaml`。
+MVP 对象：`PoLine`、`GoodsReceipt(+行,含 qc_status/defect_ppm)`、`SupplierInvoice(+行)`；
+MVP 动作：`RecordGoodsReceipt`/`MatchSupplierInvoice`（摄入→检测）+ proposed_action 扩展
+（expedite_po/raise_supplier_claim/dispute_supplier_invoice/accept_receipt_variance）。
+**推迟（富化，另行批准）**：R11-R13(超收货开票/预付款敞口/资质过期)、PurchasePayment、SupplierQualification、
+RFQ、单一来源(R14)/maverick(R15)。取舍：先把一条三方对账主线端到端跑通验证模式，再富化。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

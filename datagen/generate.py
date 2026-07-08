@@ -18,6 +18,7 @@ import yaml
 from . import world as W
 from . import admission as ADM
 from . import cost as COST
+from . import procurement as PROC
 from .design_cases import apply_design_cases
 from .noise import apply_noise, apply_doc_refs
 from .oracle import sweep
@@ -41,6 +42,9 @@ def build(cfg):
     # v0.4 费用对账：独立随机流（seed+2000），既有数据零扰动（X2 决策）
     cost_rng = random.Random(cfg["seed"] + 2000)
     COST.build_cost_world(w, cfg, cost_rng)
+    # P1 采购三方对账（Build 1/3）：独立随机流（seed+procurement.seed_offset），既有数据零扰动
+    proc_rng = random.Random(cfg["seed"] + cfg["procurement"]["seed_offset"])
+    PROC.build_procurement_world(w, cfg, proc_rng)
     # v0.6 专题二 H3：milestone 单证号（booking_no/container_no）填充 + doc_ref_typo。
     # 独立随机流（seed+3000），须在 cost 建柜之后（primary 柜号已就位）。
     doc_rng = random.Random(cfg["seed"] + 3000)
@@ -180,6 +184,29 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                    ["expected_cost_id", "shipment_id", "charge_code", "container_no",
                                     "baseline_usd", "source"])
 
+    # P1 采购三方对账五表（srm_ = 供应商关系系统 / ap_ = 应付账款系统）
+    proc = w["procurement"]
+    tables["srm_po_lines"] = (sorted(proc["po_lines"], key=lambda x: x["po_line_id"]),
+                              ["po_line_id", "po_id", "sku_id", "qty", "unit_price_usd", "currency",
+                               "expected_ready_date", "line_status", "as_of_date", "created_at"])
+    tables["srm_goods_receipts"] = (sorted(proc["goods_receipts"], key=lambda x: x["grn_id"]),
+                                    ["grn_id", "po_id", "received_date", "status", "as_of_date",
+                                     "created_at"])
+    tables["srm_goods_receipt_lines"] = (sorted(proc["grn_lines"], key=lambda x: x["grn_line_id"]),
+                                         ["grn_line_id", "grn_id", "po_line_id", "received_qty",
+                                          "accepted_qty", "rejected_qty", "qc_status", "defect_ppm",
+                                          "as_of_date", "created_at"])
+    tables["ap_supplier_invoices"] = (sorted(proc["supplier_invoices"],
+                                             key=lambda x: x["supplier_invoice_id"]),
+                                      ["supplier_invoice_id", "supplier_id", "po_id",
+                                       "vendor_invoice_no", "issue_date", "currency", "total_usd",
+                                       "status", "as_of_date", "created_at"])
+    tables["ap_supplier_invoice_lines"] = (sorted(proc["supplier_invoice_lines"],
+                                                  key=lambda x: x["supplier_invoice_line_id"]),
+                                           ["supplier_invoice_line_id", "supplier_invoice_id",
+                                            "po_line_id", "qty", "unit_price_usd", "amount_usd",
+                                            "as_of_date", "created_at"])
+
     for name, (rows, cols) in tables.items():
         _dump(raw / f"{name}.csv", rows, cols)
     _dump(truth / "expected_admission_gates.csv", adm["gates"],
@@ -188,6 +215,10 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
     _dump(truth / "expected_cost_anomalies.csv", cost["anomalies"],
           ["rule_id", "type", "shipment_id", "severity", "anomaly_value_usd",
            "affected_invoice_line_ids", "case_id", "attribution"])
+    # P1 采购异常 ground truth（R7-R10；仅 datagen/verify 与 Build 2 评估可读）
+    _dump(truth / "expected_procurement_risks.csv", proc["anomalies"],
+          ["expected_procurement_risk_id", "rule_id", "type", "po_id", "po_line_id",
+           "supplier_id", "severity", "anomaly_value_usd", "note", "case_id"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

@@ -124,6 +124,16 @@
   FORBIDDEN/ROLE_PERMS/ADM_PERMS 未削弱（diff 空）、agent.evaluate 22/22、engine R/P=1.000、六角色 UI 0 异常。
   **诚实标注**：审计 region 过滤在全 US 种子下 ops/compliance 实际看到与 manager 同（机制真实，多区域部署即分化）。
   → 前述三个"待 Daniel 裁决"口径项均已按 Foundry 理想收敛闭合。
+- **采购(procurement)业务域已立项并开始落地（决策日志 P1，Daniel 经 AskUserQuestion 批准）**：跨境采购 P2P
+  接入控制塔，model-first，全复用 RiskEvent→Task→治理骨架。Daniel 裁决：加 PoLine（覆盖 D2 单 SKU）+ 第一版
+  三方对账主线 4 类（R7 延误/R8 短装/R9 QC/R10 价量不符）。**Build 1/3（模型+数据）已完成并通过 controller review**：
+  ontology v0.5.0 新增 5 对象（PoLine/GoodsReceipt+行/SupplierInvoice+行）+ R7-R10/A7-A8 占位 + RiskEvent 锚点泛化
+  （可空 po_id/supplier_id/affected_po_line_ids，shipment_id 改可空——唯一碰核心对象处）；`datagen/procurement.py`
+  生成 52 PO(30 多SKU)/92 行/62 GRN/52 供票 + 注入 R7-R10 真值 31 条（R7×8/R8×8/R9×7/R10×8 + 12 干净 + 9 灰区），
+  真值存 `data/truth/`（子代理发现并守住"引擎禁读真值"铁律，§2 报告冲突不自行调和）；5 采购对象自动进标准视图。
+  **controller 独立复核**：既有 R1-R6 R/P=1.000 未扰动、真值不在 ontology.sqlite、全套回归绿（含 controller 抓到并
+  修的 standard_view 计数 15→20 + 采购 KEY_FIELDS；task 测试 FAIL 系复核链漏 seed 非 bug）。**Build 2（引擎 R7-R10
+  检测+评估）、Build 3（动作+PurchaseOrder 工作台+agent）待续。**
 
 ## v0.4 进度
 

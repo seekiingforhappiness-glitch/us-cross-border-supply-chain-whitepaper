@@ -261,7 +261,10 @@ def main():
                               "qms_admission_cases", "qms_compliance_findings",
                               "qms_logistics_plans", "qms_cost_scenarios",
                               "tms_containers", "rate_card", "ap_invoices",
-                              "ap_invoice_lines", "ap_expected_costs"]}
+                              "ap_invoice_lines", "ap_expected_costs",
+                              "srm_po_lines", "srm_goods_receipts",
+                              "srm_goods_receipt_lines", "ap_supplier_invoices",
+                              "ap_supplier_invoice_lines"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
     source_events = source_event_rows(t["tms_milestones"])
     _ensure_unique_source_events(source_events)
@@ -525,6 +528,59 @@ def main():
           ["expected_cost_id TEXT", "shipment_id TEXT", "charge_code TEXT", "container_no TEXT",
            "baseline_usd REAL", "source TEXT"], "expected_cost_id")
 
+    # P1 采购三方对账五表（srm/ap 为记录系统，直通加载 + 引用完整性入 DQ）
+    # PoLine 覆盖 D2 单 SKU 约束：采购单行为一等对象，引用既有 purchase_orders.po_id
+    table("po_lines", sorted(t["srm_po_lines"], key=lambda x: x["po_line_id"]),
+          ["po_line_id TEXT", "po_id TEXT", "sku_id TEXT", "qty INTEGER", "unit_price_usd REAL",
+           "currency TEXT", "expected_ready_date TEXT", "line_status TEXT", "as_of_date TEXT",
+           "created_at TEXT"], "po_line_id")
+    table("goods_receipts", sorted(t["srm_goods_receipts"], key=lambda x: x["grn_id"]),
+          ["grn_id TEXT", "po_id TEXT", "received_date TEXT", "status TEXT", "as_of_date TEXT",
+           "created_at TEXT"], "grn_id")
+    table("goods_receipt_lines", sorted(t["srm_goods_receipt_lines"], key=lambda x: x["grn_line_id"]),
+          ["grn_line_id TEXT", "grn_id TEXT", "po_line_id TEXT", "received_qty INTEGER",
+           "accepted_qty INTEGER", "rejected_qty INTEGER", "qc_status TEXT", "defect_ppm INTEGER",
+           "as_of_date TEXT", "created_at TEXT"], "grn_line_id")
+    table("supplier_invoices", sorted(t["ap_supplier_invoices"], key=lambda x: x["supplier_invoice_id"]),
+          ["supplier_invoice_id TEXT", "supplier_id TEXT", "po_id TEXT", "vendor_invoice_no TEXT",
+           "issue_date TEXT", "currency TEXT", "total_usd REAL", "status TEXT", "as_of_date TEXT",
+           "created_at TEXT"], "supplier_invoice_id")
+    table("supplier_invoice_lines",
+          sorted(t["ap_supplier_invoice_lines"], key=lambda x: x["supplier_invoice_line_id"]),
+          ["supplier_invoice_line_id TEXT", "supplier_invoice_id TEXT", "po_line_id TEXT",
+           "qty INTEGER", "unit_price_usd REAL", "amount_usd REAL", "as_of_date TEXT",
+           "created_at TEXT"], "supplier_invoice_line_id")
+
+    # 采购侧 DQ（引用完整性——应全为 0；total 不平也应为 0）
+    po_id_set = {r["po_id"] for r in t["srm_purchase_orders"]}
+    pol_id_set = {r["po_line_id"] for r in t["srm_po_lines"]}
+    grn_id_set = {r["grn_id"] for r in t["srm_goods_receipts"]}
+    sinv_id_set = {r["supplier_invoice_id"] for r in t["ap_supplier_invoices"]}
+    sup_id_set = {r["supplier_id"] for r in t["srm_suppliers"]}
+    sil_sum = defaultdict(float)
+    for r in t["ap_supplier_invoice_lines"]:
+        sil_sum[r["supplier_invoice_id"]] += float(r["amount_usd"])
+    dq["procurement"] = {
+        "po_lines": len(t["srm_po_lines"]),
+        "goods_receipts": len(t["srm_goods_receipts"]),
+        "goods_receipt_lines": len(t["srm_goods_receipt_lines"]),
+        "supplier_invoices": len(t["ap_supplier_invoices"]),
+        "supplier_invoice_lines": len(t["ap_supplier_invoice_lines"]),
+        "po_line_orphans": sum(1 for r in t["srm_po_lines"] if r["po_id"] not in po_id_set),
+        "grn_orphans": sum(1 for r in t["srm_goods_receipts"] if r["po_id"] not in po_id_set),
+        "grn_line_orphans": sum(1 for r in t["srm_goods_receipt_lines"]
+                                if r["grn_id"] not in grn_id_set or r["po_line_id"] not in pol_id_set),
+        "supplier_invoice_orphans": sum(1 for r in t["ap_supplier_invoices"]
+                                        if r["po_id"] not in po_id_set
+                                        or r["supplier_id"] not in sup_id_set),
+        "supplier_invoice_line_orphans": sum(
+            1 for r in t["ap_supplier_invoice_lines"]
+            if r["supplier_invoice_id"] not in sinv_id_set or r["po_line_id"] not in pol_id_set),
+        "supplier_invoice_total_imbalance": sum(
+            1 for r in t["ap_supplier_invoices"]
+            if abs(float(r["total_usd"]) - round(sil_sum[r["supplier_invoice_id"]], 2)) > 0.02),
+    }
+
     relationship_rows = build_object_relationship_rows(t, so_rows, line_rows, ship_rows, ms_rows)
     for r in relationship_rows:
         upsert_relationship(con, r["relationship_id"], r["source_type"], r["source_id"],
@@ -579,11 +635,15 @@ def main():
     ])
     # W4/W5 空表（schema 与 ontology JSON 一致）
     # P1：risk_events 增可空字段 affected_invoice_line_ids（费用场景专用，控制塔留空）
+    # P1（采购）：RiskEvent 锚点泛化——增可空 po_id/supplier_id/affected_po_line_ids
+    #   （唯一触碰核心对象处，与"加字段不联表"哲学一致）；shipment_id 随之变可空。
+    #   既有列顺序不动，新列追加在尾部；R1-R6 写入走显式列名，不受影响。
     cur.execute("""CREATE TABLE risk_events (risk_event_id TEXT PRIMARY KEY, type TEXT,
         rule_id TEXT, severity TEXT, shipment_id TEXT, affected_so_line_ids TEXT,
         affected_value_usd REAL, detected_at TEXT, root_cause TEXT, status TEXT,
         resolved_at TEXT, outcome TEXT, resolution_summary TEXT,
-        affected_invoice_line_ids TEXT)""")
+        affected_invoice_line_ids TEXT,
+        po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT)""")
     cur.execute("""CREATE TABLE tasks (task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT,
         assignee_role TEXT, priority TEXT, due_at TEXT, proposed_action TEXT,
         proposal_params TEXT, approval_status TEXT, approved_by_role TEXT,

@@ -100,6 +100,13 @@ KEY_FIELDS = {
                           "recommendation"],
     "ExpectedCost": ["shipment_id", "charge_code", "container_no", "baseline_usd"],
     "InvoiceLine": ["invoice_id", "charge_code", "container_no", "amount_usd"],
+    # P1 采购域对象（Build 1）：标准视图展示字段
+    "PoLine": ["po_id", "sku_id", "qty", "unit_price_usd", "line_status", "expected_ready_date"],
+    "GoodsReceipt": ["po_id", "received_date", "status"],
+    "GoodsReceiptLine": ["grn_id", "po_line_id", "received_qty", "accepted_qty",
+                         "rejected_qty", "qc_status", "defect_ppm"],
+    "SupplierInvoice": ["supplier_id", "po_id", "vendor_invoice_no", "total_usd", "status"],
+    "SupplierInvoiceLine": ["supplier_invoice_id", "po_line_id", "qty", "unit_price_usd", "amount_usd"],
 }
 
 # 非核心对象注册表：type → (表名, 主键列, 关键展示字段)。表名/主键来自 ontology 派生（TYPE_META），

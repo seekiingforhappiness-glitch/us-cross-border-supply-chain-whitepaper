@@ -385,6 +385,114 @@ def main():
     check("H3 doc_ref_typo 未打在任何设计船（设计船行全齐备已隐含）", design_full)
     print(f"  非设计行 {n_nd}：both={both} 仅柜={conly} 仅订舱={bonly}；typo={len(typo_rows)}")
 
+    print("== 9. 采购三方对账（P1 Build 1/3）==")
+    po_lines = load(raw_dir, "srm_po_lines")
+    grns = load(raw_dir, "srm_goods_receipts")
+    grn_lines = load(raw_dir, "srm_goods_receipt_lines")
+    sup_inv = load(raw_dir, "ap_supplier_invoices")
+    sup_inv_lines = load(raw_dir, "ap_supplier_invoice_lines")
+    proc_gt = load(truth_dir, "expected_procurement_risks")
+    pc = cfg["procurement"]
+    inj = pc["inject"]
+
+    po_ids = {r["po_id"] for r in t["srm_purchase_orders"]}
+    pol_ids = {r["po_line_id"] for r in po_lines}
+    grn_ids = {r["grn_id"] for r in grns}
+    sinv_ids = {r["supplier_invoice_id"] for r in sup_inv}
+    proc_sup_ids = {r["supplier_id"] for r in t["srm_suppliers"]}
+
+    # 9.1 规模：非空、PO 数=Σinject、行数≥PO 数（多 SKU 存在）
+    n_pos_expected = sum(inj[k] for k in ("clean", "gray", "r7", "r8", "r9", "r10"))
+    distinct_pos = {r["po_id"] for r in po_lines}
+    check("采购 PO 数 = Σinject", len(distinct_pos) == n_pos_expected,
+          f"got {len(distinct_pos)} vs {n_pos_expected}")
+    check("po_lines/grn/grn_lines/supplier_invoices/lines 均非空",
+          all([po_lines, grns, grn_lines, sup_inv, sup_inv_lines]))
+    multi_line_pos = sum(1 for pid in distinct_pos
+                         if sum(1 for l in po_lines if l["po_id"] == pid) >= 2)
+    check("存在多 SKU PO（≥2 行，覆盖 D2 单 SKU 约束）", multi_line_pos >= 10,
+          f"got {multi_line_pos}")
+
+    # 9.2 引用完整性（全部应成立）
+    check("po_lines.po_id 引用既有 purchase_orders", all(r["po_id"] in po_ids for r in po_lines))
+    check("grn.po_id 引用既有 purchase_orders", all(r["po_id"] in po_ids for r in grns))
+    check("grn_lines 引用完整（grn_id + po_line_id）",
+          all(r["grn_id"] in grn_ids and r["po_line_id"] in pol_ids for r in grn_lines))
+    check("grn_line received=accepted+rejected",
+          all(int(r["received_qty"]) == int(r["accepted_qty"]) + int(r["rejected_qty"])
+              for r in grn_lines))
+    check("supplier_invoice 引用完整（po_id + supplier_id）",
+          all(r["po_id"] in po_ids and r["supplier_id"] in proc_sup_ids for r in sup_inv))
+    check("supplier_invoice_lines 引用完整（inv + po_line）",
+          all(r["supplier_invoice_id"] in sinv_ids and r["po_line_id"] in pol_ids
+              for r in sup_inv_lines))
+    inv_sum = defaultdict(float)
+    for r in sup_inv_lines:
+        inv_sum[r["supplier_invoice_id"]] += float(r["amount_usd"])
+    check("supplier_invoice total=Σ行（±0.02）",
+          all(abs(float(i["total_usd"]) - round(inv_sum[i["supplier_invoice_id"]], 2)) <= 0.02
+              for i in sup_inv))
+
+    # 9.3 约定：币种 USD、金额正、数量正、日期在窗口内、显式 as_of
+    win_end = cfg["window"]["end"]
+    win_start = cfg["window"]["start"]
+    as_of = cfg["window"]["as_of"]
+    check("po_lines 币种全 USD、qty>0、单价>0、as_of 显式",
+          all(r["currency"] == "USD" and int(r["qty"]) > 0 and float(r["unit_price_usd"]) > 0
+              and r["as_of_date"] == as_of for r in po_lines))
+    check("收货/开票日期在数据窗口内",
+          all(win_start <= r["received_date"] <= win_end for r in grns)
+          and all(win_start <= r["issue_date"] <= win_end for r in sup_inv))
+
+    # 9.4 ground truth：rule 合法、引用完整、计数=inject、severity 合法
+    check("采购真值 rule 仅 R7-R10", all(r["rule_id"] in ("R7", "R8", "R9", "R10") for r in proc_gt))
+    check("采购真值引用完整（po_id/po_line_id/supplier_id）",
+          all(r["po_id"] in po_ids and r["po_line_id"] in pol_ids
+              and r["supplier_id"] in proc_sup_ids for r in proc_gt))
+    check("采购真值 severity 合法", all(r["severity"] in ("medium", "high") for r in proc_gt))
+    gt_by_rule = defaultdict(int)
+    for r in proc_gt:
+        gt_by_rule[r["rule_id"]] += 1
+    check("R7-R10 真值计数 = inject 配置",
+          gt_by_rule["R7"] == inj["r7"] and gt_by_rule["R8"] == inj["r8"]
+          and gt_by_rule["R9"] == inj["r9"] and gt_by_rule["R10"] == inj["r10"],
+          f"got {dict(gt_by_rule)} vs r7={inj['r7']} r8={inj['r8']} r9={inj['r9']} r10={inj['r10']}")
+    # 每个异常 PO 恰一条真值（1:1，落具体行）
+    gt_per_po = defaultdict(int)
+    for r in proc_gt:
+        gt_per_po[r["po_id"]] += 1
+    check("每个异常 PO 恰一条真值（1:1）", all(v == 1 for v in gt_per_po.values()),
+          f"多真值 PO: {[k for k, v in gt_per_po.items() if v > 1]}")
+
+    # 9.5 灰区/干净不进真值（测未来误报）；画像与真值一致
+    wp, _ep, _np = build(cfg)  # 重建取 profile/design_cases（可复现，section 1 已验证一致）
+    proc = wp["procurement"]
+    profile = proc["profile"]
+    gt_pos = {r["po_id"] for r in proc_gt}
+    clean_pos = {pid for pid, pr in profile.items() if pr == "clean"}
+    gray_pos = {pid for pid, pr in profile.items() if pr == "gray"}
+    check("干净 PO 不在真值", not (clean_pos & gt_pos), f"泄漏: {sorted(clean_pos & gt_pos)}")
+    check("灰区 PO 不在真值（测未来误报）", not (gray_pos & gt_pos),
+          f"泄漏: {sorted(gray_pos & gt_pos)}")
+    for rule, prof in (("R7", "r7"), ("R8", "r8"), ("R9", "r9"), ("R10", "r10")):
+        prof_pos = {pid for pid, pr in profile.items() if pr == prof}
+        rule_pos = {r["po_id"] for r in proc_gt if r["rule_id"] == rule}
+        check(f"{rule} 真值 PO 集合 == {prof} 画像 PO 集合", prof_pos == rule_pos,
+              f"diff: {sorted(prof_pos ^ rule_pos)}")
+
+    # 9.6 设计锚点 PD-A..PD-D 在真值且 rule 正确；PD-E/PD-F 不在真值
+    dc = proc["design_cases"]
+    gt_by_case = {r["case_id"]: r for r in proc_gt if r["case_id"]}
+    pd_rule = {"PD-A": "R7", "PD-B": "R8", "PD-C": "R9", "PD-D": "R10"}
+    check("PD-A..PD-D 设计锚点在真值且 rule 正确",
+          all(c in gt_by_case and gt_by_case[c]["rule_id"] == r for c, r in pd_rule.items()),
+          f"got {[(c, gt_by_case.get(c, {}).get('rule_id')) for c in pd_rule]}")
+    check("PD-E(clean)/PD-F(gray) 不在真值",
+          dc["PD-E"] not in gt_pos and dc["PD-F"] not in gt_pos)
+    print(f"  采购 PO={len(distinct_pos)}(多SKU {multi_line_pos}) 行={len(po_lines)} "
+          f"GRN={len(grns)} GRN行={len(grn_lines)} 供票={len(sup_inv)} 供票行={len(sup_inv_lines)}")
+    print(f"  R7-R10 真值: {dict(sorted(gt_by_rule.items()))}  设计锚点: {dc}")
+
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)
 

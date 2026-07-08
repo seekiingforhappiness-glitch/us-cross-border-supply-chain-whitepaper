@@ -1,9 +1,9 @@
 {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "name": "cross_border_unified_ontology",
-  "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账，三场景共享）",
-  "scope": "Three scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop REUSING the RiskEvent/Task closed loop (F1). Shared objects zero duplication.",
-  "authority": "Human-readable sources: control-tower-ontology-manual.md (v0.2) + admission-manual-v0.3.md + cost-manual-v0.4.md. Decisions D1-D11, E1-E5, F1-F5 govern changes. Filename kept for reference stability.",
+  "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账，四场景共享）",
+  "scope": "Four scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice) — all REUSING the RiskEvent/Task closed loop (F1/P1). Shared objects zero duplication.",
+  "authority": "Human-readable sources: control-tower-ontology-manual.md (v0.2) + admission-manual-v0.3.md + cost-manual-v0.4.md. Decisions D1-D11, E1-E5, F1-F5, P1 govern changes. Filename kept for reference stability.",
   "asOfPolicy": {
     "rule": "All engine evaluation and UI rendering take an explicit as_of_date parameter. Implicit system time is forbidden (D8)."
   },
@@ -213,12 +213,15 @@
       "statusField": "status",
       "properties": [
         {"name": "risk_event_id", "type": "string", "required": true},
-        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge"], "description": "Cost anomaly types added in v0.4 (F1: same closed loop)."},
-        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6"]},
+        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge", "supplier_delay", "short_receipt", "qc_failure", "price_qty_mismatch"], "description": "Cost anomaly types added in v0.4 (F1); procurement three-way-match types added in v0.5 (P1). Same closed loop."},
+        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"], "description": "R7-R10 = procurement three-way match (P1); detection logic lands in Build 2."},
         {"name": "severity", "type": "enum", "required": true, "values": ["medium", "high", "critical"]},
-        {"name": "shipment_id", "type": "string", "required": true},
-        {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3). Empty list for cost anomalies."},
-        {"name": "affected_invoice_line_ids", "type": "json_list", "required": false, "description": "v0.4 (P1): affected invoice lines for cost anomalies; null for logistics risks."},
+        {"name": "shipment_id", "type": "string", "required": false, "description": "Nullable since v0.5 (P1): procurement anomalies (R7-R10) anchor on po_id/supplier_id, not a shipment. Logistics/cost risks still set it."},
+        {"name": "po_id", "type": "string", "required": false, "description": "v0.5 (P1): anchor for procurement anomalies; null for logistics/cost risks. The only place RiskEvent touches a core object by fk (add-field-not-join-table philosophy)."},
+        {"name": "supplier_id", "type": "string", "required": false, "description": "v0.5 (P1): supplier accountable for the procurement anomaly; null for logistics/cost risks."},
+        {"name": "affected_po_line_ids", "type": "json_list", "required": false, "description": "v0.5 (P1): affected PoLines for procurement anomalies; null for logistics/cost risks."},
+        {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3). Empty list for cost/procurement anomalies."},
+        {"name": "affected_invoice_line_ids", "type": "json_list", "required": false, "description": "v0.4: affected cost invoice lines; null for logistics/procurement risks."},
         {"name": "affected_value_usd", "type": "number", "derived": true},
         {"name": "detected_at", "type": "date", "required": true, "description": "as_of_date at detection."},
         {"name": "root_cause", "type": "string", "required": true},
@@ -246,7 +249,7 @@
         {"name": "sla_state", "type": "enum", "required": false, "values": ["open", "due_today", "overdue"], "description": "Computed from explicit as_of_date and due_at."},
         {"name": "escalation_level", "type": "number", "required": false, "description": "M2 minimal semantics: 0 before/on due date, 1 after due date; no real notification or shift system."},
         {"name": "policy_version", "type": "string", "required": false, "description": "Demo assignment/SLA policy version."},
-        {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay"]},
+        {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay", "dispute", "accept_charge", "rebill_customer", "expedite_po", "raise_supplier_claim", "dispute_supplier_invoice", "accept_receipt_variance"], "description": "Logistics (expedite/reschedule/accept_delay), cost (dispute/accept_charge/rebill_customer, v0.4), procurement (expedite_po/raise_supplier_claim/dispute_supplier_invoice/accept_receipt_variance, v0.5/P1)."},
         {"name": "proposal_params", "type": "json", "required": false, "sensitiveSubfields": ["est_cost_usd"]},
         {"name": "approval_status", "type": "enum", "required": false, "values": ["pending", "approved", "rejected"]},
         {"name": "approved_by_role", "type": "enum", "required": false},
@@ -406,6 +409,98 @@
         {"name": "source", "type": "string", "required": true, "description": "rate_card (only source in v0.4)."}
       ],
       "dataQualityRules": ["baseline_usd > 0"]
+    },
+    {
+      "type": "PoLine",
+      "primaryKey": "po_line_id",
+      "ownerRole": "ops",
+      "statusField": "line_status",
+      "description": "P1: purchase-order line. Covers D2's single-SKU-PO constraint — a PO can now hold multiple SKUs, batch receipts, and line-level three-way match. Child of the existing PurchaseOrder (po_id fk); no new PO-header object.",
+      "properties": [
+        {"name": "po_line_id", "type": "string", "required": true},
+        {"name": "po_id", "type": "string", "required": true, "description": "References existing purchase_orders.po_id (reuse, not a new header)."},
+        {"name": "sku_id", "type": "string", "required": true, "description": "One-PO-one-supplier invariant: every line's SKU belongs to the PO's supplier."},
+        {"name": "qty", "type": "number", "required": true, "description": "Authoritative ordered quantity for the line (overrides the legacy single-SKU PO header qty)."},
+        {"name": "unit_price_usd", "type": "number", "required": true, "description": "Agreed PO unit price; basis for R10 price mismatch."},
+        {"name": "currency", "type": "enum", "required": true, "values": ["USD"]},
+        {"name": "expected_ready_date", "type": "date", "required": true, "description": "Line-level supplier ready date; basis for R7 delay. Sampled independently of the PO header date (audit view needs line-level timing control)."},
+        {"name": "line_status", "type": "enum", "required": true, "values": ["open", "partially_received", "received", "closed"]},
+        {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["po_line_id unique", "qty > 0", "unit_price_usd > 0", "po_id in purchase_orders"]
+    },
+    {
+      "type": "GoodsReceipt",
+      "primaryKey": "grn_id",
+      "ownerRole": "ops",
+      "statusField": "status",
+      "description": "P1: goods receipt note (GRN). One PO may have multiple GRNs (batch receiving); each GRN carries a received_date.",
+      "properties": [
+        {"name": "grn_id", "type": "string", "required": true},
+        {"name": "po_id", "type": "string", "required": true},
+        {"name": "received_date", "type": "date", "required": true, "description": "Compared with PoLine.expected_ready_date for R7."},
+        {"name": "status", "type": "enum", "required": true, "values": ["received", "partial", "closed"]},
+        {"name": "as_of_date", "type": "date", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["grn_id unique", "po_id in purchase_orders"]
+    },
+    {
+      "type": "GoodsReceiptLine",
+      "primaryKey": "grn_line_id",
+      "ownerRole": "ops",
+      "description": "P1: per-line receipt against a PoLine. received/accepted/rejected + QC outcome drive R8 (short receipt) and R9 (QC failure).",
+      "properties": [
+        {"name": "grn_line_id", "type": "string", "required": true},
+        {"name": "grn_id", "type": "string", "required": true},
+        {"name": "po_line_id", "type": "string", "required": true},
+        {"name": "received_qty", "type": "number", "required": true, "description": "R8: sum(received_qty) per po_line < qty (beyond tolerance) = short receipt."},
+        {"name": "accepted_qty", "type": "number", "required": true},
+        {"name": "rejected_qty", "type": "number", "required": true, "description": "received - accepted."},
+        {"name": "qc_status", "type": "enum", "required": true, "values": ["passed", "failed", "waived"], "description": "R9: failed = QC reject."},
+        {"name": "defect_ppm", "type": "number", "required": true, "description": "R9: defect_ppm > config threshold also flags QC even when not fully failed."},
+        {"name": "as_of_date", "type": "date", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["grn_line_id unique", "received_qty = accepted_qty + rejected_qty", "grn_id in goods_receipts", "po_line_id in po_lines"]
+    },
+    {
+      "type": "SupplierInvoice",
+      "primaryKey": "supplier_invoice_id",
+      "ownerRole": "finance",
+      "statusField": "status",
+      "description": "P1: supplier AP invoice, INDEPENDENT object (not the freight Invoice) so the cost-reconciliation scenario stays clean. Basis for R10 three-way match against PO and GRN.",
+      "properties": [
+        {"name": "supplier_invoice_id", "type": "string", "required": true},
+        {"name": "supplier_id", "type": "string", "required": true},
+        {"name": "po_id", "type": "string", "required": true},
+        {"name": "vendor_invoice_no", "type": "string", "required": true, "description": "Supplier's own number; real-world reconciliation key."},
+        {"name": "issue_date", "type": "date", "required": true},
+        {"name": "currency", "type": "enum", "required": true, "values": ["USD"]},
+        {"name": "total_usd", "type": "number", "required": true, "description": "Must equal sum of line amounts (DQ)."},
+        {"name": "status", "type": "enum", "required": true, "values": ["received", "matched", "disputed", "approved"]},
+        {"name": "as_of_date", "type": "date", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["supplier_invoice_id unique", "total_usd == sum(lines.amount_usd)", "po_id in purchase_orders", "supplier_id in suppliers"]
+    },
+    {
+      "type": "SupplierInvoiceLine",
+      "primaryKey": "supplier_invoice_line_id",
+      "ownerRole": "finance",
+      "description": "P1: per-line supplier invoice charge against a PoLine. unit_price vs PoLine.unit_price drives R10 (price/qty mismatch).",
+      "properties": [
+        {"name": "supplier_invoice_line_id", "type": "string", "required": true},
+        {"name": "supplier_invoice_id", "type": "string", "required": true},
+        {"name": "po_line_id", "type": "string", "required": true},
+        {"name": "qty", "type": "number", "required": true},
+        {"name": "unit_price_usd", "type": "number", "required": true, "description": "R10: |unit_price - po_line.unit_price| / po_line.unit_price > config.price_tol."},
+        {"name": "amount_usd", "type": "number", "required": true, "description": "qty x unit_price (DQ)."},
+        {"name": "as_of_date", "type": "date", "required": true},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["supplier_invoice_line_id unique", "amount_usd == qty * unit_price_usd", "supplier_invoice_id in supplier_invoices", "po_line_id in po_lines"]
     }
   ],
   "links": [
@@ -431,7 +526,19 @@
     {"linkType": "invoice_has_line", "source": "Invoice", "target": "InvoiceLine", "cardinality": "1:N"},
     {"linkType": "line_bills_container", "source": "InvoiceLine", "target": "Container", "cardinality": "N:1", "rule": "nullable for shipment-level charges"},
     {"linkType": "expected_cost_of_shipment", "source": "ExpectedCost", "target": "Shipment", "cardinality": "N:1"},
-    {"linkType": "risk_affects_invoice_line", "source": "RiskEvent", "target": "InvoiceLine", "cardinality": "N:M", "via": "affected_invoice_line_ids (P1)"}
+    {"linkType": "risk_affects_invoice_line", "source": "RiskEvent", "target": "InvoiceLine", "cardinality": "N:M", "via": "affected_invoice_line_ids (P1)"},
+    {"linkType": "po_has_line", "source": "PurchaseOrder", "target": "PoLine", "cardinality": "1:N", "rule": "P1: PoLine covers D2 single-SKU constraint; reuse existing PurchaseOrder as header"},
+    {"linkType": "po_line_for_sku", "source": "PoLine", "target": "Sku", "cardinality": "N:1"},
+    {"linkType": "grn_for_po", "source": "GoodsReceipt", "target": "PurchaseOrder", "cardinality": "N:1", "rule": "one PO may have multiple GRNs (batch receiving)"},
+    {"linkType": "grn_has_line", "source": "GoodsReceipt", "target": "GoodsReceiptLine", "cardinality": "1:N"},
+    {"linkType": "grn_line_for_po_line", "source": "GoodsReceiptLine", "target": "PoLine", "cardinality": "N:1", "rule": "three-way match anchor: receipt vs order"},
+    {"linkType": "supplier_invoice_for_po", "source": "SupplierInvoice", "target": "PurchaseOrder", "cardinality": "N:1"},
+    {"linkType": "supplier_invoice_from_supplier", "source": "SupplierInvoice", "target": "Supplier", "cardinality": "N:1"},
+    {"linkType": "supplier_invoice_has_line", "source": "SupplierInvoice", "target": "SupplierInvoiceLine", "cardinality": "1:N"},
+    {"linkType": "supplier_invoice_line_for_po_line", "source": "SupplierInvoiceLine", "target": "PoLine", "cardinality": "N:1", "rule": "three-way match anchor: invoice vs order"},
+    {"linkType": "risk_on_po", "source": "RiskEvent", "target": "PurchaseOrder", "cardinality": "N:1", "rule": "P1: nullable anchor for procurement anomalies (R7-R10)"},
+    {"linkType": "risk_on_supplier", "source": "RiskEvent", "target": "Supplier", "cardinality": "N:1", "rule": "P1: nullable anchor for procurement anomalies"},
+    {"linkType": "risk_affects_po_line", "source": "RiskEvent", "target": "PoLine", "cardinality": "N:M", "via": "affected_po_line_ids (P1)"}
   ],
   "stateMachines": {
     "Shipment": {
@@ -545,9 +652,13 @@
         "accept_delay": {"reason": "string"},
         "dispute": {"reason": "string", "disputed_amount_usd": "number"},
         "accept_charge": {"reason": "string"},
-        "rebill_customer": {"rebill_amount_usd": "number", "incoterm_basis": "string"}
+        "rebill_customer": {"rebill_amount_usd": "number", "incoterm_basis": "string"},
+        "expedite_po": {"reason": "string", "expected_ready_date": "date", "est_cost_usd": "number"},
+        "raise_supplier_claim": {"reason": "string", "claim_amount_usd": "number", "po_line_id": "string"},
+        "dispute_supplier_invoice": {"reason": "string", "disputed_amount_usd": "number", "supplier_invoice_id": "string"},
+        "accept_receipt_variance": {"reason": "string"}
       },
-      "executorsNote": "v0.4 (P3): executors extended to ops/cs/finance; cost proposals belong to finance.",
+      "executorsNote": "v0.4 (P3): executors extended to ops/cs/finance; cost proposals belong to finance. v0.5 (P1): procurement proposals (expedite_po/raise_supplier_claim -> ops; dispute_supplier_invoice -> finance; accept_receipt_variance -> ops). Params schema only; wiring lands in Build 2.",
       "preconditions": ["Task=assigned", "params match schema", "reschedule: new_promise_date > current promise"],
       "successEffects": ["Task -> in_progress, approval_status=pending", "proposal_actor_id/proposal_actor_role recorded", "RiskEvent -> mitigating"],
       "failureHandling": ["schema validation fails -> reject, task unchanged"],
@@ -636,6 +747,26 @@
       "successEffects": ["case -> rejected | needs_more_info"],
       "failureHandling": ["missing reason/documents -> reject"],
       "audit": ["decision", "missing_documents", "rejection_reason"]
+    },
+    {
+      "id": "A7", "name": "RecordGoodsReceipt",
+      "signature": "record_goods_receipt(po_id, received_date, lines, actor, role, as_of_date=...) -> Result",
+      "executors": ["ops", "system"],
+      "placeholder": "P1 Build 1 defines the shape only; ingest + R7/R8/R9 detection lands in Build 2.",
+      "preconditions": ["po_id in purchase_orders", "each line references a valid po_line_id", "received_qty = accepted_qty + rejected_qty"],
+      "successEffects": ["append GoodsReceipt + GoodsReceiptLines", "advance po_line.line_status", "trigger procurement risk detection (R7/R8/R9) as_of received_date"],
+      "failureHandling": ["unknown po_line -> reject", "qty imbalance -> reject and count in DQ"],
+      "audit": ["po_id", "received_date", "rules_triggered"]
+    },
+    {
+      "id": "A8", "name": "MatchSupplierInvoice",
+      "signature": "match_supplier_invoice(supplier_invoice_id, actor, role, as_of_date=...) -> Result",
+      "executors": ["finance", "system"],
+      "placeholder": "P1 Build 1 defines the shape only; three-way match + R10 detection lands in Build 2.",
+      "preconditions": ["invoice exists and status='received'", "issue_date <= as_of_date (D8)"],
+      "successEffects": ["three-way match invoice line vs PoLine vs GoodsReceiptLine", "no anomaly -> status=matched/approved; R10 mismatch -> status=under review + CreateRiskEvent"],
+      "failureHandling": ["total_usd != sum(lines) -> reject and count in DQ"],
+      "audit": ["supplier_invoice_id", "match_result", "rules_triggered"]
     }
   ],
   "riskRules": [
@@ -644,7 +775,11 @@
     {"id": "R3", "type": "stalled", "logic": "status=in_transit AND as_of_date - latest milestone.event_time >= config.stall_days", "severity": "medium"},
     {"id": "R4", "type": "rate_overbilling", "logic": "invoice_line.amount > expected_cost.baseline * (1 + config.rate_tolerance); affected_value = overbilled portion", "severity": "overbilling >20%: high; else medium"},
     {"id": "R5", "type": "duplicate_charge", "logic": "same (shipment, charge_code, container_no) billed on >1 line across/within invoices; lines beyond first are duplicates", "severity": "high"},
-    {"id": "R6", "type": "unplanned_charge", "logic": "line whose charge_code has no ExpectedCost baseline (DET/DEM/ACC/CHS); DET/DEM on delayed shipments must cite delay attribution in root_cause (F4)", "severity": "amount > 500: high; else medium"}
+    {"id": "R6", "type": "unplanned_charge", "logic": "line whose charge_code has no ExpectedCost baseline (DET/DEM/ACC/CHS); DET/DEM on delayed shipments must cite delay attribution in root_cause (F4)", "severity": "amount > 500: high; else medium"},
+    {"id": "R7", "type": "supplier_delay", "logic": "P1: max(goods_receipt.received_date over a po_line's grn_lines) > po_line.expected_ready_date + config.receipt_delay_tol_days. Detection logic lands in Build 2.", "severity": "excess (delay - tol) > 7d: high; else medium"},
+    {"id": "R8", "type": "short_receipt", "logic": "P1: sum(grn_line.received_qty) per po_line < po_line.qty * (1 - config.short_qty_tol). Detection logic lands in Build 2.", "severity": "shortfall > 10% of qty: high; else medium"},
+    {"id": "R9", "type": "qc_failure", "logic": "P1: any grn_line with qc_status='failed' OR defect_ppm > config.defect_ppm_threshold for a po_line. Detection logic lands in Build 2.", "severity": "qc_status=failed: high; ppm-over-threshold only: medium"},
+    {"id": "R10", "type": "price_qty_mismatch", "logic": "P1: |supplier_invoice_line.unit_price_usd - po_line.unit_price_usd| / po_line.unit_price_usd > config.price_tol (or invoice qty != ordered/received). Detection logic lands in Build 2.", "severity": "overbill > 10%: high; else medium"}
   ],
   "config": {
     "customs_buffer_days": 3,
@@ -652,7 +787,11 @@
     "stall_days": 5,
     "rate_tolerance": 0.05,
     "unplanned_high_threshold_usd": 500,
-    "note": "Values live in config/*.yaml; these are defaults, not hardcoded constants."
+    "receipt_delay_tol_days": 3,
+    "short_qty_tol": 0.03,
+    "defect_ppm_threshold": 3000,
+    "price_tol": 0.02,
+    "note": "Values live in config/*.yaml (procurement.* for R7-R10); these are defaults, not hardcoded constants."
   },
   "incotermRebillMatrix": {
     "DDP": [],
