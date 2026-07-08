@@ -13,6 +13,8 @@ import sqlite3
 import yaml
 
 from app.actions import assign_task, propose_mitigation, _log, ROLE_PERMS
+from app.admission_actions import (ADM_PERMS, create_admission_case, run_compliance_precheck,
+                                   build_logistics_plan, calculate_cost_scenario)
 from engine.graph import explain_path
 
 AI_ACTOR = "ai-agent"
@@ -37,11 +39,19 @@ ADMISSION_READ_TOOLS = {"list_admission_cases", "get_admission_context"}
 COST_READ_ROLES = {"ops", "finance", "manager"}
 ADMISSION_READ_ROLES = {"ops", "finance", "manager", "sales", "compliance"}
 WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation"}
+# 准入准备动作 B1-B4（AdmissionCase 切片，同 RiskEvent 写工具模式：白名单由 ADM_PERMS gate，不复制权限）。
+# B5/B6（approve_quote_decision/reject_or_request_more_info）**永不**出现在此——它们在 FORBIDDEN_TOOLS，
+# agent 只做准备动作、不夺审批/拒接决策（maker-checker，原则2）。
+ADMISSION_WRITE_PERM = {"create_admission_case": "CreateAdmissionCase",
+                        "run_compliance_precheck": "RunCompliancePrecheck",
+                        "build_logistics_plan": "BuildLogisticsPlan",
+                        "calculate_cost_scenario": "CalculateCostScenario"}
+ALL_WRITE_PERM = {**WRITE_TOOL_PERM, **ADMISSION_WRITE_PERM}
 
 
 def allowed_tools_for_role(role):
-    """该 role 会话可用的工具集：读工具按域 scoping + 写工具经 ROLE_PERMS gate。
-    approve/close 对任何 role 都不在此集合（FORBIDDEN_TOOLS，原则2：agent 只提案不审批）。"""
+    """该 role 会话可用的工具集：读工具按域 scoping + 写工具经 ROLE_PERMS/ADM_PERMS gate。
+    approve/close/审批/拒接对任何 role 都不在此集合（FORBIDDEN_TOOLS，原则2：agent 只准备不决策）。"""
     tools = set(RISK_READ_TOOLS)
     if role in COST_READ_ROLES:
         tools |= COST_READ_TOOLS
@@ -49,6 +59,9 @@ def allowed_tools_for_role(role):
         tools |= ADMISSION_READ_TOOLS
     for tool, perm in WRITE_TOOL_PERM.items():
         if role in ROLE_PERMS[perm]:
+            tools.add(tool)
+    for tool, perm in ADMISSION_WRITE_PERM.items():  # B1-B4 准备动作按 ADM_PERMS gate
+        if role in ADM_PERMS[perm]:
             tools.add(tool)
     return tools
 
@@ -123,6 +136,31 @@ TOOL_DEFS = [
          "proposed_action": {"type": "string", "enum": ["reschedule", "expedite", "accept_delay"]},
          "proposal_params": {"type": "object"}},
          "required": ["task_id", "proposed_action", "proposal_params"]}},
+    # ---- 准入准备动作 B1-B4（AdmissionCase 切片；按会话 role 经 ADM_PERMS gate，B5/B6 永不注册）----
+    {"name": "create_admission_case",
+     "description": "B1 建案（仅销售）：为 candidate SKU 建准入案。AI 准备动作之一，不做审批",
+     "input_schema": {"type": "object", "properties": {
+         "customer_id": {"type": "string"}, "sku_id": {"type": "string"},
+         "request_type": {"type": "string"}, "incoterm_candidate": {"type": "string"},
+         "target_launch_date": {"type": "string"}, "monthly_order_estimate": {"type": "integer"}},
+         "required": ["customer_id", "sku_id", "request_type", "incoterm_candidate",
+                      "target_launch_date", "monthly_order_estimate"]}},
+    {"name": "run_compliance_precheck",
+     "description": "B2 合规预审（仅合规）：提交 findings 列表，风险等级重算。AI 准备动作，不做审批",
+     "input_schema": {"type": "object", "properties": {
+         "admission_case_id": {"type": "string"},
+         "findings": {"type": "array", "items": {"type": "object"}}},
+         "required": ["admission_case_id", "findings"]}},
+    {"name": "build_logistics_plan",
+     "description": "B3 物流方案（仅运营）：建方案，DDP 门禁自动校验。AI 准备动作，不做审批",
+     "input_schema": {"type": "object", "properties": {
+         "admission_case_id": {"type": "string"}, "plan": {"type": "object"}},
+         "required": ["admission_case_id", "plan"]}},
+    {"name": "calculate_cost_scenario",
+     "description": "B4 成本情景（仅财务）：算成本与毛利。AI 准备动作，不做审批/拒接决策",
+     "input_schema": {"type": "object", "properties": {
+         "logistics_plan_id": {"type": "string"}, "scenario": {"type": "object"}},
+         "required": ["logistics_plan_id", "scenario"]}},
 ]
 
 
@@ -130,15 +168,17 @@ class AgentSession:
     """一次 AI 会话的工具执行环境。所有调用统一经 dispatch，越权/未知工具拒绝并审计。"""
 
     def __init__(self, db_path="data/ontology.sqlite", config_path="config/datagen.yaml",
-                 role=AI_ROLE, focus_risk_event_id=None):
+                 role=AI_ROLE, focus_risk_event_id=None, focus_admission_case_id=None):
         self.con = sqlite3.connect(db_path)
         self.con.row_factory = sqlite3.Row
         cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
         self.as_of = cfg["window"]["as_of"]
         self.buf = cfg["buffers"]["customs_days"] + cfg["buffers"]["lastmile_days"]
         # permission-aware 注入：当前 role 决定工具集 + 脱敏；focus 决定对象 scoping
+        # （RiskEvent 与 AdmissionCase 两类 focus 同一机制，只是聚焦不同对象及其邻居）
         self.role = role
         self.focus_risk_event_id = focus_risk_event_id
+        self.focus_admission_case_id = focus_admission_case_id
         self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
@@ -255,9 +295,43 @@ class AgentSession:
     def list_admission_cases(self, status=None):
         sql = """SELECT admission_case_id, case_title, customer_id, sku_id, incoterm_candidate,
                         risk_level, status, decision FROM admission_cases"""
-        rows = self._rows(sql + " WHERE status=?" if status else sql,
-                          *([status] if status else []))
-        return {"count": len(rows), "cases": rows}
+        # 对象 scoping：focus 到某案时检索默认聚焦该案（不是全库），与 focus_risk 同规
+        clauses, params = [], []
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        if self.focus_admission_case_id:
+            clauses.append("admission_case_id=?")
+            params.append(self.focus_admission_case_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        rows = self._rows(sql, *params)
+        out = {"count": len(rows), "cases": rows}
+        if self.focus_admission_case_id:
+            out["focus_scope"] = {"admission_case_id": self.focus_admission_case_id}
+        return out
+
+    def focus_admission_bundle(self):
+        """对象 scoping 汇总：把检索聚焦到本会话 focus 的准入案及其邻居（Customer / Sku /
+        ComplianceFinding / LogisticsPlan / CostScenario），而非全库。成本字段随 role 脱敏
+        （复用 get_admission_context）。无 focus 返回 error。"""
+        aid = self.focus_admission_case_id
+        if not aid:
+            return {"error": "本会话未 focus 到任何 admission case"}
+        ctx = self.get_admission_context(aid)
+        if "error" in ctx:
+            return ctx
+        neighbors = {
+            "customer_id": ctx["customer"]["customer_id"],
+            "sku_id": ctx["case"]["sku_id"],
+            "compliance_finding_ids": [f["compliance_finding_id"] for f in ctx["findings"]],
+            "logistics_plan_ids": [p["logistics_plan_id"] for p in ctx["plans"]],
+            "cost_scenario_ids": [s.get("cost_scenario_id") for s in ctx["cost_scenarios"]],
+        }
+        return {"focus_admission_case_id": aid, "case": ctx["case"], "customer": ctx["customer"],
+                "findings": ctx["findings"], "plans": ctx["plans"],
+                "cost_scenarios": ctx["cost_scenarios"], "neighbors": neighbors,
+                "note": f"object-scoped to {aid} and neighbors; role={self.role}"}
 
     def get_admission_context(self, admission_case_id):
         case = self._rows("SELECT * FROM admission_cases WHERE admission_case_id=?",
@@ -353,11 +427,31 @@ class AgentSession:
         return propose_mitigation(self.con, task_id, proposed_action, proposal_params,
                                   actor=AI_ACTOR, role=self.role, as_of=self.as_of)
 
+    # 准入准备动作 B1-B4：role 随会话注入，动作层 ADM_PERMS + 门禁再校验一次（双闸）。
+    def _create_admission_case(self, customer_id, sku_id, request_type, incoterm_candidate,
+                               target_launch_date, monthly_order_estimate):
+        return create_admission_case(self.con, customer_id, sku_id, request_type, incoterm_candidate,
+                                     target_launch_date, monthly_order_estimate,
+                                     actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+
+    def _run_compliance_precheck(self, admission_case_id, findings):
+        return run_compliance_precheck(self.con, admission_case_id, findings,
+                                       actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+
+    def _build_logistics_plan(self, admission_case_id, plan):
+        return build_logistics_plan(self.con, admission_case_id, plan,
+                                    actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+
+    def _calculate_cost_scenario(self, logistics_plan_id, scenario):
+        return calculate_cost_scenario(self.con, logistics_plan_id, scenario,
+                                       actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+
     def _audit_denied(self, tool_name, args, result):
         """把一次被拒的调用写入 action_log（越权/越域一律留痕，AI 没有静默后门）。"""
         cur = self.con.cursor()
         target = str(args.get("task_id") or args.get("risk_event_id") or
-                     args.get("admission_case_id") or args.get("invoice_id") or "?")
+                     args.get("admission_case_id") or args.get("logistics_plan_id") or
+                     args.get("invoice_id") or args.get("sku_id") or "?")
         _log(cur, AI_ACTOR, self.role, tool_name, target, args, self.as_of, result)
         self.con.commit()
 
@@ -380,12 +474,16 @@ class AgentSession:
                     "get_invoice_context": self.get_invoice_context,
                     "explain_relationship_path": self.explain_relationship_path,
                     "assign_task": self._assign_task,
-                    "propose_mitigation": self._propose_mitigation}
+                    "propose_mitigation": self._propose_mitigation,
+                    "create_admission_case": self._create_admission_case,
+                    "run_compliance_precheck": self._run_compliance_precheck,
+                    "build_logistics_plan": self._build_logistics_plan,
+                    "calculate_cost_scenario": self._calculate_cost_scenario}
         if tool_name not in handlers:
             return {"refused": True, "reason": f"未注册的工具 {tool_name}"}
         # 按 role scoping：已知工具但不在本会话角色工具集 → 拒绝并审计（越权写 / 越域读）
         if tool_name not in self.allowed_tools:
-            is_write = tool_name in WRITE_TOOL_PERM
+            is_write = tool_name in ALL_WRITE_PERM
             self._audit_denied(tool_name, args,
                                f"denied: tool not available to role={self.role}"
                                + (" (over-role write)" if is_write else " (out-of-domain read)"))

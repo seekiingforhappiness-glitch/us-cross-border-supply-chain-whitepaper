@@ -90,6 +90,13 @@
   （工具层+动作层双闸）。验证：ROLE_PERMS/maker-checker 未改（diff 空）、agent.evaluate 不回归、engine R/P=1.000、
   test_object_workbench 35 断言全绿、三角色 UI 0 异常。**可议取舍**：AI 默认 role=ops 保留全域读工具（含 cost/admission）
   以不回归既有 agent 评估——若要收紧 ops 的成本域可见性，需同步改 agent eval 期望。
+- **对象工作台切片二（AdmissionCase）已完成并通过 controller review**：把 RiskEvent 切片的模式**复制**到准入
+  6 角色接力工作流——复用 AgentSession（加 focus_admission_case_id）+ `app/object_workbench.py` 扩展 AdmissionCase
+  富工作台（案件属性 + ComplianceFinding/LogisticsPlan/CostScenario 关联对象 + 角色可用 B1-B4 action + 对象级 agent 面板）。
+  **安全铁律**：B5(approve_quote,G1/G2/G3)/B6(reject) 加入 FORBIDDEN_TOOLS、对任何角色都不注册为 agent 工具。
+  **controller 独立对抗验证**：manager agent 注入 approve/reject → 均被拒；直调动作层错误角色 ok=False（双闸）。
+  ADM_PERMS/门禁未改（diff 空）、agent.evaluate+RiskEvent 切片不回归、engine R/P=1.000、admission 工作台 34 断言全绿、
+  四角色 UI 0 异常。**→ 对象级 agent 模式现已在 2 对象 / 2 场景验证泛化，可继续复制到 Task/Invoice。**
 
 ## v0.4 进度
 

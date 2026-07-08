@@ -1049,6 +1049,10 @@ def render_adm_tab():
                     show_result(reject_or_request_more_info(
                         db(), asel, b6_d, [x.strip() for x in b6_m.split(";") if x.strip()],
                         b6_r, actor=actor, role=role, as_of=AS_OF))
+    # 对象工作台入口：点选的准入案 → 进入 AdmissionCase 富工作台（同 RiskEvent 的 focus 机制）
+    st.divider()
+    st.session_state["focus_admission_case_id"] = asel
+    object_workbench.render_admission_object_workbench(asel, role, actor, AS_OF, db, render_table)
 
 # ---------- 审计日志 ----------
 def render_log_tab():
