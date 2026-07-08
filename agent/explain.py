@@ -99,7 +99,8 @@ def build_invoice_briefing(session, invoice_id):
     """确定性发票对账简报（Invoice 对象工作台的无 key fallback）：逐行 amount vs baseline 差异、
     异常标记、关联费用风险，并给出 dispute 提案草案（proposal-only）。
 
-    红线：① 对账金额对 AI 可见（对账数据非敏感，与 get_invoice_context 同口径，非 CostScenario 脱敏）；
+    红线：① 对账金额随 role 脱敏（与 get_invoice_context / UI mask_cost 同口径，收敛后一致）——
+    成本不可见角色（如 ops）拿到掩码值时不做数值汇总，如实以掩码呈现，不臆测金额；
     ② rebill_customer 是否放行由 G4 incoterm 责任门禁在**审批时**判定，AI 只提示不决策不审批；
     ③ needs_human_approval 恒 true——AI 永远不是审批入口（原则2）。"""
     from app.actions import REBILL_MATRIX  # 局部 import 避免 agent↔app 环形依赖
@@ -108,10 +109,12 @@ def build_invoice_briefing(session, invoice_id):
         return ctx
     inv, lines, ship = ctx["invoice"], ctx["lines"], ctx.get("shipment")
     anomaly_lines = [ln for ln in lines if ln.get("is_anomaly")]
-    over_lines = [ln for ln in lines if ln.get("diff_usd") is not None and ln["diff_usd"] > 0]
+    # 成本掩码角色下 diff_usd 是掩码串——只对真数值做汇总（掩码值不参与、不臆测金额）
+    over_lines = [ln for ln in lines
+                  if isinstance(ln.get("diff_usd"), (int, float)) and ln["diff_usd"] > 0]
     total_over = round(sum(ln["diff_usd"] for ln in over_lines), 2)
     disputed_amount = round(sum(ln["diff_usd"] for ln in anomaly_lines
-                                if ln.get("diff_usd") is not None), 2)
+                                if isinstance(ln.get("diff_usd"), (int, float))), 2)
     citations = {invoice_id, inv["shipment_id"]} | {ln["invoice_line_id"] for ln in lines}
     # 关联风险：本票 shipment 上 flag 了本发票账单行的费用类风险（R4/R5/R6）
     line_ids = {ln["invoice_line_id"] for ln in lines}

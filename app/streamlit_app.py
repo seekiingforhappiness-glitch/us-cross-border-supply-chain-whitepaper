@@ -40,13 +40,15 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
 try:
     from app.rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
     from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
-                                risk_in_region_scope, scope_for_role)
+                                risk_in_region_scope, scope_for_role,
+                                audit_region_index, audit_in_scope)
     from app import object_workbench
     from app import standard_object_view as sov
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
-                            risk_in_region_scope, scope_for_role)
+                            risk_in_region_scope, scope_for_role,
+                            audit_region_index, audit_in_scope)
     import object_workbench
     import standard_object_view as sov
 
@@ -1071,11 +1073,19 @@ def render_adm_tab():
     st.session_state["focus_admission_case_id"] = asel
     object_workbench.render_admission_object_workbench(asel, role, actor, AS_OF, db, render_table)
 
-# ---------- 审计日志 ----------
+# ---------- 审计日志（ops/compliance/manager 可见；按 data_scope 过滤，manager 全量）----------
 def render_log_tab():
     only_bad = st.checkbox("只看被拒/越权", value=False)
     logs = rows(f"""SELECT * FROM action_log {"WHERE result != 'ok' AND result NOT IN ('created','merged')" if only_bad else ""}
                     ORDER BY log_id DESC LIMIT 200""")
+    # 行级数据范围：按目标对象 region 过滤（team-region）；manager 恒 all 不受限看全量（口径收敛）。
+    scope = scope_for_role(role, "team")
+    if scope.mode != "all":
+        with db() as con:
+            ridx = audit_region_index(con)
+        logs = [x for x in logs if audit_in_scope(scope, x["target_object_id"], ridx)]
+        st.caption(f"数据范围：{scope.label}（仅本区域数据范围内对象的审计；manager 视图为全量，"
+                   f"切换角色即见差异）。当前 {len(logs)} 条。")
     render_table([{"#": x["log_id"], "操作人": x["actor"], "角色": x["role"], "动作": x["action"],
                    "对象": x["target_object_id"], "参数": x["params_json"],
                    "as_of": x["as_of_date"], "结果": x["result"]} for x in logs],

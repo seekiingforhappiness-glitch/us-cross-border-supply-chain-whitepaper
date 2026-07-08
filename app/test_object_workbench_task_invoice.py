@@ -195,12 +195,22 @@ def main():
     check("④ 脱敏不误伤非金额字段（charge_code/异常标记仍可见）",
           all(l["charge_code"] for l in wb_i_ops["lines"])
           and any(l["is_anomaly"] for l in wb_i_ops["lines"]))
-    # 有意的口径差异：agent 对账工具 get_invoice_context 对 ops 仍返回真实金额（对账数据非敏感，
-    # 供对象级 agent 分析费用差异/起草 dispute）——本切片不改 agent 口径，工作台呈现表另按 mask_cost 脱敏。
+    # 口径收敛：agent 对账工具 get_invoice_context 现与 UI 费用工作台**同一口径**——ops 掩码、finance 可见，
+    # 「agent 看得到的 == UI 看得到的」逐字一致（不再有此前的有意口径差异）。
     ctx_ops = AgentSession(db_path=str(tmp), role="ops").dispatch(
         "get_invoice_context", {"invoice_id": INV})
-    check("④ get_invoice_context 对 ops 仍返回真实金额（对账数据非敏感既定口径，与呈现表口径有意不同）",
-          isinstance(ctx_ops["invoice"]["total_usd"], (int, float)))
+    ctx_fin = AgentSession(db_path=str(tmp), role="finance").dispatch(
+        "get_invoice_context", {"invoice_id": INV})
+    check("④ get_invoice_context 对 ops 掩码金额（total + 每行金额/基准/差异，与 UI mask_cost 收敛一致）",
+          ctx_ops["invoice"]["total_usd"] == MASK
+          and all(l["amount_usd"] == MASK and l["diff_usd"] == MASK for l in ctx_ops["lines"]),
+          str(ctx_ops["invoice"]["total_usd"]))
+    check("④ get_invoice_context 对 finance 返回真实金额（合法可见，与 UI 一致）",
+          isinstance(ctx_fin["invoice"]["total_usd"], (int, float))
+          and all(isinstance(l["amount_usd"], (int, float)) for l in ctx_fin["lines"]))
+    # 收敛后 agent 工具与 UI 工作台脱敏结论逐字一致（同一 role 下掩码判定相同）
+    check("④ 收敛：get_invoice_context 与 build_invoice_workbench 对 ops 的 total 掩码判定一致",
+          (ctx_ops["invoice"]["total_usd"] == MASK) == (wb_i_ops["invoice"]["total_usd"] == MASK))
 
     print("== ⑤ 无 API key fallback：确定性 task/invoice 简报可跑 ==")
     ts = owb.make_task_agent_session("ops", TASK, db_path=str(tmp))

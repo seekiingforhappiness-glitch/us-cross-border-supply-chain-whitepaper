@@ -114,6 +114,16 @@
   **controller 独立复核**：15/15 非核心类型 build 非空标准视图（Shipment 7 关联/SalesOrderLine 4 关联等）、只读无 action 键、
   Customer.tier 对 ops 脱敏 cs 可见、四富工作台+所有既有测试无回归、engine R/P=1.000、六角色 UI 0 异常。
   **→ 全部 19 对象类型现均有"归宿"：4 核心富工作台+permission-aware agent，15 非核心标准视图，对象图可导航。**
+- **三处数据可见性口径已收敛到教科书级（agent 完全继承 UI 数据范围，通过 controller review）**：
+  ① 审计日志 → ops+compliance+manager 可见、按 region data_scope 过滤（manager 全量）；
+  ② agent 读工具统一按角色脱敏（get_invoice_context 等与 UI object_workbench/standard_view 逐字一致，共享常量）；
+  ③ invoice-agent 成本对 ops 脱敏（此前未脱敏，现收敛）。为此把 agent.evaluate 22 题**原则性重定角色**
+  （成本题→finance、准入→compliance/sales、越权题 Q13/Q20→manager/finance 反而强化）——**无删断言、无放宽判定**
+  （controller 逐行审 diff：forbidden 值未变、越权断言更强）。新增 `app/test_scope_parity.py` 证明 agent 范围==UI 范围。
+  **controller 独立复核**：scope_parity 全绿、get_invoice_context(ops)掩码/(finance)可见、四对象越权杀手仍全过、
+  FORBIDDEN/ROLE_PERMS/ADM_PERMS 未削弱（diff 空）、agent.evaluate 22/22、engine R/P=1.000、六角色 UI 0 异常。
+  **诚实标注**：审计 region 过滤在全 US 种子下 ops/compliance 实际看到与 manager 同（机制真实，多区域部署即分化）。
+  → 前述三个"待 Daniel 裁决"口径项均已按 Foundry 理想收敛闭合。
 
 ## v0.4 进度
 

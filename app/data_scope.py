@@ -129,3 +129,37 @@ def risk_in_region_scope(scope: Scope, dest_locode: Optional[str]) -> bool:
     if scope.mode == "all":
         return True
     return region_of_locode(dest_locode) == scope.region
+
+
+def audit_region_index(con) -> dict:
+    """{target_object_id: region} for 审计日志 data-scoping。
+
+    把审计条目的目标对象解析到其 shipment 目的地 region（复用 region_of_locode），覆盖审计里
+    最常见的目标类型：Shipment / RiskEvent / Task（经父风险→货运）/ Invoice（经货运）。与货运无
+    直接锚点的类型（准入案/方案/情景/合规发现 等）不入表——由 audit_in_scope 兜底为「查看者本区域」，
+    以免把治理审计（如准入动作）对本区域 compliance 过度隐藏。纯读，不写库。"""
+    idx: dict = {}
+    queries = (
+        "SELECT shipment_id, destination_port_locode FROM shipments",
+        """SELECT re.risk_event_id, s.destination_port_locode FROM risk_events re
+           JOIN shipments s ON s.shipment_id=re.shipment_id""",
+        """SELECT t.task_id, s.destination_port_locode FROM tasks t
+           JOIN risk_events re ON re.risk_event_id=t.risk_event_id
+           JOIN shipments s ON s.shipment_id=re.shipment_id""",
+        """SELECT iv.invoice_id, s.destination_port_locode FROM invoices iv
+           JOIN shipments s ON s.shipment_id=iv.shipment_id""",
+    )
+    for sql in queries:
+        for r in con.execute(sql):
+            idx[r[0]] = region_of_locode(r[1])
+    return idx
+
+
+def audit_in_scope(scope: Scope, target_object_id: Optional[str], region_index: dict) -> bool:
+    """一条审计条目（按其目标对象 region）是否落在角色数据范围内。
+
+    manager/all → 恒 True（监督全局，看全量）。其余按 team-region 过滤：目标 region == 本区域即命中；
+    region_index 未覆盖的目标（无货运锚点的准入/方案 等）兜底为本区域（不过度隐藏治理审计）。"""
+    if scope.mode == "all":
+        return True
+    return region_index.get(target_object_id, scope.region) == scope.region

@@ -19,14 +19,14 @@ except ImportError:  # streamlit run app/streamlit_app.py：脚本目录在 sys.
 from agent.explain import (build_risk_briefing, render_briefing_text,
                            build_invoice_briefing, render_invoice_briefing_text)
 from agent.admission_explain import build_admission_briefing, render_admission_briefing
-from agent.tools import AgentSession, _can_see_tier, _can_see_cost, COST_FIELDS, MASK
+from agent.tools import (AgentSession, _can_see_tier, _can_see_cost,
+                        COST_FIELDS, INVOICE_COST_FIELDS, MASK)
 
 RISK_TERMINAL = ("resolved", "escalated")
 TASK_TERMINAL = ("done", "cancelled")
 # Invoice 富工作台呈现层脱敏字段：发票金额随 role 掩码（与 UI mask_cost 同规：finance/manager 可见）。
-# 注意与 agent 对账工具 get_invoice_context 的既定口径区分——后者对 AI 返回真实金额（对账数据非敏感），
-# 供对象级 agent 分析费用差异/起草 dispute；本工作台是人看的呈现表，故按 mask_cost 脱敏（本切片不改 agent 口径）。
-INVOICE_COST_FIELDS = ("amount_usd", "unit_price_usd", "baseline_usd", "diff_usd")
+# 收敛后 agent 对账工具 get_invoice_context 与本工作台**同一口径**（都掩码 INVOICE_COST_FIELDS+total_usd），
+# 常量从 agent.tools 单一事实源导入，保证「agent 看得到的 == UI 看得到的」逐字一致。
 # 准入动作 → 案件状态前置（与 app.admission_actions B2-B6 前置一致；「该角色能不能点」的呈现层判断，
 # 真正执行仍由动作层 ADM_PERMS + 门禁 G1/G2/G3 + maker-checker 硬 gate）。
 ADM_ACTION_STATUS = {
@@ -338,8 +338,8 @@ def build_invoice_workbench(con, invoice_id, role):
     ExpectedCost 基准与差异、关联 Shipment、flag 本票账单行的费用类 RiskEvent(R4/R5/R6)、
     其上费用处置任务）+ 角色可用 action。
 
-    成本字段随 role 脱敏（呈现层，与 UI mask_cost 同规：finance/manager 见金额，其余掩码——见
-    INVOICE_COST_FIELDS 注释，区别于 agent 对账工具口径）。返回纯 dict，可单测、可被 render_* 复用。"""
+    成本字段随 role 脱敏（与 UI mask_cost 同规：finance/manager 见金额，其余掩码——见
+    INVOICE_COST_FIELDS；收敛后与 agent 对账工具 get_invoice_context 同口径）。返回纯 dict，可单测。"""
     irow = _rows(con, "SELECT * FROM invoices WHERE invoice_id=?", invoice_id)
     if not irow:
         return {"error": f"发票 {invoice_id} 不存在"}
@@ -404,7 +404,7 @@ def build_invoice_workbench(con, invoice_id, role):
         "available_actions": invoice_available_actions(role, tasks),
         "cost_visible": cost_visible,
         "role": role,
-        "note": "呈现层按 role 脱敏发票金额（UI mask_cost 同规）；agent 对账工具另有'对账数据非敏感'口径",
+        "note": "按 role 脱敏发票金额（UI mask_cost 同规）；agent 对账工具 get_invoice_context 同口径（已收敛）",
     }
 
 

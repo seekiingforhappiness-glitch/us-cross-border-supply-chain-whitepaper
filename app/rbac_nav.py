@@ -20,12 +20,14 @@ TAB_LABELS = {
 }
 
 # 角色 → 工作台可见 tab（列表顺序即 tab 呈现顺序；每角色主战场排第一，成为默认落地页）
+# 审计日志(log)给「有审阅需要」的角色——运营(ops)/治理(compliance)/监督(manager)；且按 data_scope
+# 过滤（render_log_tab）：非 manager 只看本区域数据范围内对象的审计，manager 看全量（口径收敛）。
 ROLE_WORKSPACE = {
-    "ops":        ["risk", "task", "dq", "obj"],
+    "ops":        ["risk", "task", "dq", "obj", "log"],
     "cs":         ["risk", "task", "obj"],
     "finance":    ["cost", "adm", "obj"],
     "sales":      ["adm", "obj"],
-    "compliance": ["adm", "risk", "obj"],
+    "compliance": ["adm", "risk", "obj", "log"],
     "manager":    ["kpi", "risk", "task", "cost", "obj", "dq", "adm", "log"],
 }
 

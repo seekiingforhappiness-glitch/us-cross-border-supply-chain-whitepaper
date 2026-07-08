@@ -18,12 +18,13 @@ ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager"]
 ALL_TABS = {"kpi", "risk", "task", "cost", "obj", "dq", "adm", "log"}
 
 # 需求指定的角色→工作台映射（真源，测试即冻结此契约）
+# 审计日志(log)口径收敛：给有审阅需要的 ops(运营)/compliance(治理)/manager(监督)——按 data_scope 过滤。
 EXPECTED_WORKSPACE = {
-    "ops":        ["risk", "task", "dq", "obj"],
+    "ops":        ["risk", "task", "dq", "obj", "log"],
     "cs":         ["risk", "task", "obj"],
     "finance":    ["cost", "adm", "obj"],
     "sales":      ["adm", "obj"],
-    "compliance": ["adm", "risk", "obj"],
+    "compliance": ["adm", "risk", "obj", "log"],
     "manager":    ["kpi", "risk", "task", "cost", "obj", "dq", "adm", "log"],
 }
 
@@ -72,8 +73,11 @@ def main():
           not ({"risk", "task"} & set(ROLE_WORKSPACE["finance"])))
     check("cs 不含费用/准入/DQ",
           not ({"cost", "adm", "dq"} & set(ROLE_WORKSPACE["cs"])))
-    check("审计日志(log)仅 manager 可见",
-          [r for r in ROLES if "log" in ROLE_WORKSPACE[r]] == ["manager"])
+    check("审计日志(log)给 ops/compliance/manager（收敛：运营/治理/监督需审阅，data_scope 过滤）",
+          sorted(r for r in ROLES if "log" in ROLE_WORKSPACE[r]) == ["compliance", "manager", "ops"],
+          str(sorted(r for r in ROLES if "log" in ROLE_WORKSPACE[r])))
+    check("审计日志(log)对 cs/finance/sales 不可见（无审阅需要）",
+          not any("log" in ROLE_WORKSPACE[r] for r in ("cs", "finance", "sales")))
 
     print("== ③ visible_tabs / can_see_tab 一致性 ==")
     for r in ROLES:

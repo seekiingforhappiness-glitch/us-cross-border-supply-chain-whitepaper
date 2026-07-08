@@ -26,6 +26,9 @@ COST_FIELDS = {"quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
                "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
                "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
                "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"}
+# 发票对账金额字段脱敏集（单一事实源，app.object_workbench / standard_object_view 复用本常量）：
+# 发票 total_usd + 逐行 amount/unit_price/baseline/diff。与 UI mask_cost 同规（finance/manager 可见）。
+INVOICE_COST_FIELDS = ("amount_usd", "unit_price_usd", "baseline_usd", "diff_usd")
 MASK = "🔒无权查看"
 
 # --- 角色 → 工具集 scoping（对象工作台切片：给同一框架注入 role，不复制平行 agent）---
@@ -110,8 +113,8 @@ TOOL_DEFS = [
      "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
     {"name": "get_invoice_context",
      "description": "查发票完整对账上下文：发票 + 行明细（join expected_costs 给出基准与差异列）"
-                    "+ 所属 shipment 摘要（incoterm/delay_days/status）。发票金额对 AI 可见"
-                    "（对账数据非敏感，区别于 CostScenario 脱敏规则）",
+                    "+ 所属 shipment 摘要（incoterm/delay_days/status）。发票金额字段按角色脱敏"
+                    "（与 UI 费用工作台 mask_cost 同规：finance/manager 可见，其余掩码）",
      "input_schema": {"type": "object", "properties": {
          "invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
     {"name": "explain_relationship_path",
@@ -402,7 +405,7 @@ class AgentSession:
         inv = self._rows("SELECT * FROM invoices WHERE invoice_id=?", invoice_id)
         if not inv:
             return {"error": f"发票 {invoice_id} 不存在"}
-        inv = inv[0]
+        inv = dict(inv[0])
         # 行明细 join expected_costs（基准与差异列）——与费用工作台 UI 同一 join 规则
         lines = self._rows(
             """SELECT il.invoice_line_id, il.charge_code, il.container_no, il.qty,
@@ -426,9 +429,20 @@ class AgentSession:
             ln["is_anomaly"] = ln["invoice_line_id"] in anom
         sp = self._rows("""SELECT shipment_id, incoterm, delay_days, status
                            FROM shipments WHERE shipment_id=?""", inv["shipment_id"])
+        # 成本字段脱敏随 role（收敛口径：与 UI build_invoice_workbench mask_cost 逐字一致）：
+        # finance/manager 见金额，其余掩码 total_usd + 每行 amount/unit_price/baseline/diff。
+        cost_visible = _can_see_cost(self.role)
+        if not cost_visible:
+            if inv.get("total_usd") is not None:
+                inv["total_usd"] = MASK
+            for ln in lines:
+                for f in INVOICE_COST_FIELDS:
+                    if ln.get(f) is not None:
+                        ln[f] = MASK
         return {"invoice": inv, "lines": lines,
                 "shipment": sp[0] if sp else None,
-                "note": "invoice amounts visible to AI (对账数据非敏感)"}
+                "note": f"invoice cost fields {'visible' if cost_visible else 'masked'} "
+                        f"for role={self.role}（与 UI 费用工作台 mask_cost 同规，收敛口径）"}
 
     def focus_task_bundle(self):
         """对象 scoping 汇总：把检索聚焦到本会话 focus 的 task 及其邻居（父 RiskEvent、
@@ -456,8 +470,8 @@ class AgentSession:
 
     def focus_invoice_bundle(self):
         """对象 scoping 汇总：把检索聚焦到本会话 focus 的 invoice 及其邻居（invoice_lines、
-        所属 shipment、flag 本票账单行的费用类风险 R4/R5/R6），而非全库。对账金额对 AI 可见
-        （对账数据非敏感，与 get_invoice_context 同口径）；审批不在此（原则2）。无 focus 返回 error。"""
+        所属 shipment、flag 本票账单行的费用类风险 R4/R5/R6），而非全库。成本金额随 role 脱敏
+        （与 get_invoice_context / UI mask_cost 同口径）；审批不在此（原则2）。无 focus 返回 error。"""
         iid = self.focus_invoice_id
         if not iid:
             return {"error": "本会话未 focus 到任何 invoice"}

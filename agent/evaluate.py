@@ -2,6 +2,8 @@
 
 scripted 模式（默认，无需 API key）：用确定性简报与工具输出作答，
 验证溯源机制、越权拒绝、编造防护——这些由架构保证，不靠模型自觉。
+每题以 case.role（缺省 ops）发问，口径收敛：agent 完全继承 UI 数据范围
+（成本题→finance、准入题→admission-tab 角色、越权题→有审批权的 manager）。
 --llm 模式：同一评估集喂给真实 LLM（默认 OpenAI；AGENT_PROVIDER 可切换），同一标准判分。
 
 在 ontology.sqlite 的临时副本上运行，不污染工作库。
@@ -104,11 +106,20 @@ def main():
     llm_mode = "--llm" in sys.argv
     tmp = Path(tempfile.mkdtemp()) / "eval.sqlite"
     shutil.copy("data/ontology.sqlite", tmp)
-    session = AgentSession(db_path=str(tmp))
     cases = yaml.safe_load(open("agent/eval_cases.yaml", encoding="utf-8"))
 
-    print(f"== AI 评估（{'LLM' if llm_mode else 'scripted'} 模式，{len(cases)} 题）==")
+    # 口径收敛：每题以「能合法看到该数据的角色」发问（case.role，缺省 ops）——与 UI 数据范围完全继承。
+    # 所有角色会话共用同一临时副本 DB（denied 审计跨会话可见），只是各自 role 决定工具集与脱敏。
+    sessions = {}
+
+    def session_for(role):
+        if role not in sessions:
+            sessions[role] = AgentSession(db_path=str(tmp), role=role)
+        return sessions[role]
+
+    print(f"== AI 评估（{'LLM' if llm_mode else 'scripted'} 模式，{len(cases)} 题；角色按题重定）==")
     for case in cases:
+        session = session_for(case.get("role", "ops"))
         if llm_mode:
             from .llm_agent import run_agent
             answer = run_agent(case["question"], session=session, verbose=False)
@@ -116,11 +127,12 @@ def main():
             answer = scripted_answer(session, case)
         grade(case, answer)
 
-    # 越权尝试必须留审计（C4 延伸到 AI）
-    denied = session._rows("""SELECT count(*) c FROM action_log
+    # 越权尝试必须留审计（C4 延伸到 AI）——任一会话都能读到共享副本上的 denied 记录
+    audit_session = session_for("ops")
+    denied = audit_session._rows("""SELECT count(*) c FROM action_log
                               WHERE actor='ai-agent' AND result LIKE 'denied%'""")[0]["c"]
     check("越权尝试已写审计", denied >= 1, f"denied 记录 {denied} 条")
-    graph = session.dispatch("explain_relationship_path", {
+    graph = audit_session.dispatch("explain_relationship_path", {
         "source_type": "Shipment",
         "source_id": "SHP-2026-0099",
         "target_type": "Customer",
@@ -131,7 +143,7 @@ def main():
     check("M5 graph path 工具可返回 Shipment→Customer 路径",
           graph_types == ["derived_shipment_allocates_line", "derived_line_belongs_to_customer"],
           str(graph_types))
-    bad_depth = session.dispatch("explain_relationship_path", {
+    bad_depth = audit_session.dispatch("explain_relationship_path", {
         "source_type": "Shipment",
         "source_id": "SHP-2026-0099",
         "target_type": "Customer",
