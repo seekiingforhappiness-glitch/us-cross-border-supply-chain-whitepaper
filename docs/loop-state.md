@@ -13,7 +13,7 @@
 - [x] **2. 全局 Executive 一页视图**（跨 5 场景 KPI：各域风险数/SLA/追回额/精度；manager 落地页增强）
 - [x] **3. `docs/architecture.md` 刷新**到 5 场景全貌（对象图/场景连接/治理层）
 - [x] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
-- [ ] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
+- [x] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
 - [ ] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
 - [ ] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
 - [ ] **8. 多区域 demo 数据**：让行级数据范围（region）可见地过滤（守真值 md5、engine R/P 不变）
@@ -33,3 +33,4 @@
 - 迭代 2 — 全局 Executive 一页视图（manager 落地页 = 5 场景 KPI 一屏：延误/费用/采购/仓储/准入 + 全局健康横条）— controller 独立复核全绿：纯只读聚合、actions/rbac_nav/ontology diff=0、executive_view 测试全绿（数字与直查一致，152 总未结）、R1-R18 未动、三角色 UI 0 异常 — 见 loop 提交
 - 迭代 3 — docs/architecture.md 全面刷新到当前 5 场景（分层架构/对象图含跨场景连接/对象中心层/现货救延误时序/治理体系/关键数字）— controller 核对对象数字与代码一致（33 对象/6 富对象/27 标准视图）— 纯文档 — 见 loop 提交
 - 迭代 4 — README.md 全面重写到当前 5 场景 + 对象中心 + 全景导航（场景表/跨场景网/对象级 agent 三约束/完整复现链/架构六层/导航表/治理护城河）— 复现命令均为本会话已验证模块 — 纯文档 — 见 loop 提交
+- 迭代 5 — 新建 docs/demo-assertions-all.md 统一验收清单（A 检测精度/B 五场景闭环/C 对象中心+可信AI/D 治理/E 现场走查，每条附验证命令 + 诚实提醒）— controller 核对清单引用的 21 个测试模块全部真实存在 — 纯文档 — 见 loop 提交
