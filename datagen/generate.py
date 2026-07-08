@@ -195,7 +195,7 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
     tables["srm_goods_receipt_lines"] = (sorted(proc["grn_lines"], key=lambda x: x["grn_line_id"]),
                                          ["grn_line_id", "grn_id", "po_line_id", "received_qty",
                                           "accepted_qty", "rejected_qty", "qc_status", "defect_ppm",
-                                          "as_of_date", "created_at"])
+                                          "received_date", "as_of_date", "created_at"])
     tables["ap_supplier_invoices"] = (sorted(proc["supplier_invoices"],
                                              key=lambda x: x["supplier_invoice_id"]),
                                       ["supplier_invoice_id", "supplier_id", "po_id",

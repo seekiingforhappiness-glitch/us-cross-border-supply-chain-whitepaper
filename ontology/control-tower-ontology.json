@@ -450,7 +450,7 @@
       "type": "GoodsReceiptLine",
       "primaryKey": "grn_line_id",
       "ownerRole": "ops",
-      "description": "P1: per-line receipt against a PoLine. received/accepted/rejected + QC outcome drive R8 (short receipt) and R9 (QC failure).",
+      "description": "P1: per-line receipt against a PoLine. received/accepted/rejected + QC outcome drive R8 (short receipt) and R9 (QC failure); per-line received_date drives R7 (supplier delay) at row granularity.",
       "properties": [
         {"name": "grn_line_id", "type": "string", "required": true},
         {"name": "grn_id", "type": "string", "required": true},
@@ -460,6 +460,7 @@
         {"name": "rejected_qty", "type": "number", "required": true, "description": "received - accepted."},
         {"name": "qc_status", "type": "enum", "required": true, "values": ["passed", "failed", "waived"], "description": "R9: failed = QC reject."},
         {"name": "defect_ppm", "type": "number", "required": true, "description": "R9: defect_ppm > config threshold also flags QC even when not fully failed."},
+        {"name": "received_date", "type": "date", "required": true, "description": "R7: per-line actual receipt date. Batched GRNs receive lines on different days; using this row-level date (not the GRN header min) lets an injected-late line in a multi-line PO be detected instead of being masked by an on-time sibling."},
         {"name": "as_of_date", "type": "date", "required": true},
         {"name": "created_at", "type": "datetime", "required": true}
       ],

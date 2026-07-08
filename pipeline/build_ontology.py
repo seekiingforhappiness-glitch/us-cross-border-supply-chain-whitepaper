@@ -540,7 +540,7 @@ def main():
     table("goods_receipt_lines", sorted(t["srm_goods_receipt_lines"], key=lambda x: x["grn_line_id"]),
           ["grn_line_id TEXT", "grn_id TEXT", "po_line_id TEXT", "received_qty INTEGER",
            "accepted_qty INTEGER", "rejected_qty INTEGER", "qc_status TEXT", "defect_ppm INTEGER",
-           "as_of_date TEXT", "created_at TEXT"], "grn_line_id")
+           "received_date TEXT", "as_of_date TEXT", "created_at TEXT"], "grn_line_id")
     table("supplier_invoices", sorted(t["ap_supplier_invoices"], key=lambda x: x["supplier_invoice_id"]),
           ["supplier_invoice_id TEXT", "supplier_id TEXT", "po_id TEXT", "vendor_invoice_no TEXT",
            "issue_date TEXT", "currency TEXT", "total_usd REAL", "status TEXT", "as_of_date TEXT",

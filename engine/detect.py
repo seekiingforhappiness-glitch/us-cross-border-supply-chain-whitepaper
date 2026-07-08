@@ -13,6 +13,7 @@ import yaml
 
 from .rules import detect_risks, SEV_ORDER
 from .cost_rules import detect_cost_anomalies
+from .procurement_rules import detect_procurement_risks
 from .graph import upsert_relationship
 
 DB = "data/ontology.sqlite"
@@ -154,6 +155,39 @@ def match_invoices(con, cost_cands, as_of):
     return dist
 
 
+def apply_procurement_candidates(con, cands, as_of):
+    """P1 采购 RiskEvent 写库（Build 2）。与 apply_candidates 分离：采购事件用
+    po_id/supplier_id/affected_po_line_ids 锚点，shipment_id 留空，不牵动 sales_order_lines，
+    不做 (shipment,type) 合并（每 (po_line, rule) 唯一 → 恒 create）。审计时间戳用 as_of（D8）。
+    RSK 序号续既有事件之后。返回 created。"""
+    cur = con.cursor()
+    ts = f"{as_of.isoformat()}T00:00:00Z"
+    seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
+    created = 0
+    for c in sorted(cands, key=lambda x: (json.loads(x["affected_po_line_ids"])[0], x["rule_id"])):
+        seq += 1
+        rid = f"RSK-{seq:04d}"
+        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                       root_cause, status, resolved_at, outcome, resolution_summary,
+                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
+                     c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
+                     None, None, None, c.get("affected_invoice_line_ids"),
+                     c["po_id"], c["supplier_id"], c["affected_po_line_ids"]))
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
+                       params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    ("engine", "system", "CreateRiskEvent", rid,
+                     json.dumps({"rule_id": c["rule_id"], "po_id": c["po_id"],
+                                 "po_line_ids": json.loads(c["affected_po_line_ids"]),
+                                 "severity": c["severity"]}, ensure_ascii=False),
+                     as_of.isoformat(), ts, "created"))
+        created += 1
+    con.commit()
+    return created
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/datagen.yaml")
@@ -170,11 +204,15 @@ def main():
     # MatchInvoice 先于 CreateRiskEvent：对账匹配暴露异常，异常再生成风险事件（§2 状态机因果）。
     inv_dist = match_invoices(con, cost_cands, as_of)
     created, merged = apply_candidates(con, cands + cost_cands, as_of)
+    # P1 采购 R7-R10（Build 2）：独立检测与写库路径（po 锚点，不合并、不牵动订单行）
+    proc_cands = detect_procurement_risks(con, as_of, cfg)
+    proc_created = apply_procurement_candidates(con, proc_cands, as_of)
     by_rule = {}
-    for c in cands + cost_cands:
+    for c in cands + cost_cands + proc_cands:
         by_rule[c["rule_id"]] = by_rule.get(c["rule_id"], 0) + 1
-    print(json.dumps({"as_of": as_of.isoformat(), "candidates": len(cands) + len(cost_cands),
-                      "created": created, "merged": merged, "by_rule": by_rule,
+    print(json.dumps({"as_of": as_of.isoformat(),
+                      "candidates": len(cands) + len(cost_cands) + len(proc_cands),
+                      "created": created + proc_created, "merged": merged, "by_rule": by_rule,
                       "invoice_status": inv_dist},
                      ensure_ascii=False))
 

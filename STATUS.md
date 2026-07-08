@@ -132,8 +132,14 @@
   生成 52 PO(30 多SKU)/92 行/62 GRN/52 供票 + 注入 R7-R10 真值 31 条（R7×8/R8×8/R9×7/R10×8 + 12 干净 + 9 灰区），
   真值存 `data/truth/`（子代理发现并守住"引擎禁读真值"铁律，§2 报告冲突不自行调和）；5 采购对象自动进标准视图。
   **controller 独立复核**：既有 R1-R6 R/P=1.000 未扰动、真值不在 ontology.sqlite、全套回归绿（含 controller 抓到并
-  修的 standard_view 计数 15→20 + 采购 KEY_FIELDS；task 测试 FAIL 系复核链漏 seed 非 bug）。**Build 2（引擎 R7-R10
-  检测+评估）、Build 3（动作+PurchaseOrder 工作台+agent）待续。**
+  修的 standard_view 计数 15→20 + 采购 KEY_FIELDS；task 测试 FAIL 系复核链漏 seed 非 bug）。
+- **采购 Build 2/3（引擎 R7-R10 检测 + 评估器）已完成并通过 controller review**：`engine/procurement_rules.py`
+  （R7-R10 检测，只读采购表、禁读真值、as_of 安全）+ `engine/evaluate_procurement.py`（对比 data/truth 真值算
+  precision/recall）。采购 RiskEvent 用 po_id/supplier_id 锚点。**子代理诚实发现 R7 recall=0.500 是 Build 1 数据
+  缺口（goods_receipt_lines 无行级 received_date，多行 PO 延误被 GRN 头 min 掩盖），拒绝作弊改真值**；controller
+  确认后修复（加行级 received_date，真值 md5 字节不变 13ea96…）。**controller 独立复核**：R7-R10 全 P/R=1.000、
+  灰区 0 误报、真值两次生成 md5 一致、既有 R1-R6 R/P=1.000 未扰动、全套回归绿。**Build 3（动作 RecordGoodsReceipt/
+  MatchSupplierInvoice + PurchaseOrder 对象工作台 + permission-aware agent）待续。**
 
 ## v0.4 进度
 

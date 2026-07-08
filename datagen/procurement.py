@@ -200,17 +200,20 @@ def build_procurement_world(world, cfg, rng):
         for k, (pol_id, sku_id, qty, unit_price, expected_ready) in enumerate(lines_meta):
             r = recv[pol_id]
             if grn_b and k == 0:
-                # primary 行拆两张：足量部分分两批到货，属性一致（干净/灰区分批演示）
+                # primary 行拆两张：足量部分分两批到货，属性一致（干净/灰区分批演示）。
+                # 行级 received_date 按批次真实到货日：首批=本行 recv_date，次批=date_b（更晚）。
                 half = r["received_qty"] // 2
                 _emit_grn_line(grn_lines, nid, grn_a, pol_id, half, half, 0,
-                               r["qc_status"], r["defect_ppm"], as_of, date_a)
+                               r["qc_status"], r["defect_ppm"], as_of, date_a, r["recv_date"])
                 rem = r["received_qty"] - half
                 _emit_grn_line(grn_lines, nid, grn_b, pol_id, rem, rem, 0,
-                               r["qc_status"], r["defect_ppm"], as_of, date_a)
+                               r["qc_status"], r["defect_ppm"], as_of, date_a, date_b)
             else:
+                # 单批：行级 received_date = 本行真实（含注入延误）到货日 recv_date，
+                # 不再被同单准时兄弟行拉低的 GRN 头 min 掩盖（R7 多行 PO 缺口修复）。
                 _emit_grn_line(grn_lines, nid, grn_a, pol_id, r["received_qty"],
                                r["accepted_qty"], r["rejected_qty"], r["qc_status"],
-                               r["defect_ppm"], as_of, date_a)
+                               r["defect_ppm"], as_of, date_a, r["recv_date"])
 
         # --- 供应商发票（+行）：逐行对应 po_line；R10 单价超差 ---
         sinv_id = nid("sinv", "SINV-2026-{:05d}")
@@ -285,13 +288,16 @@ def build_procurement_world(world, cfg, rng):
 
 
 def _emit_grn_line(grn_lines, nid, grn_id, po_line_id, received_qty, accepted_qty,
-                   rejected_qty, qc_status, defect_ppm, as_of, recv_date):
+                   rejected_qty, qc_status, defect_ppm, as_of, created_date, line_recv_date):
+    # created_date 沿用 GRN 头日（既有 created_at 语义不变）；line_recv_date 为新增行级到货日
+    # （真实分批 GRN 本就有行级到货日）——R7 改读行级 received_date 而非 GRN 头 min。
     grn_lines.append({
         "grn_line_id": nid("grl", "GRL-{:06d}"), "grn_id": grn_id,
         "po_line_id": po_line_id, "received_qty": received_qty,
         "accepted_qty": accepted_qty, "rejected_qty": rejected_qty,
         "qc_status": qc_status, "defect_ppm": defect_ppm,
-        "as_of_date": as_of.isoformat(), "created_at": _iso(recv_date)})
+        "received_date": line_recv_date.isoformat(),
+        "as_of_date": as_of.isoformat(), "created_at": _iso(created_date)})
 
 
 def _weighted(rng, weights):

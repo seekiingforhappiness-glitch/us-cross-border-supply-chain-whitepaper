@@ -104,7 +104,7 @@ KEY_FIELDS = {
     "PoLine": ["po_id", "sku_id", "qty", "unit_price_usd", "line_status", "expected_ready_date"],
     "GoodsReceipt": ["po_id", "received_date", "status"],
     "GoodsReceiptLine": ["grn_id", "po_line_id", "received_qty", "accepted_qty",
-                         "rejected_qty", "qc_status", "defect_ppm"],
+                         "rejected_qty", "qc_status", "defect_ppm", "received_date"],
     "SupplierInvoice": ["supplier_id", "po_id", "vendor_invoice_no", "total_usd", "status"],
     "SupplierInvoiceLine": ["supplier_invoice_id", "po_line_id", "qty", "unit_price_usd", "amount_usd"],
 }

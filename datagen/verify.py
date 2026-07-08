@@ -444,6 +444,31 @@ def main():
           all(win_start <= r["received_date"] <= win_end for r in grns)
           and all(win_start <= r["issue_date"] <= win_end for r in sup_inv))
 
+    # 9.3b 行级 received_date（R7 数据模型缺口修复）：每 grn_line 有值且在窗口内；
+    #   R7 延误行的行级最早到货日 > expected_ready + 容差（真实延误持久化到行级，不再被 GRN 头 min 掩盖）
+    from datetime import date as _pdate
+    tol_days = pc["receipt_delay_tol_days"]
+    check("grn_lines 均有行级 received_date 且在数据窗口内",
+          all(r.get("received_date") and win_start <= r["received_date"] <= win_end
+              for r in grn_lines),
+          f"缺值/越界: {[r['grn_line_id'] for r in grn_lines if not (r.get('received_date') and win_start <= r['received_date'] <= win_end)][:5]}")
+    pol_ready = {r["po_line_id"]: r["expected_ready_date"] for r in po_lines}
+    grn_recv_by_line = defaultdict(list)
+    for r in grn_lines:
+        grn_recv_by_line[r["po_line_id"]].append(r["received_date"])
+
+    def _late_line_ok(gt_row):
+        recvs = grn_recv_by_line.get(gt_row["po_line_id"], [])
+        if not recvs or gt_row["po_line_id"] not in pol_ready:
+            return False
+        first = min(recvs)
+        exp = pol_ready[gt_row["po_line_id"]]
+        return (_pdate.fromisoformat(first) - _pdate.fromisoformat(exp)).days > tol_days
+    r7_gt = [r for r in proc_gt if r["rule_id"] == "R7"]
+    check("R7 延误行的行级最早到货日 > expected_ready + 容差",
+          bool(r7_gt) and all(_late_line_ok(r) for r in r7_gt),
+          f"不满足: {[r['po_line_id'] for r in r7_gt if not _late_line_ok(r)]}")
+
     # 9.4 ground truth：rule 合法、引用完整、计数=inject、severity 合法
     check("采购真值 rule 仅 R7-R10", all(r["rule_id"] in ("R7", "R8", "R9", "R10") for r in proc_gt))
     check("采购真值引用完整（po_id/po_line_id/supplier_id）",
