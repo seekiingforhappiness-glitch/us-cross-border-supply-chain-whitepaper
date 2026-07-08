@@ -97,8 +97,10 @@ CREATE TABLE review_queue (             -- 复核队列 + draft-not-send
 
 ## 4. 模拟数据生成规格
 
-规模：5 carriers、15 rate_cons、180 rate_card_lines、150 invoices、~1200 invoice_lines、150 bols、
-~361 expected_discrepancies、12 灰区样本。承运商用真实感 SCAC：MAEU/MSCU/COSU/OOLU/CMDU。
+规模：5 carriers、15 rate_cons、180 rate_card_lines、150 invoices、~1300 invoice_lines、150 bols、
+**~98 expected_discrepancies（45 张 dirty × 每张 1-3 条差异；这是权威口径，早期"~361"是笔误已废）**、
+12 灰区样本。承运商用真实感 SCAC：MAEU/MSCU/COSU/OOLU/CMDU。
+注：invoice_lines 与 bols 各含可空 `weight_kg` 列以支持 WEIGHT_MISMATCH（§1 DDL 补列）。
 
 注入（种子42）：
 - 70% 干净发票（105张，严格按 rate_card 定价，detention/demurrage 按 free_time 正确算）
@@ -161,7 +163,8 @@ tolerances:
 RATE_MISMATCH，detected_amount_usd==(2000-1500)×qty，evidence_json含发票行/合同费率/计算，status=='pending'。
 
 评估器：跑完150张 → precision≥0.90、recall≥0.85；灰区12张不应被误报(计入FP)；报告追回总额/误报率/漏报清单。
-基线：检出374、TP353、FP21(15容差边界+6灰区)、FN8(小额<$5阈值)、P0.944、R0.978、追回$48,127.50。
+基线（2026-07-08 重建实测）：检出96、TP90、FP6(全为6张灰区口头加价)、FN8(小额<$5 SEAL阈值抑制,设计内)、
+**P0.938、R0.918、误报率0.062、追回$80,252.21**。(旧口径 P0.944/R0.978/$48k 属已丢失的构建,不再适用。)
 
 ## 8. RBAC（三角色，权限在动作层强制）
 
