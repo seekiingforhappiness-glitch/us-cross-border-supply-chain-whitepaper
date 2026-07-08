@@ -12,7 +12,7 @@
 - [x] **1. Warehouse 富工作台 + permission-aware 对象级 agent**（补齐对象中心对称性；无新对象/规则）
 - [x] **2. 全局 Executive 一页视图**（跨 5 场景 KPI：各域风险数/SLA/追回额/精度；manager 落地页增强）
 - [x] **3. `docs/architecture.md` 刷新**到 5 场景全貌（对象图/场景连接/治理层）
-- [ ] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
+- [x] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
 - [ ] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
 - [ ] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
 - [ ] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
@@ -32,3 +32,4 @@
 - 迭代 1 — Warehouse 升第 6 富对象 + 富工作台（库存位/预留/盘点/锚定风险）+ permission-aware 对象级 agent — controller 独立复核全绿：wh-agent 三角色 approve 全被拒、ROLE_PERMS/FORBIDDEN/warehouse_actions diff=0、R1-R18 全 P/R=1.000、标准视图 28→27、全套回归绿 — 见 loop 提交
 - 迭代 2 — 全局 Executive 一页视图（manager 落地页 = 5 场景 KPI 一屏：延误/费用/采购/仓储/准入 + 全局健康横条）— controller 独立复核全绿：纯只读聚合、actions/rbac_nav/ontology diff=0、executive_view 测试全绿（数字与直查一致，152 总未结）、R1-R18 未动、三角色 UI 0 异常 — 见 loop 提交
 - 迭代 3 — docs/architecture.md 全面刷新到当前 5 场景（分层架构/对象图含跨场景连接/对象中心层/现货救延误时序/治理体系/关键数字）— controller 核对对象数字与代码一致（33 对象/6 富对象/27 标准视图）— 纯文档 — 见 loop 提交
+- 迭代 4 — README.md 全面重写到当前 5 场景 + 对象中心 + 全景导航（场景表/跨场景网/对象级 agent 三约束/完整复现链/架构六层/导航表/治理护城河）— 复现命令均为本会话已验证模块 — 纯文档 — 见 loop 提交
