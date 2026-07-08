@@ -14,7 +14,7 @@
 - [x] **3. `docs/architecture.md` 刷新**到 5 场景全貌（对象图/场景连接/治理层）
 - [x] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
 - [x] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
-- [ ] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
+- [x] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
 - [ ] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
 - [ ] **8. 多区域 demo 数据**：让行级数据范围（region）可见地过滤（守真值 md5、engine R/P 不变）
 - [ ] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
@@ -34,3 +34,4 @@
 - 迭代 3 — docs/architecture.md 全面刷新到当前 5 场景（分层架构/对象图含跨场景连接/对象中心层/现货救延误时序/治理体系/关键数字）— controller 核对对象数字与代码一致（33 对象/6 富对象/27 标准视图）— 纯文档 — 见 loop 提交
 - 迭代 4 — README.md 全面重写到当前 5 场景 + 对象中心 + 全景导航（场景表/跨场景网/对象级 agent 三约束/完整复现链/架构六层/导航表/治理护城河）— 复现命令均为本会话已验证模块 — 纯文档 — 见 loop 提交
 - 迭代 5 — 新建 docs/demo-assertions-all.md 统一验收清单（A 检测精度/B 五场景闭环/C 对象中心+可信AI/D 治理/E 现场走查，每条附验证命令 + 诚实提醒）— controller 核对清单引用的 21 个测试模块全部真实存在 — 纯文档 — 见 loop 提交
+- 迭代 6 — 新建 app/test_agent_security.py 统一对抗安全 sweep（6 对象 agent × 6 角色 tool_defs 无审批类；6 agent × 3 关键角色 × 4 审批类 × 4 注入变体 = 288 次 dispatch 全 refused + 目标三态不变；manager 亦被拒；7 条边界/负例：未知工具/越域读/超角色写/动作层双闸/FORBIDDEN⊇四审批类；292 条 denied 全溯源 ai-agent）— controller 独立复核全绿：git tracked diff=0（只加测试）、test_agent_security 全通过、既有回归(object_workbench/warehouse/scope_parity/agent.evaluate)无退化、R1-R18 未动 — 见 loop 提交
