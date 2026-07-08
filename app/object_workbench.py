@@ -24,6 +24,27 @@ from agent.tools import (AgentSession, _can_see_tier, _can_see_cost,
 
 RISK_TERMINAL = ("resolved", "escalated")
 TASK_TERMINAL = ("done", "cancelled")
+
+
+def _render_object_llm_answer(question, briefing_text, role):
+    """对象级 AI 助手作答：先展示确定性简报（回答的 grounding 数据），再用 Opus 4.8（本账号 Claude
+    订阅、无需 API key）【仅据该简报】合成中文回答。简报已按 role 脱敏，故 LLM 继承同一数据范围；
+    模型无任何行动能力（不派单/不审批），写动作仍只走下方表单 + maker-checker。LLM 不可用时优雅降级。"""
+    import streamlit as st
+    with st.expander("确定性简报（回答的 grounding 数据，每条带对象 ID）", expanded=not question):
+        st.text(briefing_text)
+    if not question:
+        st.caption("输入问题后 Opus 4.8 将【仅据上方简报】作答——不编造、继承本角色脱敏、只解释不审批。")
+        return
+    with st.spinner("Opus 4.8 作答中（本账号订阅渠道，约 30–50 秒）…"):
+        try:
+            from agent.llm_agent import answer_over_context
+            ans = answer_over_context(question, briefing_text, role=role)
+        except Exception as exc:  # CLI 未登录/超时等 → 不崩，退回简报
+            st.info(f"Opus 未就绪（{exc}）；上方确定性简报即为回答依据。")
+            return
+    st.markdown("**🤖 Opus 4.8（仅据上方简报作答，继承本角色脱敏）**")
+    st.markdown(ans)
 # Invoice 富工作台呈现层脱敏字段：发票金额随 role 掩码（与 UI mask_cost 同规：finance/manager 可见）。
 # 收敛后 agent 对账工具 get_invoice_context 与本工作台**同一口径**（都掩码 INVOICE_COST_FIELDS+total_usd），
 # 常量从 agent.tools 单一事实源导入，保证「agent 看得到的 == UI 看得到的」逐字一致。
@@ -771,11 +792,8 @@ def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, rende
     with st.expander("查看确定性风险简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
         st.text(focus_briefing_text(sess))
     q = st.text_input("向对象级 AI 提问（focus 已锁定本对象）", key=f"wb_q_{risk_event_id}")
-    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"wb_ask_{risk_event_id}"):
-        st.text(focus_briefing_text(sess))
-        if q:
-            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
-                       f"「{q}」自由问答，工具集与脱敏不变。）")
+    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"wb_ask_{risk_event_id}"):
+        _render_object_llm_answer(q, focus_briefing_text(sess), role)
 
 
 def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_factory, render_table):
@@ -844,11 +862,8 @@ def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_
     with st.expander("查看确定性准入简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
         st.text(focus_admission_briefing_text(sess))
     q = st.text_input("向对象级 AI 提问（focus 已锁定本案）", key=f"awb_q_{admission_case_id}")
-    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"awb_ask_{admission_case_id}"):
-        st.text(focus_admission_briefing_text(sess))
-        if q:
-            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
-                       f"「{q}」自由问答，工具集与脱敏不变。）")
+    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"awb_ask_{admission_case_id}"):
+        _render_object_llm_answer(q, focus_admission_briefing_text(sess), role)
 
 
 def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render_table):
@@ -909,11 +924,8 @@ def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render
     with st.expander("查看确定性任务简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
         st.text(focus_task_briefing_text(sess))
     q = st.text_input("向对象级 AI 提问（focus 已锁定本任务）", key=f"twb_q_{task_id}")
-    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"twb_ask_{task_id}"):
-        st.text(focus_task_briefing_text(sess))
-        if q:
-            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
-                       f"「{q}」自由问答，工具集与脱敏不变。）")
+    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"twb_ask_{task_id}"):
+        _render_object_llm_answer(q, focus_task_briefing_text(sess), role)
 
 
 def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, render_table):
@@ -985,11 +997,8 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
     with st.expander("查看确定性发票对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
         st.text(focus_invoice_briefing_text(sess))
     q = st.text_input("向对象级 AI 提问（focus 已锁定本发票）", key=f"iwb_q_{invoice_id}")
-    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"iwb_ask_{invoice_id}"):
-        st.text(focus_invoice_briefing_text(sess))
-        if q:
-            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
-                       f"「{q}」自由问答，工具集与脱敏不变。）")
+    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"iwb_ask_{invoice_id}"):
+        _render_object_llm_answer(q, focus_invoice_briefing_text(sess), role)
 
 
 def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_table):
@@ -1067,11 +1076,8 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
     with st.expander("查看确定性三方对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
         st.text(focus_po_briefing_text(sess))
     q = st.text_input("向对象级 AI 提问（focus 已锁定本 PO）", key=f"pwb_q_{po_id}")
-    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"pwb_ask_{po_id}"):
-        st.text(focus_po_briefing_text(sess))
-        if q:
-            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
-                       f"「{q}」自由问答，工具集与脱敏不变。）")
+    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"pwb_ask_{po_id}"):
+        _render_object_llm_answer(q, focus_po_briefing_text(sess), role)
 
 
 def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_factory, render_table):
@@ -1148,8 +1154,5 @@ def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_facto
     with st.expander("查看确定性仓储库存简报（无需 API key，每条带对象 ID 出处）", expanded=False):
         st.text(focus_warehouse_briefing_text(sess))
     q = st.text_input("向对象级 AI 提问（focus 已锁定本仓）", key=f"wwb_q_{warehouse_id}")
-    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"wwb_ask_{warehouse_id}"):
-        st.text(focus_warehouse_briefing_text(sess))
-        if q:
-            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
-                       f"「{q}」自由问答，工具集与脱敏不变。）")
+    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"wwb_ask_{warehouse_id}"):
+        _render_object_llm_answer(q, focus_warehouse_briefing_text(sess), role)

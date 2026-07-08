@@ -41,11 +41,13 @@ streamlit run app/streamlit_app.py                                              
 
 **面客走查台本**：`docs/demo-walkthrough.md`（5 分钟故事：真角色导航 → 对象工作台+AI → 现货救延误 → 越权被拒 → 五场景精度可验）。
 
-AI 对话（可选，无 API key 时确定性 fallback）：
+AI 对话——**默认走本账号 Claude 订阅（`claude` CLI）+ Opus 4.8，无需 API key**：
 ```bash
-export OPENAI_API_KEY=... ; export AGENT_PROVIDER=openai   # 或 anthropic
-python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理？"
+python3 -m agent.llm_agent "SHP-2026-0099 为什么有风险？该怎么处理？"   # 默认 AGENT_PROVIDER=claude_cli
+# 亦可切用付费 API：export AGENT_PROVIDER=openai（需 OPENAI_API_KEY）或 anthropic（需 ANTHROPIC_API_KEY）
 ```
+UI 里 6 个对象工作台的「询问」按钮即用 Opus 4.8 作答：仅据该对象的权限脱敏简报合成回答（继承 UI 数据范围、
+不编造、只解释不审批；订阅/CLI 不可用时优雅降级为确定性简报）。
 
 ## 架构（六层）
 
