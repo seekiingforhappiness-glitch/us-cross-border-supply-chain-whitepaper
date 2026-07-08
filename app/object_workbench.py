@@ -16,12 +16,17 @@ except ImportError:  # streamlit run app/streamlit_app.py：脚本目录在 sys.
     from actions import ROLE_PERMS
     from admission_actions import ADM_PERMS, CASE_TERMINAL
 
-from agent.explain import build_risk_briefing, render_briefing_text
+from agent.explain import (build_risk_briefing, render_briefing_text,
+                           build_invoice_briefing, render_invoice_briefing_text)
 from agent.admission_explain import build_admission_briefing, render_admission_briefing
 from agent.tools import AgentSession, _can_see_tier, _can_see_cost, COST_FIELDS, MASK
 
 RISK_TERMINAL = ("resolved", "escalated")
 TASK_TERMINAL = ("done", "cancelled")
+# Invoice 富工作台呈现层脱敏字段：发票金额随 role 掩码（与 UI mask_cost 同规：finance/manager 可见）。
+# 注意与 agent 对账工具 get_invoice_context 的既定口径区分——后者对 AI 返回真实金额（对账数据非敏感），
+# 供对象级 agent 分析费用差异/起草 dispute；本工作台是人看的呈现表，故按 mask_cost 脱敏（本切片不改 agent 口径）。
+INVOICE_COST_FIELDS = ("amount_usd", "unit_price_usd", "baseline_usd", "diff_usd")
 # 准入动作 → 案件状态前置（与 app.admission_actions B2-B6 前置一致；「该角色能不能点」的呈现层判断，
 # 真正执行仍由动作层 ADM_PERMS + 门禁 G1/G2/G3 + maker-checker 硬 gate）。
 ADM_ACTION_STATUS = {
@@ -218,6 +223,207 @@ def focus_admission_briefing_text(session):
         build_admission_briefing(session, session.focus_admission_case_id))
 
 
+# ========== Task 富工作台（切片三，复用 RiskEvent 已验证模式）==========
+def task_available_actions(role, task):
+    """按 ROLE_PERMS + 任务状态推导该 role 在本任务上可发起的动作。
+
+    复用权限矩阵（不复制）：ProposeMitigation:{ops,cs,finance}（task=assigned）；
+    ApproveMitigation:{manager}（task pending，人类审批动作——列在此仅表"该角色可点"，
+    agent 永远拿不到 approve 工具，原则2/FORBIDDEN_TOOLS）。这是「该角色能不能点」的呈现层判断，
+    真正执行仍由动作层 ROLE_PERMS + maker-checker 硬 gate。"""
+    actions = []
+    if role in ROLE_PERMS["ProposeMitigation"] and task["status"] == "assigned":
+        actions.append("ProposeMitigation")
+    if role in ROLE_PERMS["ApproveMitigation"] and task.get("approval_status") == "pending":
+        actions.append("ApproveMitigation")
+    return actions
+
+
+def build_task_workbench(con, task_id, role):
+    """组装任务中心视图：任务属性（status/approval/assignee/sla/escalation/priority/due）+
+    关联对象（父 RiskEvent、受影响 SO 行、当前提案 proposal）+ 角色可用 action。
+
+    tier 按 role 脱敏；提案里的成本参数 est_cost_usd 对 cs 掩码（与任务台 UI 同规）。
+    返回纯 dict，可单测、可被 render_* 复用。approve/close 永不是 agent 工具（原则2）。"""
+    trow = _rows(con, "SELECT * FROM tasks WHERE task_id=?", task_id)
+    if not trow:
+        return {"error": f"任务 {task_id} 不存在"}
+    task = trow[0]
+    risk = _rows(con, "SELECT * FROM risk_events WHERE risk_event_id=?", task["risk_event_id"])
+    risk = risk[0] if risk else None
+
+    lines = []
+    if risk:
+        lids = json.loads(risk["affected_so_line_ids"] or "[]")
+        if lids:
+            ph = ",".join("?" * len(lids))
+            lines = _rows(con, f"""SELECT l.so_line_id, l.qty, l.promised_delivery_date, l.line_status,
+                           so.so_id, c.customer_id, c.customer_name, c.tier
+                           FROM sales_order_lines l JOIN sales_orders so ON so.so_id=l.so_id
+                           JOIN customers c ON c.customer_id=so.customer_id
+                           WHERE l.so_line_id IN ({ph}) ORDER BY l.so_line_id""", *lids)
+            if not _can_see_tier(role):
+                for ln in lines:
+                    ln["tier"] = MASK
+
+    proposal = None
+    if task["proposed_action"]:
+        params = json.loads(task["proposal_params"] or "{}")
+        # 成本参数脱敏（与任务台 UI 同规：cs 无成本权限 → est_cost_usd 掩码）
+        if role == "cs" and isinstance(params, dict) and "est_cost_usd" in params:
+            params["est_cost_usd"] = MASK
+        proposal = {"proposed_action": task["proposed_action"], "proposal_params": params,
+                    "approval_status": task["approval_status"],
+                    "proposal_actor_role": task["proposal_actor_role"]}
+
+    task_view = {k: task[k] for k in ("task_id", "risk_event_id", "title", "status",
+                 "approval_status", "assignee_role", "assignee_user_id", "assignee_team_id",
+                 "sla_state", "escalation_level", "priority", "due_at")}
+    return {
+        "task": task_view,
+        "risk": {k: risk[k] for k in ("risk_event_id", "type", "rule_id", "severity", "status",
+                                      "root_cause", "affected_value_usd", "shipment_id")}
+                if risk else None,
+        "affected_lines": lines,
+        "proposal": proposal,
+        "available_actions": task_available_actions(role, task),
+        "role": role,
+    }
+
+
+def make_task_agent_session(role, task_id, db_path="data/ontology.sqlite"):
+    """构造预 scope 到本 task + 父风险 + 当前 role 的对象级 agent 会话——同一 permission-aware
+    框架，只注入 role 与 focus，不新造 agent。approve/close 不在其工具集内（原则2，FORBIDDEN_TOOLS）。"""
+    return AgentSession(db_path=db_path, role=role, focus_task_id=task_id)
+
+
+def focus_task_briefing_text(session):
+    """无 API key 确定性 fallback：对 focus 的 task 生成简报（任务治理头 + 复用父风险确定性简报，
+    每条事实带对象 ID 出处）。审批/关闭须人工，AI 只提案（原则2）。不依赖任何 LLM。"""
+    tid = session.focus_task_id
+    if not tid:
+        return "本会话未 focus 到任何 task"
+    bundle = session.focus_task_bundle()
+    if "error" in bundle:
+        return bundle["error"]
+    task = bundle["task"]
+    header = (f"[{tid}] 任务简报（AI 建议，审批/关闭须人工——原则2）\n"
+              f"状态 {task['status']} / 审批 {task.get('approval_status') or '-'} / "
+              f"负责人 {task.get('assignee_user_id') or '-'} / SLA {task.get('sla_state') or '-'} / "
+              f"优先级 {task['priority']} / 处理截止 {task['due_at']}\n"
+              f"父风险 {task['risk_event_id']} ——")
+    return header + "\n" + render_briefing_text(build_risk_briefing(session, task["risk_event_id"]))
+
+
+# ========== Invoice 富工作台（切片四，复用 RiskEvent/AdmissionCase 已验证模式）==========
+def invoice_available_actions(role, tasks):
+    """按 ROLE_PERMS + 费用处置任务状态推导该 role 在本发票上可发起的动作。
+
+    复用权限矩阵（不复制）：费用提案 dispute/accept_charge/rebill_customer 经 propose_mitigation
+    （ProposeMitigation:{ops,cs,finance}，须存在 assigned 的费用处置任务）；审批（ApproveMitigation:{manager}，
+    人类动作，pending 时列出）——rebill 的 G4 incoterm 门禁在审批时校验（本切片不改）。approve 永不是
+    agent 工具（原则2）。tasks 为 flag 本发票的费用风险上的处置任务。"""
+    has_assigned = any(t["status"] == "assigned" for t in tasks)
+    has_pending = any(t.get("approval_status") == "pending" for t in tasks)
+    actions = []
+    if role in ROLE_PERMS["ProposeMitigation"] and has_assigned:
+        actions.append("ProposeMitigation")
+    if role in ROLE_PERMS["ApproveMitigation"] and has_pending:
+        actions.append("ApproveMitigation")
+    return actions
+
+
+def build_invoice_workbench(con, invoice_id, role):
+    """组装发票中心视图：发票属性（status/金额/currency）+ 关联对象（invoice_lines join
+    ExpectedCost 基准与差异、关联 Shipment、flag 本票账单行的费用类 RiskEvent(R4/R5/R6)、
+    其上费用处置任务）+ 角色可用 action。
+
+    成本字段随 role 脱敏（呈现层，与 UI mask_cost 同规：finance/manager 见金额，其余掩码——见
+    INVOICE_COST_FIELDS 注释，区别于 agent 对账工具口径）。返回纯 dict，可单测、可被 render_* 复用。"""
+    irow = _rows(con, "SELECT * FROM invoices WHERE invoice_id=?", invoice_id)
+    if not irow:
+        return {"error": f"发票 {invoice_id} 不存在"}
+    inv = irow[0]
+    lines = _rows(con, """SELECT il.invoice_line_id, il.charge_code, il.container_no, il.qty,
+                          il.unit_price_usd, il.amount_usd, ec.baseline_usd
+                          FROM invoice_lines il
+                          LEFT JOIN expected_costs ec
+                            ON ec.shipment_id=? AND ec.charge_code=il.charge_code
+                            AND ec.container_no=COALESCE(il.container_no,'')
+                          WHERE il.invoice_id=? ORDER BY il.invoice_line_id""",
+                 inv["shipment_id"], invoice_id)
+    for ln in lines:
+        ln["diff_usd"] = (round(ln["amount_usd"] - ln["baseline_usd"], 2)
+                          if ln["baseline_usd"] is not None else None)
+    ship = _rows(con, """SELECT shipment_id, incoterm, delay_days, status,
+                         origin_port_locode, destination_port_locode
+                         FROM shipments WHERE shipment_id=?""", inv["shipment_id"])
+    ship = ship[0] if ship else None
+
+    # flag 本票账单行的费用类风险（同 shipment、affected_invoice_line_ids 与本票行交集非空）
+    line_ids = {ln["invoice_line_id"] for ln in lines}
+    flagging_risks, anom = [], set()
+    for rr in _rows(con, """SELECT risk_event_id, type, rule_id, severity, status,
+                            affected_invoice_line_ids FROM risk_events WHERE shipment_id=?
+                            ORDER BY risk_event_id""", inv["shipment_id"]):
+        ils = set(json.loads(rr["affected_invoice_line_ids"] or "[]"))
+        hit = line_ids & ils
+        if hit:
+            flagging_risks.append({k: rr[k] for k in ("risk_event_id", "type", "rule_id",
+                                                      "severity", "status")}
+                                  | {"affected_lines_on_this_invoice": sorted(hit)})
+            anom |= hit
+    for ln in lines:
+        ln["is_anomaly"] = ln["invoice_line_id"] in anom
+
+    # flag 本票的费用风险上的费用处置任务（供可用 action 判定）
+    flag_rids = [r["risk_event_id"] for r in flagging_risks]
+    tasks = []
+    if flag_rids:
+        ph = ",".join("?" * len(flag_rids))
+        tasks = _rows(con, f"""SELECT task_id, risk_event_id, status, approval_status,
+                       proposed_action, assignee_role FROM tasks
+                       WHERE risk_event_id IN ({ph}) ORDER BY task_id""", *flag_rids)
+
+    # 成本字段呈现层脱敏（finance/manager 见金额，其余掩码——INVOICE_COST_FIELDS）
+    cost_visible = _can_see_cost(role)
+    inv_view = {k: inv[k] for k in ("invoice_id", "vendor_name", "vendor_type",
+                "vendor_invoice_no", "shipment_id", "issue_date", "currency", "status", "total_usd")}
+    if not cost_visible:
+        inv_view["total_usd"] = MASK
+        for ln in lines:
+            for f in INVOICE_COST_FIELDS:
+                if ln.get(f) is not None:
+                    ln[f] = MASK
+    return {
+        "invoice": inv_view,
+        "lines": lines,
+        "shipment": ship,
+        "flagging_risks": flagging_risks,
+        "cost_tasks": tasks,
+        "available_actions": invoice_available_actions(role, tasks),
+        "cost_visible": cost_visible,
+        "role": role,
+        "note": "呈现层按 role 脱敏发票金额（UI mask_cost 同规）；agent 对账工具另有'对账数据非敏感'口径",
+    }
+
+
+def make_invoice_agent_session(role, invoice_id, db_path="data/ontology.sqlite"):
+    """构造预 scope 到本发票 + 关联费用风险 + 当前 role 的对象级 agent 会话——同一 permission-aware
+    框架，只注入 role 与 focus，不新造 agent。帮分析费用差异、起草 dispute 提案；approve/close 不在其
+    工具集内（原则2，FORBIDDEN_TOOLS：agent 只提案不审批）。"""
+    return AgentSession(db_path=db_path, role=role, focus_invoice_id=invoice_id)
+
+
+def focus_invoice_briefing_text(session):
+    """无 API key 确定性 fallback：对 focus 的发票生成对账简报（逐行差异 + 异常 + dispute 提案草案，
+    每条带对象 ID 出处，needs_human_approval 恒 true）。不依赖任何 LLM。"""
+    if not session.focus_invoice_id:
+        return "本会话未 focus 到任何 invoice"
+    return render_invoice_briefing_text(
+        build_invoice_briefing(session, session.focus_invoice_id))
+
+
 # ---------- Streamlit 渲染（延迟 import st；仅 UI 用，纯逻辑测试不触及）----------
 def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, render_table):
     """在风险队列内渲染对象工作台：① 风险属性 ② 关联对象 ③ 角色可用 action ④ 对象级 agent 面板。
@@ -356,6 +562,147 @@ def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_
     q = st.text_input("向对象级 AI 提问（focus 已锁定本案）", key=f"awb_q_{admission_case_id}")
     if st.button("询问（确定性简报作答，无 key 可跑）", key=f"awb_ask_{admission_case_id}"):
         st.text(focus_admission_briefing_text(sess))
+        if q:
+            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
+                       f"「{q}」自由问答，工具集与脱敏不变。）")
+
+
+def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render_table):
+    """在任务处理台内渲染任务对象工作台：① 任务属性 ② 关联对象（父 RiskEvent / 受影响 SO 行 /
+    当前提案）③ 角色可用 action ④ 对象级 agent 面板（预 scope 到本 task + 父风险，permission-aware）。
+
+    与 render_object_workbench 同结构（复用已验证模式）。db_factory / render_table 同规。"""
+    import streamlit as st
+
+    con = db_factory()
+    wb = build_task_workbench(con, task_id, role)
+    if "error" in wb:
+        st.warning(wb["error"])
+        return
+    t, r = wb["task"], wb["risk"]
+    st.markdown(f"### 🔬 对象工作台 · {t['task_id']}")
+    st.caption("以 Task 为中心的富视图：属性 + 关联对象（父风险/受影响行/提案）+ 该角色可用动作 + "
+               "对象级 AI（预 scope 到本 task + 父风险，permission-aware）")
+
+    # ① 任务属性
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("任务状态", t["status"])
+    c2.metric("审批", t["approval_status"] or "-")
+    c3.metric("SLA", t["sla_state"] or "-")
+    c4.metric("升级级别", t["escalation_level"])
+    st.markdown(f"**{t['title']}**　负责人 `{t['assignee_user_id'] or '-'}`　"
+                f"团队 `{t['assignee_team_id'] or '-'}`　负责角色 `{t['assignee_role']}`　"
+                f"优先级 `{t['priority']}`　处理截止 `{t['due_at']}`")
+
+    # ② 关联对象
+    if r:
+        st.markdown(f"**关联 · 父风险** `{r['risk_event_id']}`（{r['severity']} 级 {r['type']}，"
+                    f"规则 {r['rule_id']}，货运 {r['shipment_id']}，影响 ${r['affected_value_usd']}）"
+                    f"　根因：{r['root_cause']}")
+    st.markdown("**关联 · 受影响订单行**")
+    render_table([{"订单行": x["so_line_id"], "订单": x["so_id"], "数量": x["qty"],
+                   "承诺日": x["promised_delivery_date"], "行状态": x["line_status"],
+                   "客户": x["customer_name"], "客户等级": x["tier"]}
+                  for x in wb["affected_lines"]])
+    if wb["proposal"]:
+        p = wb["proposal"]
+        st.markdown(f"**关联 · 当前提案**：`{p['proposed_action']}` {p['proposal_params']}"
+                    f"　审批 `{p['approval_status'] or '-'}`　提案角色 `{p['proposal_actor_role'] or '-'}`")
+
+    # ③ 该角色可用 action（按 ROLE_PERMS gate）
+    acts = wb["available_actions"]
+    st.markdown(f"**该角色（{role}）在本任务上可发起的动作**："
+                + ("、".join(acts) if acts else "（无——该角色对本任务状态无可发起动作）"))
+    st.caption("动作权限由 app.actions.ROLE_PERMS + maker-checker 硬 gate；审批（A5）永远人来点，"
+               "AI 只提案不审批（原则2）。执行入口在任务台「提案/审批」表单。")
+
+    # ④ 对象级 agent 面板（预 scope 到本 task + 父风险）
+    st.markdown("**对象级 AI 助手**")
+    sess = make_task_agent_session(role, task_id)
+    st.caption(f"本会话工具集（role={role}，focus={task_id}）："
+               + "、".join(sorted(sess.allowed_tools))
+               + "　— approve/close 永不在内（agent 只提案不审批）。")
+    with st.expander("查看确定性任务简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
+        st.text(focus_task_briefing_text(sess))
+    q = st.text_input("向对象级 AI 提问（focus 已锁定本任务）", key=f"twb_q_{task_id}")
+    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"twb_ask_{task_id}"):
+        st.text(focus_task_briefing_text(sess))
+        if q:
+            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
+                       f"「{q}」自由问答，工具集与脱敏不变。）")
+
+
+def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, render_table):
+    """在费用工作台内渲染发票对象工作台：① 发票属性 ② 关联对象（账单行+基准差异 / 关联货运 /
+    flag 它的费用风险 / 费用处置任务）③ 角色可用 action ④ 对象级 agent 面板（预 scope 到本发票 +
+    关联风险，permission-aware，帮分析费用差异/起草 dispute，不审批）。
+
+    与 render_admission_object_workbench 同结构（复用已验证模式）。成本字段随 role 脱敏。"""
+    import streamlit as st
+
+    con = db_factory()
+    wb = build_invoice_workbench(con, invoice_id, role)
+    if "error" in wb:
+        st.warning(wb["error"])
+        return
+    iv, sp = wb["invoice"], wb["shipment"]
+    st.markdown(f"### 🔬 对象工作台 · {iv['invoice_id']}")
+    st.caption("以 Invoice 为中心的富视图：属性 + 关联对象（账单行/货运/费用风险）+ 该角色可用动作 + "
+               "对象级 AI（预 scope 到本发票 + 关联风险，permission-aware）")
+
+    # ① 发票属性（金额随 role 脱敏）
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("状态", iv["status"])
+    c2.metric("金额", f"{iv['total_usd']} {iv['currency']}" if wb["cost_visible"] else MASK)
+    c3.metric("类型", iv["vendor_type"])
+    c4.metric("开票日", iv["issue_date"])
+    st.markdown(f"**vendor** `{iv['vendor_name']}`　单号 `{iv['vendor_invoice_no'] or '-'}`　"
+                f"货运 `{iv['shipment_id']}`"
+                + (f"（incoterm {sp['incoterm']}，{sp['origin_port_locode']}→"
+                   f"{sp['destination_port_locode']}，延误 {sp['delay_days']} 天）" if sp else ""))
+    if not wb["cost_visible"]:
+        st.caption(f"成本字段对角色 {role} 脱敏（🔒）——finance/manager 可见金额，其余掩码"
+                   "（与费用工作台 mask_cost 同规）。")
+
+    # ② 关联对象
+    st.markdown("**关联 · 账单行（join 基准与差异，异常来自费用风险标记）**")
+    render_table([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+                   "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
+                   "基准$": x["baseline_usd"] if x["baseline_usd"] is not None else "无基准",
+                   "差异$": x["diff_usd"], "异常": "!" if x["is_anomaly"] else ""}
+                  for x in wb["lines"]])
+    if wb["flagging_risks"]:
+        st.markdown("**关联 · flag 本发票的费用风险（R4/R5/R6）**")
+        render_table([{"风险": r["risk_event_id"], "规则": r["rule_id"], "类型": r["type"],
+                       "级别": r["severity"], "状态": r["status"],
+                       "命中本票账单行": "、".join(r["affected_lines_on_this_invoice"])}
+                      for r in wb["flagging_risks"]])
+    if wb["cost_tasks"]:
+        st.markdown("**关联 · 费用处置任务**")
+        render_table([{"任务": t["task_id"], "风险": t["risk_event_id"],
+                       "负责角色": t["assignee_role"], "提案": t["proposed_action"] or "-",
+                       "审批": t["approval_status"] or "-", "状态": t["status"]}
+                      for t in wb["cost_tasks"]])
+
+    # ③ 该角色可用 action（按 ROLE_PERMS gate）
+    acts = wb["available_actions"]
+    st.markdown(f"**该角色（{role}）在本发票上可发起的动作**："
+                + ("、".join(acts) if acts else "（无——该角色对本发票关联任务状态无可发起动作）"))
+    st.caption("费用提案 dispute/accept_charge/rebill_customer 经 propose_mitigation（ProposeMitigation "
+               "权限）；rebill 的 G4 incoterm 门禁在审批时判定；审批（A5）永远人来点，AI 只提案不审批"
+               "（原则2）。执行入口在任务台费用处置表单。")
+
+    # ④ 对象级 agent 面板（预 scope 到本发票 + 关联风险）
+    st.markdown("**对象级 AI 助手**")
+    sess = make_invoice_agent_session(role, invoice_id)
+    st.caption(f"本会话工具集（role={role}，focus={invoice_id}）："
+               + "、".join(sorted(sess.allowed_tools))
+               + "　— approve/close 永不在内（agent 只分析/起草提案，不审批）。")
+    with st.expander("查看确定性发票对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
+        st.text(focus_invoice_briefing_text(sess))
+    q = st.text_input("向对象级 AI 提问（focus 已锁定本发票）", key=f"iwb_q_{invoice_id}")
+    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"iwb_ask_{invoice_id}"):
+        st.text(focus_invoice_briefing_text(sess))
         if q:
             st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
                        f"「{q}」自由问答，工具集与脱敏不变。）")

@@ -168,29 +168,43 @@ class AgentSession:
     """一次 AI 会话的工具执行环境。所有调用统一经 dispatch，越权/未知工具拒绝并审计。"""
 
     def __init__(self, db_path="data/ontology.sqlite", config_path="config/datagen.yaml",
-                 role=AI_ROLE, focus_risk_event_id=None, focus_admission_case_id=None):
+                 role=AI_ROLE, focus_risk_event_id=None, focus_admission_case_id=None,
+                 focus_task_id=None, focus_invoice_id=None):
         self.con = sqlite3.connect(db_path)
         self.con.row_factory = sqlite3.Row
         cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
         self.as_of = cfg["window"]["as_of"]
         self.buf = cfg["buffers"]["customs_days"] + cfg["buffers"]["lastmile_days"]
         # permission-aware 注入：当前 role 决定工具集 + 脱敏；focus 决定对象 scoping
-        # （RiskEvent 与 AdmissionCase 两类 focus 同一机制，只是聚焦不同对象及其邻居）
+        # （RiskEvent / AdmissionCase / Task / Invoice 四类 focus 同一机制，只是聚焦不同对象及其邻居）
         self.role = role
         self.focus_risk_event_id = focus_risk_event_id
         self.focus_admission_case_id = focus_admission_case_id
+        self.focus_task_id = focus_task_id
+        self.focus_invoice_id = focus_invoice_id
         self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
         return [dict(r) for r in self.con.execute(sql, a)]
 
     def _focus_shipment_id(self):
-        """focus 风险所属 shipment（对象 scoping 的邻居锚点）；无 focus/不存在返回 None。"""
-        if not self.focus_risk_event_id:
-            return None
-        r = self._rows("SELECT shipment_id FROM risk_events WHERE risk_event_id=?",
-                       self.focus_risk_event_id)
-        return r[0]["shipment_id"] if r else None
+        """focus 对象所属 shipment（对象 scoping 的邻居锚点）；无 focus/不存在返回 None。
+        RiskEvent focus 直接取其 shipment；Task focus 经父 RiskEvent 取 shipment；
+        Invoice focus 直接取其 shipment——三类对象工作台共用同一 shipment 邻居锚点。"""
+        if self.focus_risk_event_id:
+            r = self._rows("SELECT shipment_id FROM risk_events WHERE risk_event_id=?",
+                           self.focus_risk_event_id)
+            return r[0]["shipment_id"] if r else None
+        if self.focus_task_id:
+            r = self._rows("""SELECT re.shipment_id FROM tasks t
+                              JOIN risk_events re ON re.risk_event_id=t.risk_event_id
+                              WHERE t.task_id=?""", self.focus_task_id)
+            return r[0]["shipment_id"] if r else None
+        if self.focus_invoice_id:
+            r = self._rows("SELECT shipment_id FROM invoices WHERE invoice_id=?",
+                           self.focus_invoice_id)
+            return r[0]["shipment_id"] if r else None
+        return None
 
     def tool_defs(self):
         """按会话 role/focus 暴露的工具定义子集（供 LLM 注册；与 dispatch gating 对齐，
@@ -366,10 +380,23 @@ class AgentSession:
     def list_invoices(self, status=None):
         sql = """SELECT invoice_id, vendor_type, vendor_name, shipment_id, total_usd,
                         status, issue_date FROM invoices"""
-        rows = self._rows(sql + " WHERE status=? ORDER BY invoice_id"
-                          if status else sql + " ORDER BY invoice_id",
-                          *([status] if status else []))
-        return {"count": len(rows), "invoices": rows}
+        clauses, params = [], []
+        if status:
+            clauses.append("status=?")
+            params.append(status)
+        # 对象 scoping：focus 到某发票时检索默认聚焦本票所属 shipment 的发票（同货运邻居，
+        # 不是全库），与 focus_risk 的 shipment 邻居锚点同规。
+        focus_ship = self._focus_shipment_id() if self.focus_invoice_id else None
+        if focus_ship:
+            clauses.append("shipment_id=?")
+            params.append(focus_ship)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        rows = self._rows(sql + " ORDER BY invoice_id", *params)
+        out = {"count": len(rows), "invoices": rows}
+        if focus_ship:
+            out["focus_scope"] = {"invoice_id": self.focus_invoice_id, "shipment_id": focus_ship}
+        return out
 
     def get_invoice_context(self, invoice_id):
         inv = self._rows("SELECT * FROM invoices WHERE invoice_id=?", invoice_id)
@@ -402,6 +429,59 @@ class AgentSession:
         return {"invoice": inv, "lines": lines,
                 "shipment": sp[0] if sp else None,
                 "note": "invoice amounts visible to AI (对账数据非敏感)"}
+
+    def focus_task_bundle(self):
+        """对象 scoping 汇总：把检索聚焦到本会话 focus 的 task 及其邻居（父 RiskEvent、
+        受影响 SO 行、当前提案），而非全库。无 focus 返回 error。审批/关闭不在此（原则2）。"""
+        tid = self.focus_task_id
+        if not tid:
+            return {"error": "本会话未 focus 到任何 task"}
+        task = self._rows("SELECT * FROM tasks WHERE task_id=?", tid)
+        if not task:
+            return {"error": f"任务 {tid} 不存在"}
+        task = task[0]
+        rid = task["risk_event_id"]
+        risk = self.get_risk(rid)
+        impact = self.get_impact_chain(rid) if "error" not in risk else {"affected": []}
+        neighbors = {
+            "risk_event_id": rid,
+            "shipment_id": risk.get("shipment_id") if "error" not in risk else None,
+            "affected_so_line_ids": [a["so_line_id"] for a in impact.get("affected", [])],
+            "assignee_user_id": task.get("assignee_user_id"),
+        }
+        return {"focus_task_id": tid, "task": task,
+                "risk": risk if "error" not in risk else None, "impact": impact,
+                "neighbors": neighbors,
+                "note": f"object-scoped to {tid} and parent risk {rid}; role={self.role}"}
+
+    def focus_invoice_bundle(self):
+        """对象 scoping 汇总：把检索聚焦到本会话 focus 的 invoice 及其邻居（invoice_lines、
+        所属 shipment、flag 本票账单行的费用类风险 R4/R5/R6），而非全库。对账金额对 AI 可见
+        （对账数据非敏感，与 get_invoice_context 同口径）；审批不在此（原则2）。无 focus 返回 error。"""
+        iid = self.focus_invoice_id
+        if not iid:
+            return {"error": "本会话未 focus 到任何 invoice"}
+        ctx = self.get_invoice_context(iid)
+        if "error" in ctx:
+            return ctx
+        inv, lines = ctx["invoice"], ctx["lines"]
+        line_ids = {ln["invoice_line_id"] for ln in lines}
+        related_risks = []
+        for rr in self._rows("""SELECT risk_event_id, rule_id, type, severity, status,
+                                affected_invoice_line_ids FROM risk_events WHERE shipment_id=?
+                                ORDER BY risk_event_id""", inv["shipment_id"]):
+            ils = json.loads(rr["affected_invoice_line_ids"]) if rr["affected_invoice_line_ids"] else []
+            if line_ids & set(ils):
+                related_risks.append(rr)
+        neighbors = {
+            "shipment_id": inv["shipment_id"],
+            "invoice_line_ids": sorted(line_ids),
+            "risk_event_ids": [r["risk_event_id"] for r in related_risks],
+        }
+        return {"focus_invoice_id": iid, "invoice": inv, "lines": lines,
+                "shipment": ctx.get("shipment"), "related_risks": related_risks,
+                "neighbors": neighbors,
+                "note": f"object-scoped to {iid} and related risks; role={self.role}"}
 
     def explain_relationship_path(self, source_type, source_id, target_type, target_id, max_depth):
         try:

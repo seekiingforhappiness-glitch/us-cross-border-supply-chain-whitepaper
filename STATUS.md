@@ -97,6 +97,16 @@
   **controller 独立对抗验证**：manager agent 注入 approve/reject → 均被拒；直调动作层错误角色 ok=False（双闸）。
   ADM_PERMS/门禁未改（diff 空）、agent.evaluate+RiskEvent 切片不回归、engine R/P=1.000、admission 工作台 34 断言全绿、
   四角色 UI 0 异常。**→ 对象级 agent 模式现已在 2 对象 / 2 场景验证泛化，可继续复制到 Task/Invoice。**
+- **对象工作台切片三、四（Task + Invoice）已完成并通过 controller review**：复制已验证模式——复用 AgentSession
+  （加 focus_task_id/focus_invoice_id）+ `app/object_workbench.py` 扩展两富工作台（Task：属性+父RiskEvent+受影响行+
+  提案+对象级agent；Invoice：属性+lines+关联Shipment/RiskEvent/ExpectedCost+成本脱敏+对象级agent 帮分析费用差异/起草dispute）。
+  **controller 独立对抗验证**：task/invoice agent 各角色注入 approve 均被拒、直调动作层 ok=False（双闸）；
+  ROLE_PERMS/FORBIDDEN/G4-REBILL diff=0、agent.evaluate+前两切片不回归、engine R/P=1.000、四角色 UI 0 异常。
+  **→ 四个核心决策对象（RiskEvent/AdmissionCase/Task/Invoice）现均有对象工作台 + permission-aware agent。**
+  **待 Daniel 裁决（controller 独立发现）**：invoice 工作台(UI) 对 ops 脱敏金额，但 agent `get_invoice_context`
+  对所有角色返回同样数据（维持 W6"对账数据对 AI 非敏感"口径，未 role-mask）——**非安全越权**（agent 不能动作，
+  且 ops 导航无 cost tab 触达不到）；若要 agent 完全继承 UI 数据范围（Foundry 理想），需给 get_invoice_context 按角色
+  脱敏并同步改 agent eval 期望。
 
 ## v0.4 进度
 

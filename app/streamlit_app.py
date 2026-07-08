@@ -795,6 +795,10 @@ def render_task_tab():
                 if st.form_submit_button("提交审批"):
                     show_result(approve_mitigation(db(), tsel, decision, comment,
                                                    actor=actor, role=role, as_of=AS_OF))
+        # 对象工作台入口：点选的 task → 进入 Task 富工作台（同 RiskEvent 的 focus 机制）
+        st.divider()
+        st.session_state["focus_task_id"] = tsel
+        object_workbench.render_task_object_workbench(tsel, role, actor, AS_OF, db, render_table)
 
 # ---------- 费用工作台（v0.4）----------
 def render_cost_tab():
@@ -836,6 +840,10 @@ def render_cost_tab():
                        "差异$": diff(x["amount_usd"], x["baseline_usd"]),
                        "异常": "!" if x["invoice_line_id"] in anom_ils else ""}
                       for x in ilines])
+        # 对象工作台入口：点选的 invoice → 进入 Invoice 富工作台（同 RiskEvent 的 focus 机制）
+        st.divider()
+        st.session_state["focus_invoice_id"] = isel
+        object_workbench.render_invoice_object_workbench(isel, role, actor, AS_OF, db, render_table)
 
 # ---------- 对象详情 ----------
 def render_obj_tab():

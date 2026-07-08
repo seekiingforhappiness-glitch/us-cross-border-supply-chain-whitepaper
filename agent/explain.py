@@ -4,6 +4,7 @@
 LLM（若接入）只负责把简报转述成自然对话——这保证"AI 回答全部可溯源到对象 ID"
 不靠模型自觉，而靠架构。
 """
+import json
 from datetime import date, timedelta
 
 
@@ -91,4 +92,92 @@ def render_briefing_text(briefing):
         out.append(f"{i}. {r['action']} — {r['rationale']}")
     out.append("")
     out.append("数据出处对象: " + ", ".join(briefing["citations"]))
+    return "\n".join(out)
+
+
+def build_invoice_briefing(session, invoice_id):
+    """确定性发票对账简报（Invoice 对象工作台的无 key fallback）：逐行 amount vs baseline 差异、
+    异常标记、关联费用风险，并给出 dispute 提案草案（proposal-only）。
+
+    红线：① 对账金额对 AI 可见（对账数据非敏感，与 get_invoice_context 同口径，非 CostScenario 脱敏）；
+    ② rebill_customer 是否放行由 G4 incoterm 责任门禁在**审批时**判定，AI 只提示不决策不审批；
+    ③ needs_human_approval 恒 true——AI 永远不是审批入口（原则2）。"""
+    from app.actions import REBILL_MATRIX  # 局部 import 避免 agent↔app 环形依赖
+    ctx = session.get_invoice_context(invoice_id)
+    if "error" in ctx:
+        return ctx
+    inv, lines, ship = ctx["invoice"], ctx["lines"], ctx.get("shipment")
+    anomaly_lines = [ln for ln in lines if ln.get("is_anomaly")]
+    over_lines = [ln for ln in lines if ln.get("diff_usd") is not None and ln["diff_usd"] > 0]
+    total_over = round(sum(ln["diff_usd"] for ln in over_lines), 2)
+    disputed_amount = round(sum(ln["diff_usd"] for ln in anomaly_lines
+                                if ln.get("diff_usd") is not None), 2)
+    citations = {invoice_id, inv["shipment_id"]} | {ln["invoice_line_id"] for ln in lines}
+    # 关联风险：本票 shipment 上 flag 了本发票账单行的费用类风险（R4/R5/R6）
+    line_ids = {ln["invoice_line_id"] for ln in lines}
+    related = []
+    for rr in session._rows("""SELECT risk_event_id, rule_id, type, severity, status,
+                               affected_invoice_line_ids FROM risk_events WHERE shipment_id=?
+                               ORDER BY risk_event_id""", inv["shipment_id"]):
+        ils = json.loads(rr["affected_invoice_line_ids"]) if rr["affected_invoice_line_ids"] else []
+        if line_ids & set(ils):
+            related.append(rr)
+            citations.add(rr["risk_event_id"])
+    incoterm = ship["incoterm"] if ship else None
+    rebillable = REBILL_MATRIX.get(incoterm, set()) if incoterm else set()
+
+    recs = []
+    if anomaly_lines:
+        recs.append({"action": "dispute",
+                     "rationale": f"账单行 {[ln['invoice_line_id'] for ln in anomaly_lines]} 被关联风险标记异常，"
+                                  f"超基准合计 ${total_over}；建议对 vendor {inv['vendor_name']} 发起 dispute。"
+                                  "须运营/财务经 propose_mitigation 提案，最终人工审批（AI 不审批）",
+                     "params_hint": {"reason": "line(s) flagged anomalous vs expected baseline",
+                                     "disputed_amount_usd": disputed_amount or total_over}})
+    if incoterm and rebillable:
+        recs.append({"action": "rebill_customer",
+                     "rationale": f"该票 incoterm={incoterm} 下可转嫁费种={sorted(rebillable)}；"
+                                  "是否放行由 G4 责任门禁在审批时判定，AI 不做该决策也不审批",
+                     "params_hint": {"incoterm_basis": incoterm}})
+    elif incoterm:
+        recs.append({"action": "note",
+                     "rationale": f"该票 incoterm={incoterm}，G4 责任矩阵下无可转嫁费种，"
+                                  "rebill_customer 审批时会被拒；宜 dispute 或 accept_charge",
+                     "params_hint": {}})
+
+    summary = (f"[{invoice_id}] 发票对账简报：vendor {inv['vendor_name']}（{inv['vendor_type']}），"
+               f"货运 {inv['shipment_id']}，状态 {inv['status']}，金额 ${inv['total_usd']} {inv['currency']}。"
+               f"{len(lines)} 个账单行，其中 {len(anomaly_lines)} 行被关联风险标记异常、"
+               f"{len(over_lines)} 行超基准（超支合计 ${total_over}）。"
+               "以下均为提案/提示，须人工审批执行（proposal-only）。")
+    return {"summary": summary,
+            "invoice": {"id": invoice_id, "vendor": inv["vendor_name"], "status": inv["status"],
+                        "total_usd": inv["total_usd"], "currency": inv["currency"],
+                        "shipment_id": inv["shipment_id"], "incoterm": incoterm},
+            "lines": lines, "anomaly_line_ids": [ln["invoice_line_id"] for ln in anomaly_lines],
+            "related_risk_ids": [r["risk_event_id"] for r in related],
+            "recommendations": recs, "needs_human_approval": True,
+            "citations": sorted(citations)}
+
+
+def render_invoice_briefing_text(b):
+    """把发票对账简报渲染为纯文本（scripted 评估与 UI 展示共用）。"""
+    if "error" in b:
+        return b["error"]
+    out = [b["summary"], "", "账单行差异（amount vs baseline）："]
+    for ln in b["lines"]:
+        base = ln["baseline_usd"] if ln.get("baseline_usd") is not None else "无基准"
+        flag = " ⚠异常" if ln.get("is_anomaly") else ""
+        out.append(f"- {ln['invoice_line_id']} {ln['charge_code']} 柜{ln.get('container_no') or '-'}："
+                   f"${ln['amount_usd']} vs 基准 {base}，差异 {ln.get('diff_usd')}{flag}")
+    if b["related_risk_ids"]:
+        out.append("")
+        out.append("关联费用风险：" + ", ".join(b["related_risk_ids"]))
+    out.append("")
+    out.append("处置建议 / 提示（须人工审批，AI 只提案不审批）：")
+    for i, r in enumerate(b["recommendations"], 1):
+        out.append(f"{i}. {r['action']} — {r['rationale']}")
+    out.append("")
+    out.append("needs_human_approval: true（AI 不是审批入口）")
+    out.append("数据出处对象: " + ", ".join(b["citations"]))
     return "\n".join(out)
