@@ -424,6 +424,157 @@ def focus_invoice_briefing_text(session):
         build_invoice_briefing(session, session.focus_invoice_id))
 
 
+# ========== PurchaseOrder 富工作台（采购切片，Build 3，复用已验证四次的模式）==========
+def po_available_actions(role, risks_with_tasks):
+    """对本 PO 上每个锚定采购风险，按 ROLE_PERMS + 风险/任务状态推导可用 action（复用 available_actions）。
+
+    采购 RiskEvent(R7-R10) 走既有 assign→propose→approve 闭环，与控制塔风险同一权限矩阵——
+    故直接复用 available_actions（不复制权限）。approve/close 永远人来点，agent 拿不到（原则2）。
+    返回 {risk_event_id: [actions]}。"""
+    return {r["risk_event_id"]: available_actions(role, r["status"], r.get("tasks", []))
+            for r in risks_with_tasks}
+
+
+def build_po_workbench(con, po_id, role):
+    """组装采购单中心视图：PO 属性 + PoLine 行 + 关联 GoodsReceipt/SupplierInvoice +
+    三方对账（订购×收货×开票逐行）+ 锚定本 PO 的采购 RiskEvent(R7-R10) + 每风险角色可用 action。
+
+    金额字段随 role 脱敏（unit_price/amount/total，与 UI mask_cost / 标准视图 MONEY_FIELDS 同规：
+    finance/manager 可见，其余掩码——R7 延误/R8 短装/R9 QC 是数量/日期维度，ops 无需金额即可处置；
+    R10 价量不符是财务维度）。返回纯 dict，可单测、可被 render_* 复用。"""
+    po_row = _rows(con, "SELECT * FROM purchase_orders WHERE po_id=?", po_id)
+    if not po_row:
+        return {"error": f"采购单 {po_id} 不存在"}
+    po = po_row[0]
+    sup = _rows(con, """SELECT supplier_id, supplier_name, city, factory_audit_status
+                        FROM suppliers WHERE supplier_id=?""", po["supplier_id"])
+    sup = sup[0] if sup else None
+    cost_visible = _can_see_cost(role)
+
+    def money(v):
+        return MASK if (v is not None and not cost_visible) else v
+
+    po_lines = _rows(con, "SELECT * FROM po_lines WHERE po_id=? ORDER BY po_line_id", po_id)
+    grns = _rows(con, "SELECT * FROM goods_receipts WHERE po_id=? ORDER BY grn_id", po_id)
+    sinvs = _rows(con, """SELECT * FROM supplier_invoices WHERE po_id=?
+                          ORDER BY supplier_invoice_id""", po_id)
+
+    # 收货聚合（每 po_line：累计收货/验收/拒收 + 最早到货日 + QC）
+    recv = {}
+    for r in _rows(con, """SELECT gl.po_line_id, gl.received_qty, gl.accepted_qty, gl.rejected_qty,
+                           gl.qc_status, gl.defect_ppm, gl.received_date
+                           FROM goods_receipt_lines gl JOIN goods_receipts g ON g.grn_id=gl.grn_id
+                           WHERE g.po_id=? ORDER BY gl.po_line_id, gl.grn_line_id""", po_id):
+        a = recv.setdefault(r["po_line_id"], {"received": 0, "accepted": 0, "rejected": 0,
+                                              "first_recv": None, "qc_failed": False, "max_ppm": 0})
+        a["received"] += r["received_qty"]
+        a["accepted"] += r["accepted_qty"]
+        a["rejected"] += r["rejected_qty"]
+        a["qc_failed"] = a["qc_failed"] or r["qc_status"] == "failed"
+        a["max_ppm"] = max(a["max_ppm"], r["defect_ppm"])
+        if a["first_recv"] is None or r["received_date"] < a["first_recv"]:
+            a["first_recv"] = r["received_date"]
+    # 开票聚合（每 po_line：累计开票量/金额 + 单价）
+    invg = {}
+    for r in _rows(con, """SELECT sil.po_line_id, sil.qty, sil.unit_price_usd, sil.amount_usd
+                           FROM supplier_invoice_lines sil JOIN supplier_invoices si
+                             ON si.supplier_invoice_id=sil.supplier_invoice_id
+                           WHERE si.po_id=? ORDER BY sil.po_line_id""", po_id):
+        a = invg.setdefault(r["po_line_id"], {"qty": 0, "amount": 0.0, "unit_price": None})
+        a["qty"] += r["qty"]
+        a["amount"] = round(a["amount"] + r["amount_usd"], 2)
+        if a["unit_price"] is None:
+            a["unit_price"] = r["unit_price_usd"]
+    # 三方对账逐行（订购 × 收货 × 开票）
+    reconciliation = []
+    for pl in po_lines:
+        rc = recv.get(pl["po_line_id"], {})
+        iv = invg.get(pl["po_line_id"], {})
+        reconciliation.append({
+            "po_line_id": pl["po_line_id"], "sku_id": pl["sku_id"],
+            "ordered_qty": pl["qty"], "unit_price_usd": money(pl["unit_price_usd"]),
+            "expected_ready_date": pl["expected_ready_date"], "line_status": pl["line_status"],
+            "received_qty": rc.get("received", 0), "accepted_qty": rc.get("accepted", 0),
+            "rejected_qty": rc.get("rejected", 0), "earliest_receipt": rc.get("first_recv"),
+            "qc_failed": rc.get("qc_failed", False), "max_defect_ppm": rc.get("max_ppm", 0),
+            "invoiced_qty": iv.get("qty", 0), "invoiced_amount_usd": money(iv.get("amount")),
+            "invoice_unit_price_usd": money(iv.get("unit_price")),
+            "qty_short": pl["qty"] - rc.get("received", 0)})
+
+    # 锚定本 PO 的采购风险 + 处置任务 + 每风险角色可用 action
+    risks_view, all_actions = [], set()
+    for r in _rows(con, "SELECT * FROM risk_events WHERE po_id=? ORDER BY risk_event_id", po_id):
+        tasks = _rows(con, """SELECT task_id, status, approval_status, assignee_role,
+                              assignee_user_id, proposed_action FROM tasks WHERE risk_event_id=?
+                              ORDER BY task_id""", r["risk_event_id"])
+        acts = available_actions(role, r["status"], tasks)
+        all_actions |= set(acts)
+        risks_view.append({
+            "risk_event_id": r["risk_event_id"], "rule_id": r["rule_id"], "type": r["type"],
+            "severity": r["severity"], "status": r["status"],
+            "affected_value_usd": r["affected_value_usd"], "root_cause": r["root_cause"],
+            "affected_po_line_ids": json.loads(r["affected_po_line_ids"] or "[]"),
+            "tasks": tasks, "available_actions": acts})
+
+    return {
+        "purchase_order": {k: po[k] for k in ("po_id", "supplier_id", "sku_id", "qty",
+                           "po_date", "expected_ready_date", "status")},
+        "supplier": sup,
+        "po_lines": [{**pl, "unit_price_usd": money(pl["unit_price_usd"])} for pl in po_lines],
+        "goods_receipts": grns,
+        "supplier_invoices": [{**si, "total_usd": money(si["total_usd"])} for si in sinvs],
+        "reconciliation": reconciliation,
+        "anchored_risks": risks_view,
+        "available_actions": sorted(all_actions),
+        "cost_visible": cost_visible,
+        "role": role,
+    }
+
+
+def make_po_agent_session(role, po_id, db_path="data/ontology.sqlite"):
+    """构造预 scope 到本 PO + 当前 role 的对象级 agent 会话——同一 permission-aware 框架，
+    只注入 role 与 focus_po_id，不新造 agent。帮分析三方对账差异、起草供应商索赔/发票争议提案；
+    approve/close 不在其工具集内（原则2，FORBIDDEN_TOOLS：agent 只提案不审批）。"""
+    return AgentSession(db_path=db_path, role=role, focus_po_id=po_id)
+
+
+def focus_po_briefing_text(session):
+    """无 API key 确定性 fallback：对 focus 的采购单生成三方对账简报（逐行订购/收货/开票差异 +
+    锚定采购风险 + 处置提案建议，金额随 role 脱敏，每条带对象 ID 出处，审批须人工——原则2）。
+    不依赖任何 LLM。"""
+    pid = session.focus_po_id
+    if not pid:
+        return "本会话未 focus 到任何 purchase order"
+    b = session.focus_po_bundle()
+    if "error" in b:
+        return b["error"]
+    po = b["purchase_order"]
+    lines = [f"[{pid}] 采购三方对账简报（AI 建议，审批/关闭须人工——原则2）",
+             f"供应商 {po['supplier_id']} / 采购单状态 {po['status']} / "
+             f"下单 {po['po_date']} / 数据出处对象 purchase_orders.{pid}",
+             "三方对账（订购×收货×开票，逐行；数据出处对象 po_lines/goods_receipt_lines/"
+             "supplier_invoice_lines）："]
+    for rc in b["reconciliation"]:
+        lines.append(
+            f"  · {rc['po_line_id']}（{rc['sku_id']}）订 {rc['ordered_qty']} @ "
+            f"{rc['unit_price_usd']} | 收 {rc['received_qty']}（验 {rc['accepted_qty']}/"
+            f"拒 {rc['rejected_qty']}，最早到货 {rc['earliest_receipt'] or '未收'}，"
+            f"QC {'failed' if rc['qc_failed'] else 'ok'}，ppm≤{rc['max_defect_ppm']}）| "
+            f"开票 {rc['invoiced_qty']} @ {rc['invoice_unit_price_usd']} = "
+            f"{rc['invoiced_amount_usd']} | 缺口 {rc['qty_short']}")
+    if b["anchored_risks"]:
+        lines.append("锚定采购风险（R7-R10，数据出处对象 risk_events，锚点 po_id）：")
+        for r in b["anchored_risks"]:
+            lines.append(f"  · {r['risk_event_id']} {r['rule_id']} {r['type']}（{r['severity']}，"
+                         f"{r['status']}，影响 ${r['affected_value_usd']}）：{r['root_cause']}")
+        lines.append("建议：延误→expedite_po / 短装→accept_receipt_variance / "
+                     "质量→raise_supplier_claim / 价量→dispute_supplier_invoice；"
+                     "均须走 assign→propose→approve，needs_human_approval: true（AI 不审批）。")
+    else:
+        lines.append("锚定采购风险：无（本 PO 三方对账未检出 R7-R10 异常）。")
+    return "\n".join(lines)
+
+
 # ---------- Streamlit 渲染（延迟 import st；仅 UI 用，纯逻辑测试不触及）----------
 def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, render_table):
     """在风险队列内渲染对象工作台：① 风险属性 ② 关联对象 ③ 角色可用 action ④ 对象级 agent 面板。
@@ -703,6 +854,88 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
     q = st.text_input("向对象级 AI 提问（focus 已锁定本发票）", key=f"iwb_q_{invoice_id}")
     if st.button("询问（确定性简报作答，无 key 可跑）", key=f"iwb_ask_{invoice_id}"):
         st.text(focus_invoice_briefing_text(sess))
+        if q:
+            st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
+                       f"「{q}」自由问答，工具集与脱敏不变。）")
+
+
+def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_table):
+    """在采购工作台内渲染采购单对象工作台：① PO 属性 ② PoLine 行 + 三方对账（订购×收货×开票）+
+    关联 GoodsReceipt/SupplierInvoice ③ 锚定本 PO 的采购风险(R7-R10) + 角色可用 action ④ 对象级
+    agent 面板（预 scope 到本 PO，帮分析三方差异/起草索赔，permission-aware，不审批）。
+
+    与 render_invoice_object_workbench 同结构（复用已验证模式）。金额字段随 role 脱敏。"""
+    import streamlit as st
+
+    con = db_factory()
+    wb = build_po_workbench(con, po_id, role)
+    if "error" in wb:
+        st.warning(wb["error"])
+        return
+    po, sup = wb["purchase_order"], wb["supplier"]
+    st.markdown(f"### 🔬 对象工作台 · {po['po_id']}")
+    st.caption("以 PurchaseOrder 为中心的富视图：属性 + 采购行 + 三方对账 + 锚定采购风险 + "
+               "该角色可用动作 + 对象级 AI（预 scope 到本 PO + 当前角色，permission-aware）")
+
+    # ① PO 属性
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("状态", po["status"])
+    c2.metric("采购行数", len(wb["po_lines"]))
+    c3.metric("收货单", len(wb["goods_receipts"]))
+    c4.metric("供应商发票", len(wb["supplier_invoices"]))
+    st.markdown(f"**供应商** `{po['supplier_id']}"
+                + (f" {sup['supplier_name']}（{sup['city']}，验厂 {sup['factory_audit_status']}）"
+                   if sup else "") + f"`　下单日 `{po['po_date']}`　预计齐备 `{po['expected_ready_date']}`")
+    if not wb["cost_visible"]:
+        st.caption(f"金额字段对角色 {role} 脱敏（🔒 单价/金额/发票总额）——finance/manager 可见"
+                   "（与费用工作台 mask_cost / 标准视图同规；R7/R8/R9 数量维度不受影响）。")
+
+    # ② 三方对账（订购 × 收货 × 开票，逐行）
+    st.markdown("**三方对账 · 订购 × 收货 × 开票（逐行）**")
+    render_table([{"采购行": rc["po_line_id"], "SKU": rc["sku_id"], "订购": rc["ordered_qty"],
+                   "单价$": rc["unit_price_usd"], "预计齐备": rc["expected_ready_date"],
+                   "收货": rc["received_qty"], "验收": rc["accepted_qty"], "拒收": rc["rejected_qty"],
+                   "最早到货": rc["earliest_receipt"] or "未收", "QC": "✗" if rc["qc_failed"] else "✓",
+                   "缺口": rc["qty_short"], "开票量": rc["invoiced_qty"],
+                   "开票单价$": rc["invoice_unit_price_usd"], "开票额$": rc["invoiced_amount_usd"],
+                   "行状态": rc["line_status"]} for rc in wb["reconciliation"]])
+    st.markdown("**关联 · 收货单**")
+    render_table([{"收货单": g["grn_id"], "收货日": g["received_date"], "状态": g["status"]}
+                  for g in wb["goods_receipts"]])
+    st.markdown("**关联 · 供应商发票**")
+    render_table([{"供票": si["supplier_invoice_id"], "单号": si["vendor_invoice_no"] or "-",
+                   "开票日": si["issue_date"], "总额$": si["total_usd"], "状态": si["status"]}
+                  for si in wb["supplier_invoices"]])
+
+    # ③ 锚定采购风险 + 角色可用 action
+    st.markdown("**锚定本 PO 的采购风险（R7-R10）**")
+    if wb["anchored_risks"]:
+        render_table([{"风险": r["risk_event_id"], "规则": r["rule_id"], "类型": r["type"],
+                       "级别": r["severity"], "状态": r["status"], "影响$": r["affected_value_usd"],
+                       "采购行": "、".join(r["affected_po_line_ids"]),
+                       "可用动作": "、".join(r["available_actions"]) or "—"}
+                      for r in wb["anchored_risks"]])
+    else:
+        st.caption("（本 PO 三方对账未检出 R7-R10 异常）")
+    acts = wb["available_actions"]
+    st.markdown(f"**该角色（{role}）在本 PO 锚定风险上可发起的动作**："
+                + ("、".join(acts) if acts else "（无——该角色对本 PO 风险状态无可发起动作）"))
+    st.caption("采购风险走既有闭环：派发（A3，运营）→提案 expedite_po/raise_supplier_claim/"
+               "dispute_supplier_invoice/accept_receipt_variance（A4，ProposeMitigation 权限）→审批"
+               "（A5，仅经理，maker-checker）；审批/关闭永远人来点，AI 只提案不审批（原则2）。"
+               "执行入口在任务台「提案/审批」表单。")
+
+    # ④ 对象级 agent 面板（预 scope 到本 PO）
+    st.markdown("**对象级 AI 助手**")
+    sess = make_po_agent_session(role, po_id)
+    st.caption(f"本会话工具集（role={role}，focus={po_id}）："
+               + "、".join(sorted(sess.allowed_tools))
+               + "　— approve/close 永不在内（agent 只分析三方差异/起草提案，不审批）。")
+    with st.expander("查看确定性三方对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
+        st.text(focus_po_briefing_text(sess))
+    q = st.text_input("向对象级 AI 提问（focus 已锁定本 PO）", key=f"pwb_q_{po_id}")
+    if st.button("询问（确定性简报作答，无 key 可跑）", key=f"pwb_ask_{po_id}"):
+        st.text(focus_po_briefing_text(sess))
         if q:
             st.caption(f"（本切片以确定性简报作答；接入 LLM 后同一 focus/role 会话可就"
                        f"「{q}」自由问答，工具集与脱敏不变。）")

@@ -15,17 +15,18 @@ from .actions import ROLE_PERMS
 
 FAILS = []
 ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager"]
-ALL_TABS = {"kpi", "risk", "task", "cost", "obj", "dq", "adm", "log"}
+ALL_TABS = {"kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"}
 
 # 需求指定的角色→工作台映射（真源，测试即冻结此契约）
 # 审计日志(log)口径收敛：给有审阅需要的 ops(运营)/compliance(治理)/manager(监督)——按 data_scope 过滤。
+# 采购工作台(po)：采购切片 Build 3 新增，给运营(收货/交期)/财务(供票/价量)/经理(全域)。
 EXPECTED_WORKSPACE = {
-    "ops":        ["risk", "task", "dq", "obj", "log"],
+    "ops":        ["risk", "task", "dq", "po", "obj", "log"],
     "cs":         ["risk", "task", "obj"],
-    "finance":    ["cost", "adm", "obj"],
+    "finance":    ["cost", "po", "adm", "obj"],
     "sales":      ["adm", "obj"],
     "compliance": ["adm", "risk", "obj", "log"],
-    "manager":    ["kpi", "risk", "task", "cost", "obj", "dq", "adm", "log"],
+    "manager":    ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
 }
 
 # 动作层权限矩阵（manual §6 + cost-manual §5）——本次不得改动
@@ -51,7 +52,7 @@ def main():
         check(f"{r} 映射与需求一致", ROLE_WORKSPACE.get(r) == EXPECTED_WORKSPACE[r],
               f"{ROLE_WORKSPACE.get(r)} != {EXPECTED_WORKSPACE[r]}")
     for r in ROLES:
-        check(f"{r} 的 tab 全部合法（∈ 8 个已知 tab）",
+        check(f"{r} 的 tab 全部合法（∈ 9 个已知 tab）",
               set(ROLE_WORKSPACE[r]) <= ALL_TABS,
               str(set(ROLE_WORKSPACE[r]) - ALL_TABS))
     for r in ROLES:
@@ -65,7 +66,7 @@ def main():
     check("manager 工作台最全（tab 数严格最多）",
           all(len(ROLE_WORKSPACE["manager"]) > len(ROLE_WORKSPACE[r])
               for r in ROLES if r != "manager"))
-    check("manager 覆盖全部 8 个 tab", set(ROLE_WORKSPACE["manager"]) == ALL_TABS)
+    check("manager 覆盖全部 9 个 tab", set(ROLE_WORKSPACE["manager"]) == ALL_TABS)
     check("sales 不含费用工作台(cost)", "cost" not in ROLE_WORKSPACE["sales"])
     check("sales 不含准入外的运营 tab（无 task/risk/dq）",
           not ({"task", "risk", "dq"} & set(ROLE_WORKSPACE["sales"])))

@@ -565,6 +565,8 @@ if "flash" in st.session_state:  # 上一动作的成功回执
     st.success(st.session_state.pop("flash"))
 
 COST_TYPES = {"rate_overbilling", "duplicate_charge", "unplanned_charge"}
+# 采购三方对账风险类型（R7-R10）——任务台按此切换到采购处置提案；PO 锚点无 shipment，不进风险队列。
+PROCUREMENT_TYPES = {"supplier_delay", "short_receipt", "qc_failure", "price_qty_mismatch"}
 INV_STATUS_ICON = {"received": "IN ", "under_review": "REV ", "approved": "OK ", "disputed": "DSP "}
 
 # 数据范围（呈现层）：按角色相关性把「本台焦点」风险类型置顶并标注，不删任何数据。
@@ -771,6 +773,25 @@ def render_task_tab():
                                                    "incoterm_basis": incoterm}}[cact]
                     show_result(propose_mitigation(db(), tsel, cact, cparams,
                                                    actor=actor, role=role, as_of=AS_OF))
+        elif t["status"] == "assigned" and t["risk_type"] in PROCUREMENT_TYPES:
+            # 采购三方对账处置（R7-R10）：方案改为 expedite_po/accept_receipt_variance/
+            # raise_supplier_claim/dispute_supplier_invoice（ProposeMitigation 权限，走既有闭环）。
+            with st.form(f"pprop_{tsel}"):
+                st.markdown("**提交采购处置方案（A4，运营/财务）**")
+                st.caption("延误→expedite_po / 短装→accept_receipt_variance / "
+                           "质量→raise_supplier_claim / 价量→dispute_supplier_invoice")
+                pact = st.selectbox("方案", ["expedite_po", "accept_receipt_variance",
+                                             "raise_supplier_claim", "dispute_supplier_invoice"])
+                preason = st.text_input("理由")
+                pamt = st.number_input("金额 $（索赔/争议金额）", 0.0, step=100.0)
+                if st.form_submit_button("提交提案"):
+                    pparams = {"expedite_po": {"reason": preason},
+                               "accept_receipt_variance": {"reason": preason},
+                               "raise_supplier_claim": {"claim_amount_usd": pamt, "reason": preason},
+                               "dispute_supplier_invoice": {"reason": preason,
+                                                            "disputed_amount_usd": pamt}}[pact]
+                    show_result(propose_mitigation(db(), tsel, pact, pparams,
+                                                   actor=actor, role=role, as_of=AS_OF))
         elif t["status"] == "assigned":
             with st.form(f"prop_{tsel}"):
                 st.markdown("**提交处置方案（A4，运营/客户成功）**")
@@ -848,6 +869,42 @@ def render_cost_tab():
         st.divider()
         st.session_state["focus_invoice_id"] = isel
         object_workbench.render_invoice_object_workbench(isel, role, actor, AS_OF, db, render_table)
+
+# ---------- 采购工作台（P1 三方对账 + PurchaseOrder 富工作台）----------
+def render_po_tab():
+    """采购单 → PoLine × 收货 × 供票逐行对账 + 锚定采购风险(R7-R10) + 派发入口 + PO 对象工作台。
+
+    采购风险用 po_id 锚点、无 shipment，故不在风险队列出现——本台是采购风险的派发/处置入口。
+    propose/approve 在任务台完成（走既有 assign→propose→approve 闭环）。"""
+    st.caption("采购三方对账工作台（P1）：采购单 → PoLine × 收货 × 供票逐行对账 + 锚定采购风险(R7-R10)。"
+               "采购风险无 shipment 锚点（用 po_id），不在风险队列出现——在此派发，任务台提案/审批。")
+    po_ids = [r["po_id"] for r in rows("SELECT DISTINCT po_id FROM po_lines ORDER BY po_id")]
+    if not po_ids:
+        st.warning("暂无采购单数据（先跑 datagen/pipeline/engine）")
+        return
+    # 有锚定采购风险的 PO 置顶（demo 一打开即见三方差异）
+    risky = {r["po_id"] for r in rows("SELECT DISTINCT po_id FROM risk_events WHERE po_id IS NOT NULL")}
+    po_ids = sorted(po_ids, key=lambda p: (p not in risky, p))
+    psel = st.selectbox("查看采购单", po_ids)
+    # 派发采购风险任务（A3，运营）——采购风险不在风险队列，故在此提供派发入口
+    open_risks = rows("""SELECT risk_event_id, rule_id, type, severity FROM risk_events
+                         WHERE po_id=? AND status='open' ORDER BY risk_event_id""", psel)
+    if open_risks:
+        with st.form(f"po_assign_{psel}"):
+            st.markdown("**派发采购风险任务（A3，运营）**")
+            rsel = st.selectbox("待派发风险",
+                                [f"{r['risk_event_id']} · {r['rule_id']} {r['type']} ({r['severity']})"
+                                 for r in open_risks])
+            a_role = st.selectbox("处理角色", ["ops", "finance"])
+            prio = st.selectbox("优先级", ["P1", "P2", "P3"])
+            due = st.date_input("任务处理截止日", date.fromisoformat(AS_OF) + timedelta(days=2))
+            if st.form_submit_button("派单"):
+                rid = rsel.split(" ")[0]
+                show_result(assign_task(db(), rid, a_role, prio, due.isoformat(),
+                                        actor=actor, role=role, as_of=AS_OF))
+    st.divider()
+    st.session_state["focus_po_id"] = psel
+    object_workbench.render_po_object_workbench(psel, role, actor, AS_OF, db, render_table)
 
 # ---------- 对象详情：通用对象浏览器（标准对象视图兜底层）----------
 def render_obj_tab():
@@ -1095,7 +1152,7 @@ def render_log_tab():
 # ---------- 真·角色导航：按 ROLE_WORKSPACE 只渲染该角色可见的工作台 tab ----------
 TAB_RENDERERS = {
     "kpi": render_kpi_tab, "risk": render_risk_tab, "task": render_task_tab,
-    "cost": render_cost_tab, "obj": render_obj_tab, "dq": render_dq_tab,
+    "cost": render_cost_tab, "po": render_po_tab, "obj": render_obj_tab, "dq": render_dq_tab,
     "adm": render_adm_tab, "log": render_log_tab,
 }
 _keys = visible_tabs(role)

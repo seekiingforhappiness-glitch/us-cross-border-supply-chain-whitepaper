@@ -1,8 +1,8 @@
 """标准对象视图兜底层（Foundry "Standard Object View" 范式）。
 
 设计动机（≤5 行「为什么这样建」）：
-- 四个核心对象（RiskEvent/AdmissionCase/Task/Invoice）有富工作台（app/object_workbench.py）；其余
-  15 种对象类型不必个个手配富视图，本模块给它们一个**自动生成的通用标准视图**（属性 + 关联对象，
+- 五个核心对象（RiskEvent/AdmissionCase/Task/Invoice/PurchaseOrder）有富工作台（app/object_workbench.py）；
+  其余 19 种对象类型不必个个手配富视图，本模块给它们一个**自动生成的通用标准视图**（属性 + 关联对象，
   只读），让"对象图可导航、每个对象都有归宿"。
 - 尽量从 ontology JSON（对象清单/主键/敏感字段规则）+ 库表 schema 推断，减少硬编码；关联对象优先复用
   engine.graph 的 object_relationships registry（双向），registry 未覆盖的声明式 FK 边用小补丁补齐。
@@ -18,8 +18,9 @@ from pathlib import Path
 
 from agent.tools import _can_see_tier, _can_see_cost, COST_FIELDS, MASK
 
-# 四个核心对象走富工作台；route_object 对它们返回 'rich'，其余注册类型返回 'standard'。
-RICH_OBJECT_TYPES = {"RiskEvent", "AdmissionCase", "Task", "Invoice"}
+# 五个核心对象走富工作台；route_object 对它们返回 'rich'，其余注册类型返回 'standard'。
+# PurchaseOrder 为采购切片（Build 3）新增的富对象（PO 三方对账工作台 + permission-aware agent）。
+RICH_OBJECT_TYPES = {"RiskEvent", "AdmissionCase", "Task", "Invoice", "PurchaseOrder"}
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent.parent / "ontology" / "control-tower-ontology.json"
 
@@ -315,7 +316,7 @@ def build_standard_view(conn: sqlite3.Connection, object_type: str, object_id: s
 
 
 def navigable_types() -> list:
-    """UI 对象浏览器可选的对象类型（全部 19 类，按类型名排序）。核心类型也在列——route_object 决定
+    """UI 对象浏览器可选的对象类型（全部 24 类，按类型名排序）。核心类型也在列——route_object 决定
     进富工作台还是标准视图。"""
     return sorted(TYPE_META.keys())
 

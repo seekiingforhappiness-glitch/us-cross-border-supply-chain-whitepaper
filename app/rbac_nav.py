@@ -13,6 +13,7 @@ TAB_LABELS = {
     "risk": "风险队列",
     "task": "任务处理台",
     "cost": "费用工作台",
+    "po": "采购工作台",
     "obj": "对象详情",
     "dq": "DQ 处置",
     "adm": "准入工作台",
@@ -22,13 +23,14 @@ TAB_LABELS = {
 # 角色 → 工作台可见 tab（列表顺序即 tab 呈现顺序；每角色主战场排第一，成为默认落地页）
 # 审计日志(log)给「有审阅需要」的角色——运营(ops)/治理(compliance)/监督(manager)；且按 data_scope
 # 过滤（render_log_tab）：非 manager 只看本区域数据范围内对象的审计，manager 看全量（口径收敛）。
+# 采购工作台(po)给采购三方对账相关角色——运营(收货/交期处置)/财务(供票匹配/价量争议)/经理(全域)。
 ROLE_WORKSPACE = {
-    "ops":        ["risk", "task", "dq", "obj", "log"],
+    "ops":        ["risk", "task", "dq", "po", "obj", "log"],
     "cs":         ["risk", "task", "obj"],
-    "finance":    ["cost", "adm", "obj"],
+    "finance":    ["cost", "po", "adm", "obj"],
     "sales":      ["adm", "obj"],
     "compliance": ["adm", "risk", "obj", "log"],
-    "manager":    ["kpi", "risk", "task", "cost", "obj", "dq", "adm", "log"],
+    "manager":    ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
 }
 
 # 每角色工作台名 + 数据域（命令栏呈现，让页面明显因角色而不同）

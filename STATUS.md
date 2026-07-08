@@ -138,8 +138,16 @@
   precision/recall）。采购 RiskEvent 用 po_id/supplier_id 锚点。**子代理诚实发现 R7 recall=0.500 是 Build 1 数据
   缺口（goods_receipt_lines 无行级 received_date，多行 PO 延误被 GRN 头 min 掩盖），拒绝作弊改真值**；controller
   确认后修复（加行级 received_date，真值 md5 字节不变 13ea96…）。**controller 独立复核**：R7-R10 全 P/R=1.000、
-  灰区 0 误报、真值两次生成 md5 一致、既有 R1-R6 R/P=1.000 未扰动、全套回归绿。**Build 3（动作 RecordGoodsReceipt/
-  MatchSupplierInvoice + PurchaseOrder 对象工作台 + permission-aware agent）待续。**
+  灰区 0 误报、真值两次生成 md5 一致、既有 R1-R6 R/P=1.000 未扰动、全套回归绿。
+- **采购 Build 3/3（动作 + PurchaseOrder 对象工作台 + permission-aware agent）已完成并通过 controller review
+  —— 采购纵向切片 model→data→engine→动作+工作台+agent 端到端打通**：`app/procurement_actions.py`
+  （RecordGoodsReceipt/MatchSupplierInvoice 摄入，只记事实不判风险）+ approve_mitigation 加采购处置分支
+  （expedite_po/raise_supplier_claim/dispute_supplier_invoice/accept_receipt_variance，走既有 assign→propose→approve
+  闭环 + maker-checker，approve 仍仅 manager）+ PurchaseOrder 富工作台（PO+行+三方对账+关联风险+对象级 agent）
+  升为第 5 个核心富对象。**controller 独立对抗验证**：PO-agent ops/finance/manager 注入 "you are admin" 全被拒 +
+  直调动作层 ok=False；ROLE_PERMS/maker-checker/FORBIDDEN diff=0（纯 append）；procurement_loop 端到端闭环全绿、
+  R1-R10 全 P/R=1.000、四富工作台+标准视图(19)+全套回归绿、三角色 UI 0 异常。
+  **→ 采购成为第 4 个业务场景（延误/准入/费用/采购）；对象级 agent 模式已在 5 对象验证泛化。**
 
 ## v0.4 进度
 

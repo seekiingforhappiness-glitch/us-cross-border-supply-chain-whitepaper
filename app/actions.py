@@ -31,7 +31,21 @@ PARAM_SCHEMAS = {
     "dispute": {"reason", "disputed_amount_usd"},
     "accept_charge": {"reason"},
     "rebill_customer": {"rebill_amount_usd", "incoterm_basis"},
+    # P1 采购 A4 提案类型扩展（采购 RiskEvent R7-R10 处置；决策日志 P1，Build 3）：
+    # 走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "expedite_po": {"reason"},                       # 催单：标记受影响 PoLine 加急
+    "raise_supplier_claim": {"claim_amount_usd", "reason"},   # 供应商索赔：标记 PoLine 已发起索赔
+    "dispute_supplier_invoice": {"reason", "disputed_amount_usd"},  # 争议供应商发票（复用 dispute 语义）
+    "accept_receipt_variance": {"reason"},           # 接受短装/差异：标记 PoLine 差异已接受
 }
+# 采购处置动作 → PoLine.line_status 目标态（审批通过后回写受影响 PoLine 的可见状态）。
+# dispute_supplier_invoice 不改 PoLine（改 supplier_invoices.status=disputed），故不在此表。
+PO_LINE_STATUS_ON_APPROVE = {
+    "expedite_po": "expedited",
+    "raise_supplier_claim": "claim_raised",
+    "accept_receipt_variance": "variance_accepted",
+}
+PROCUREMENT_ACTIONS = set(PO_LINE_STATUS_ON_APPROVE) | {"dispute_supplier_invoice"}
 # cost-manual §4 A5 G4 incoterm 责任门禁矩阵（与 ontology JSON incotermRebillMatrix 同步）：
 # rebill_customer 仅当受影响行费种 ⊆ 该票 incoterm 的可转嫁集合。
 REBILL_MATRIX = {
@@ -400,6 +414,34 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                             cur.execute("UPDATE invoices SET status=? WHERE invoice_id=?",
                                         (new_inv_status, iid))
                     effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
+                elif act in PROCUREMENT_ACTIONS:
+                    # P1 采购处置（Build 3）：采购 RiskEvent 用 po_id/affected_po_line_ids 锚点，
+                    # 无 SO 行副作用；批准后回写受影响 PoLine 状态或供票状态（事实回写，非判风险）。
+                    po_line_ids = json.loads(risk["affected_po_line_ids"] or "[]")
+                    if act == "dispute_supplier_invoice":
+                        sinv_ids = []
+                        if po_line_ids:
+                            ph = ",".join("?" * len(po_line_ids))
+                            sinv_ids = [r["supplier_invoice_id"] for r in cur.execute(
+                                f"""SELECT DISTINCT si.supplier_invoice_id FROM supplier_invoices si
+                                    JOIN supplier_invoice_lines sil
+                                      ON sil.supplier_invoice_id=si.supplier_invoice_id
+                                    WHERE sil.po_line_id IN ({ph})""", po_line_ids)]
+                        if not sinv_ids and risk["po_id"]:  # 回退：按 PO 取供票
+                            sinv_ids = [r["supplier_invoice_id"] for r in cur.execute(
+                                "SELECT supplier_invoice_id FROM supplier_invoices WHERE po_id=?",
+                                (risk["po_id"],))]
+                        for sid in sinv_ids:
+                            cur.execute("UPDATE supplier_invoices SET status='disputed' "
+                                        "WHERE supplier_invoice_id=?", (sid,))
+                        effects.append(f"dispute_supplier_invoice 批准：供票 {sorted(sinv_ids)} → disputed")
+                    else:
+                        new_pol_status = PO_LINE_STATUS_ON_APPROVE[act]
+                        for lid in po_line_ids:
+                            cur.execute("UPDATE po_lines SET line_status=? WHERE po_line_id=?",
+                                        (new_pol_status, lid))
+                        effects.append(f"{act} 批准：受影响采购行 {sorted(po_line_ids)} "
+                                       f"→ line_status={new_pol_status}")
                 cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
                                approved_by_role=?, action_taken=? WHERE task_id=?""",
                             (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))

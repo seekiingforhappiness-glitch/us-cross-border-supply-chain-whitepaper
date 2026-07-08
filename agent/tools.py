@@ -172,7 +172,7 @@ class AgentSession:
 
     def __init__(self, db_path="data/ontology.sqlite", config_path="config/datagen.yaml",
                  role=AI_ROLE, focus_risk_event_id=None, focus_admission_case_id=None,
-                 focus_task_id=None, focus_invoice_id=None):
+                 focus_task_id=None, focus_invoice_id=None, focus_po_id=None):
         self.con = sqlite3.connect(db_path)
         self.con.row_factory = sqlite3.Row
         cfg = yaml.safe_load(open(config_path, encoding="utf-8"))
@@ -185,6 +185,9 @@ class AgentSession:
         self.focus_admission_case_id = focus_admission_case_id
         self.focus_task_id = focus_task_id
         self.focus_invoice_id = focus_invoice_id
+        # PurchaseOrder focus（采购对象工作台切片，Build 3）：采购 RiskEvent 无 shipment，
+        # 用 po_id 锚点做对象 scoping（与 shipment 邻居锚点并列，检索聚焦本 PO 的采购风险）。
+        self.focus_po_id = focus_po_id
         self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
@@ -223,14 +226,20 @@ class AgentSession:
         if severity:
             sql += " AND severity=?"
             params.append(severity)
-        # 对象 scoping：focus 时检索默认聚焦该 risk 及其邻居（同一 shipment 上的风险），不是全库
+        # 对象 scoping：focus 时检索默认聚焦该对象及其邻居，不是全库。
+        # PO focus（采购）用 po_id 锚点（采购 RiskEvent 无 shipment）；其余用 shipment 邻居锚点。
         focus_ship = self._focus_shipment_id()
-        if focus_ship:
+        if self.focus_po_id:
+            sql += " AND po_id=?"
+            params.append(self.focus_po_id)
+        elif focus_ship:
             sql += " AND shipment_id=?"
             params.append(focus_ship)
         rows = self._rows(sql, *params)
         out = {"count": len(rows), "risks": rows}
-        if focus_ship:
+        if self.focus_po_id:
+            out["focus_scope"] = {"po_id": self.focus_po_id}
+        elif focus_ship:
             out["focus_scope"] = {"risk_event_id": self.focus_risk_event_id,
                                   "shipment_id": focus_ship}
         return out
@@ -496,6 +505,77 @@ class AgentSession:
                 "shipment": ctx.get("shipment"), "related_risks": related_risks,
                 "neighbors": neighbors,
                 "note": f"object-scoped to {iid} and related risks; role={self.role}"}
+
+    def focus_po_bundle(self):
+        """对象 scoping 汇总（采购切片，Build 3）：把检索聚焦到本会话 focus 的 PurchaseOrder 及其邻居
+        （PoLine、GoodsReceipt 行、SupplierInvoice 行、三方对账逐行、锚定本 PO 的采购 RiskEvent R7-R10），
+        而非全库。金额字段随 role 脱敏（unit_price/amount/total，与 UI PO 工作台 mask_cost 同规：
+        finance/manager 可见，其余掩码）；审批/关闭不在此（原则2）。无 focus 返回 error。"""
+        pid = self.focus_po_id
+        if not pid:
+            return {"error": "本会话未 focus 到任何 purchase order"}
+        po = self._rows("SELECT * FROM purchase_orders WHERE po_id=?", pid)
+        if not po:
+            return {"error": f"采购单 {pid} 不存在"}
+        po = po[0]
+        cost_visible = _can_see_cost(self.role)
+
+        def money(v):
+            return MASK if (v is not None and not cost_visible) else v
+
+        po_lines = self._rows("SELECT * FROM po_lines WHERE po_id=? ORDER BY po_line_id", pid)
+        # 收货聚合（每 po_line：累计收货/验收/拒收 + 最早到货日 + QC）
+        recv = {}
+        for r in self._rows("""SELECT gl.po_line_id, gl.received_qty, gl.accepted_qty,
+                               gl.rejected_qty, gl.qc_status, gl.defect_ppm, gl.received_date
+                               FROM goods_receipt_lines gl JOIN goods_receipts g ON g.grn_id=gl.grn_id
+                               WHERE g.po_id=? ORDER BY gl.po_line_id, gl.grn_line_id""", pid):
+            a = recv.setdefault(r["po_line_id"], {"received": 0, "accepted": 0, "rejected": 0,
+                                                  "first_recv": None, "qc_failed": False, "max_ppm": 0})
+            a["received"] += r["received_qty"]
+            a["accepted"] += r["accepted_qty"]
+            a["rejected"] += r["rejected_qty"]
+            a["qc_failed"] = a["qc_failed"] or r["qc_status"] == "failed"
+            a["max_ppm"] = max(a["max_ppm"], r["defect_ppm"])
+            if a["first_recv"] is None or r["received_date"] < a["first_recv"]:
+                a["first_recv"] = r["received_date"]
+        # 开票聚合（每 po_line：累计开票量/金额 + 单价）
+        inv = {}
+        for r in self._rows("""SELECT sil.po_line_id, sil.qty, sil.unit_price_usd, sil.amount_usd
+                               FROM supplier_invoice_lines sil
+                               JOIN supplier_invoices si ON si.supplier_invoice_id=sil.supplier_invoice_id
+                               WHERE si.po_id=? ORDER BY sil.po_line_id""", pid):
+            a = inv.setdefault(r["po_line_id"], {"qty": 0, "amount": 0.0, "unit_price": None})
+            a["qty"] += r["qty"]
+            a["amount"] = round(a["amount"] + r["amount_usd"], 2)
+            if a["unit_price"] is None:
+                a["unit_price"] = r["unit_price_usd"]
+        # 三方对账逐行（订购 × 收货 × 开票）
+        reconciliation = []
+        for pl in po_lines:
+            rc = recv.get(pl["po_line_id"], {})
+            iv = inv.get(pl["po_line_id"], {})
+            reconciliation.append({
+                "po_line_id": pl["po_line_id"], "sku_id": pl["sku_id"],
+                "ordered_qty": pl["qty"], "unit_price_usd": money(pl["unit_price_usd"]),
+                "expected_ready_date": pl["expected_ready_date"], "line_status": pl["line_status"],
+                "received_qty": rc.get("received", 0), "accepted_qty": rc.get("accepted", 0),
+                "rejected_qty": rc.get("rejected", 0), "earliest_receipt": rc.get("first_recv"),
+                "qc_failed": rc.get("qc_failed", False), "max_defect_ppm": rc.get("max_ppm", 0),
+                "invoiced_qty": iv.get("qty", 0), "invoiced_amount_usd": money(iv.get("amount")),
+                "invoice_unit_price_usd": money(iv.get("unit_price")),
+                "qty_short": pl["qty"] - rc.get("received", 0)})
+        anchored_risks = self._rows(
+            """SELECT risk_event_id, rule_id, type, severity, status, affected_value_usd,
+                      root_cause, affected_po_line_ids FROM risk_events WHERE po_id=?
+               ORDER BY risk_event_id""", pid)
+        return {"focus_po_id": pid, "purchase_order": po, "po_lines": po_lines,
+                "reconciliation": reconciliation, "anchored_risks": anchored_risks,
+                "neighbors": {"po_id": pid, "supplier_id": po["supplier_id"],
+                              "po_line_ids": [pl["po_line_id"] for pl in po_lines],
+                              "risk_event_ids": [r["risk_event_id"] for r in anchored_risks]},
+                "note": f"object-scoped to {pid} (三方对账); cost fields "
+                        f"{'visible' if cost_visible else 'masked'} for role={self.role}"}
 
     def explain_relationship_path(self, source_type, source_id, target_type, target_id, max_depth):
         try:
