@@ -27,7 +27,11 @@
 > overdue 派生）+ `app/coordination_actions.py` 6 动作（独立权限组 ManageCoordination={ops,cs,procurement,finance}，
 > 走审计）+ seed 3 条 demo + test_coordination_loop（22 断言）。**红线守住**：R1-R18/truth md5 未动、ROLE_PERMS 4 键+
 > FORBIDDEN 一字未改、协调写动作不注册为 agent 工具。对象 33→34、标准视图 27→28、ontology v0.9.0。
-> 缘起与第一性原理见 `docs/notes-decision-rights-org-design.md`。**下个候选切片**：协调回路接真发消息/对手方对象化，或补覆盖域（关务/信用证，§3）。
+> 缘起与第一性原理见 `docs/notes-decision-rights-org-design.md`；能力路线图见 `docs/system-framework-and-roadmap.md`。
+> **能力 B 协调收件箱已建（2026-07-09，§4 呈现层）**：CL1 从"数据层"落到运营眼前——新 `coord` tab「协调收件箱」
+> 挂进 ops/cs/finance/procurement 工作台（与 COORD_PERMS 严格同集），overdue 置顶◆ + 催办/记回应/升级/达成/谈崩
+> 入口（复用 CL1 动作）。纯呈现层：actions.py/tools.py/coordination_actions.py 0 改动、R1-R18/truth md5/对象数未动、
+> 7 角色 AppTest 0 异常。**下一步（路线图 §4 排序）**：C1 处置记忆→更好提案（护城河最小闭环，把"越用越强"做成可见）。
 
 - **阶段：5 个业务场景一本体，全部落地并通过 controller review**。场景：延误运营(R1-R3) / 费用稽核(R4-R6) /
   准入合规(门禁 G1-G4) / 采购(R7-R15：三方对账+预付款+资质+单一来源+maverick) / 仓储库存(R16-R18)。

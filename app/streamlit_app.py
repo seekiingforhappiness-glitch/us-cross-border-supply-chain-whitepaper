@@ -29,6 +29,9 @@ try:
     from app.admission_actions import (create_admission_case, run_compliance_precheck,
                                        build_logistics_plan, calculate_cost_scenario,
                                        approve_quote_decision, reject_or_request_more_info)
+    from app.coordination_actions import (COORD_PERMS, is_overdue, record_outreach,
+                                          record_response, escalate_coordination,
+                                          resolve_coordination, mark_dead_ended)
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from actions import (assign_task, propose_mitigation, approve_mitigation,
                          close_risk_event, ensure_task_work_queue_columns)
@@ -36,6 +39,9 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
     from admission_actions import (create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario,
                                    approve_quote_decision, reject_or_request_more_info)
+    from coordination_actions import (COORD_PERMS, is_overdue, record_outreach,
+                                      record_response, escalate_coordination,
+                                      resolve_coordination, mark_dead_ended)
 
 try:
     from app.rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
@@ -1209,11 +1215,98 @@ def render_log_tab():
                  height=420)
 
 
+# ---------- 协调收件箱（能力 B 第一切片：CL1 协调回路的纯呈现层入口）----------
+def render_coord_tab():
+    """把 CL1 协调回路（数据 + 动作层）在 UI 露出：让 overdue 协调像 SLA 一样冒到眼前——
+    在催谁 / 卡在哪 / 该升级。纯呈现层：不改检测/规则/真值/权限，写动作全部复用
+    coordination_actions 的六个 CL1 动作（动作层已有 COORD_PERMS gate + 状态机校验）。"""
+    st.caption("协调收件箱（能力 B）：延误 Task 的真正的活是对外协调——追工厂改期、追客户拆单先发。"
+               "此处列出**活跃**协调线程，overdue（该催/该升级）置顶红标 ◆；动作复用 CL1 回路，"
+               "权限由动作层 COORD_PERMS 独立 gate（不碰 maker-checker）。")
+    threads = rows("SELECT * FROM coordination_threads")
+    active = [t for t in threads if t["state"] not in ("resolved", "dead_ended")]
+
+    def _overdue(t):
+        return is_overdue(t["state"], t["next_action_due"], AS_OF)
+
+    # overdue 置顶（is_overdue 为真排最前），其余按 next_action_due 升序（None 视为最晚）
+    active.sort(key=lambda t: (not _overdue(t), t["next_action_due"] or "9999-99-99"))
+    n_over = sum(1 for t in active if _overdue(t))
+
+    st.markdown(
+        f"**{len(active)} 条协调进行中**，其中 "
+        f"<span style='color:#ff5d66;font-weight:700'>{n_over} 条逾期</span>（该催 / 该升级）。",
+        unsafe_allow_html=True)
+    if not active:
+        st.info("当前无进行中的协调（线程均已达成 resolved 或谈崩 dead_ended）。")
+        return
+
+    # 写动作只由 COORD_PERMS 角色发起（本 tab 仅对这 4 角色可见故恒成立，但仍以 role 判定为准，不放宽）
+    can_act = role in COORD_PERMS["ManageCoordination"]
+    if not can_act:
+        st.caption("（当前角色不在 COORD_PERMS，仅可查看协调进度，不能发起协调写动作。）")
+
+    for t in active:
+        cid = t["coordination_id"]
+        od = _overdue(t)
+        mark = ("<span style='color:#ff5d66;font-weight:700'>◆ 逾期</span> " if od else "")
+        st.markdown(
+            f"{mark}**{cid}** · {html.escape(t['counterparty_type'] or '-')} "
+            f"`{html.escape(t['counterparty_ref'] or '-')}` — 诉求：{html.escape(t['ask'] or '-')}",
+            unsafe_allow_html=True)
+        st.caption(
+            f"状态 `{t['state']}` · 催办 {t['followup_count']} 次 · 升级 L{t['escalation_level']} · "
+            f"next_action_due {t['next_action_due'] or '-'} · owner {t['owner'] or '-'} · "
+            f"锚 Task {t['task_id'] or '-'} / RiskEvent {t['risk_event_id'] or '-'}")
+        if not can_act:
+            st.divider()
+            continue
+        # 每条给动作入口（催办/记回应/升级/达成/谈崩）；非法转移由动作层状态机拦截并回结构化 error。
+        # overdue 线程默认展开，直接把「该催/该升级」的处置摆到手边。
+        with st.expander("处置：催办 / 记回应 / 升级 / 达成 / 谈崩", expanded=od):
+            oc1, oc2 = st.columns(2)
+            with oc1:
+                with st.form(f"coord_outreach_{cid}"):
+                    st.markdown("**催办**（再发一次外联，仅 awaiting）")
+                    d = st.date_input("下次跟进截止 next_action_due",
+                                      date.fromisoformat(AS_OF) + timedelta(days=2),
+                                      key=f"coord_out_due_{cid}")
+                    note = st.text_input("备注（可空）", key=f"coord_out_note_{cid}")
+                    if st.form_submit_button("催办"):
+                        show_result(record_outreach(db(), cid, d.isoformat(), note,
+                                                    actor=actor, role=role, as_of=AS_OF))
+                with st.form(f"coord_response_{cid}"):
+                    st.markdown("**记回应**（记录对方回复，awaiting/escalated）")
+                    resp = st.text_input("对方回应内容", key=f"coord_resp_txt_{cid}")
+                    if st.form_submit_button("记录回应"):
+                        show_result(record_response(db(), cid, resp,
+                                                    actor=actor, role=role, as_of=AS_OF))
+                with st.form(f"coord_escalate_{cid}"):
+                    st.markdown("**升级**（escalation_level++，awaiting/responded）")
+                    if st.form_submit_button("升级"):
+                        show_result(escalate_coordination(db(), cid,
+                                                          actor=actor, role=role, as_of=AS_OF))
+            with oc2:
+                with st.form(f"coord_resolve_{cid}"):
+                    st.markdown("**达成**（终态 resolved）")
+                    outc = st.text_input("结果 outcome", key=f"coord_resolve_txt_{cid}")
+                    if st.form_submit_button("达成"):
+                        show_result(resolve_coordination(db(), cid, outc,
+                                                         actor=actor, role=role, as_of=AS_OF))
+                with st.form(f"coord_dead_{cid}"):
+                    st.markdown("**谈崩**（终态 dead_ended）")
+                    outc2 = st.text_input("放弃 / 无解原因", key=f"coord_dead_txt_{cid}")
+                    if st.form_submit_button("谈崩"):
+                        show_result(mark_dead_ended(db(), cid, outc2,
+                                                    actor=actor, role=role, as_of=AS_OF))
+        st.divider()
+
+
 # ---------- 真·角色导航：按 ROLE_WORKSPACE 只渲染该角色可见的工作台 tab ----------
 TAB_RENDERERS = {
     "kpi": render_kpi_tab, "risk": render_risk_tab, "task": render_task_tab,
-    "cost": render_cost_tab, "po": render_po_tab, "obj": render_obj_tab, "dq": render_dq_tab,
-    "adm": render_adm_tab, "log": render_log_tab,
+    "coord": render_coord_tab, "cost": render_cost_tab, "po": render_po_tab,
+    "obj": render_obj_tab, "dq": render_dq_tab, "adm": render_adm_tab, "log": render_log_tab,
 }
 _keys = visible_tabs(role)
 for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):

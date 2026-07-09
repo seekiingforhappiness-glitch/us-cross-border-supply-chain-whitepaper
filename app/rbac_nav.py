@@ -12,6 +12,7 @@ TAB_LABELS = {
     "kpi": "KPI 总览",
     "risk": "风险队列",
     "task": "任务处理台",
+    "coord": "协调收件箱",
     "cost": "费用工作台",
     "po": "采购工作台",
     "obj": "对象详情",
@@ -25,11 +26,14 @@ TAB_LABELS = {
 # 过滤（render_log_tab）：非 manager 只看本区域数据范围内对象的审计，manager 看全量（口径收敛）。
 # 采购工作台(po)：P4 起以专职「采购 procurement」为主场（po 落地页）；财务仍可见 po 做供票/价量对账；
 # 经理全域可见。P4：ops 去掉 po「回归纯物流」——采购三方对账归采购角色，采购提案→经理审批→运营关闭三方分离。
+# 协调收件箱(coord)：CL1 协调回路的呈现层入口——放在各角色主战场之后。仅给 COORD_PERMS 的
+# 4 角色（ops/cs/finance/procurement），与 coordination_actions.COORD_PERMS 一致；manager/sales/
+# compliance 不加（本切片不放宽协调写权限，导航与权限组严格同集）。写动作仍由动作层独立 gate。
 ROLE_WORKSPACE = {
-    "ops":         ["risk", "task", "dq", "obj", "log"],
-    "cs":          ["risk", "task", "obj"],
-    "finance":     ["cost", "po", "adm", "obj"],
-    "procurement": ["po", "task", "obj"],
+    "ops":         ["risk", "task", "coord", "dq", "obj", "log"],
+    "cs":          ["risk", "task", "coord", "obj"],
+    "finance":     ["cost", "po", "coord", "adm", "obj"],
+    "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
     "compliance":  ["adm", "risk", "obj", "log"],
     "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
