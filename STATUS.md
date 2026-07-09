@@ -16,10 +16,15 @@
 > 6 个对象工作台「询问」按钮已从占位改为真 Opus 4.8 作答（LLM 不可用时优雅降级为简报）。写动作仍只走 UI 表单 + maker-checker。
 > **下一步（需 Daniel §3 亲批才动）**：新增业务域（关务/资金风控等）、或接真实企业系统数据源。
 
+> **P4 专职采购角色（2026-07-09，Daniel 亲批，§3 决策日志 P4）**：6→7 角色，新增 `procurement`（采购处置台，
+> 落地页=采购工作台）；ops 去掉 po 回归纯物流；权限仅 +ProposeMitigation（采购处置提案），
+> **ApproveMitigation 仍仅 manager、CloseRiskEvent 仍仅 ops**（maker-checker 铁律不动，形成采购提案→经理审批→运营关闭三方分离）。
+> 全套回归绿（17 app 测试 + agent.evaluate + 4 评估器）、procurement agent 无审批工具、R1-R18 与 truth md5 未动。
+
 - **阶段：5 个业务场景一本体，全部落地并通过 controller review**。场景：延误运营(R1-R3) / 费用稽核(R4-R6) /
   准入合规(门禁 G1-G4) / 采购(R7-R15：三方对账+预付款+资质+单一来源+maverick) / 仓储库存(R16-R18)。
   **18 条风险规则全 P/R=1.000**；33 个对象类型；ontology **v0.8.0**。
-- **成熟度做到教科书级**：真·角色导航(6 角色各自工作台) + 行级数据范围 + 经理 KPI + maker-checker + 审计 + 可插拔 LLM；
+- **成熟度做到教科书级**：真·角色导航(7 角色各自工作台，含 P4 新增专职采购 procurement) + 行级数据范围 + 经理 KPI + maker-checker + 审计 + 可插拔 LLM；
   **6 个对象富工作台(RiskEvent/Task/Invoice/AdmissionCase/PurchaseOrder/Warehouse) + permission-aware 对象级 agent**
   (agent 数据范围==UI、越权被动作层挡回、prompt 注入 "you are admin" 被拒——均已 controller 独立对抗验证) +
   27 个自动标准视图(对象图可导航)。

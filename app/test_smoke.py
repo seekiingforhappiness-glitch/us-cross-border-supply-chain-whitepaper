@@ -1,7 +1,7 @@
 """冒烟测试（健壮性 pass）：python3 -m app.test_smoke
 
 锁定两类保证：
-① **6 角色 UI 干净加载**：ops/cs/finance/manager/sales/compliance 主界面各自 AppTest 加载，
+① **7 角色 UI 干净加载**：ops/cs/finance/manager/sales/compliance/procurement 主界面各自 AppTest 加载，
    在 **真实库** 与 **空库**（0 行，schema 保留）上都断言 **0 未捕获异常**——空/边界输入优雅降级，不抛 traceback。
 ② **空/边界读取路径优雅**：不存在的对象 id / 未知类型 / 缺失 focus / None/空串/超长参数 → 结构化 error 或
    友好提示，而非崩溃；并回归锁定本次修的两个真实崩溃点：
@@ -25,7 +25,7 @@ from .executive_view import build_executive_summary
 from agent.tools import AgentSession, FORBIDDEN_TOOLS
 
 DB = "data/ontology.sqlite"
-ROLES = ("ops", "cs", "finance", "manager", "sales", "compliance")
+ROLES = ("ops", "cs", "finance", "manager", "sales", "compliance", "procurement")
 FAILS = []
 
 

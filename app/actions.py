@@ -17,9 +17,11 @@ except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上�
 
 from pipeline.outbox import enqueue_writeback
 
-ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3）
+ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3；P4：+procurement）
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    # P4：采购 procurement 可就采购三方对账风险提交处置提案（收货差异/供应商索赔/发票争议/资质预警）。
+    # 审批仍仅 manager、关闭仍仅 ops（maker-checker 不变）——采购提案→经理审批→运营关闭，三方职责分离。
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }
@@ -120,6 +122,9 @@ DEMO_ROSTER = [
     Owner(actor_id="u-cs-us-priya", role="cs", region="US", active=True),
     Owner(actor_id="u-fin-us-marcus", role="finance", region="US", active=True),
     Owner(actor_id="u-ops-cn-lin", role="ops", region="CN", active=True),
+    # P4：采购 procurement demo owner（US/CN），供采购处置提案分派与数据范围解析。
+    Owner(actor_id="u-proc-us", role="procurement", region="US", active=True),
+    Owner(actor_id="u-proc-cn", role="procurement", region="CN", active=True),
 ]
 
 

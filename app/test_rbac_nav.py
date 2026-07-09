@@ -14,25 +14,28 @@ from .rbac_nav import (ROLE_WORKSPACE, ROLE_WORKSPACE_META, TAB_LABELS,
 from .actions import ROLE_PERMS
 
 FAILS = []
-ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager"]
+ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager", "procurement"]
 ALL_TABS = {"kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"}
 
 # 需求指定的角色→工作台映射（真源，测试即冻结此契约）
 # 审计日志(log)口径收敛：给有审阅需要的 ops(运营)/compliance(治理)/manager(监督)——按 data_scope 过滤。
-# 采购工作台(po)：采购切片 Build 3 新增，给运营(收货/交期)/财务(供票/价量)/经理(全域)。
+# 采购工作台(po)：P4 起以专职「采购 procurement」为主场（po 落地页）；财务仍可见做供票/价量；经理全域。
+# P4：ops 去掉 po「回归纯物流」。
 EXPECTED_WORKSPACE = {
-    "ops":        ["risk", "task", "dq", "po", "obj", "log"],
-    "cs":         ["risk", "task", "obj"],
-    "finance":    ["cost", "po", "adm", "obj"],
-    "sales":      ["adm", "obj"],
-    "compliance": ["adm", "risk", "obj", "log"],
-    "manager":    ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
+    "ops":         ["risk", "task", "dq", "obj", "log"],
+    "cs":          ["risk", "task", "obj"],
+    "finance":     ["cost", "po", "adm", "obj"],
+    "procurement": ["po", "task", "obj"],
+    "sales":       ["adm", "obj"],
+    "compliance":  ["adm", "risk", "obj", "log"],
+    "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
 }
 
-# 动作层权限矩阵（manual §6 + cost-manual §5）——本次不得改动
+# 动作层权限矩阵（manual §6 + cost-manual §5 + P4：ProposeMitigation +procurement）
+# 铁律不变：ApproveMitigation 仍仅 manager、CloseRiskEvent 仍仅 ops（maker-checker）。
 EXPECTED_ROLE_PERMS = {
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }

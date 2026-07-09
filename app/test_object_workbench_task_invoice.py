@@ -37,7 +37,7 @@ MASK = "🔒无权查看"
 
 EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }

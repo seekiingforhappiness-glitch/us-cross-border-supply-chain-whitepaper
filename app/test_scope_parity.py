@@ -28,9 +28,9 @@ INV = "INV-2026-00001"   # SHP-2026-0001，有账单行金额/基准/差异（�
 RID = "RSK-0068"         # SHP-2026-0099 R1，受影响行 SOL-0188-1，客户 CUS-0007 tier=A
 AID = "AC-2026-0031"     # priced DDP 案，成本情景 CS-00034/35/36
 
-EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
+EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5 + P4（ProposeMitigation +procurement）
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }

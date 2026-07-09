@@ -24,11 +24,11 @@ from .data_scope import (MODE_LABELS, default_mode, region_of_locode,
                          scope_predicate)
 
 FAILS = []
-ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager"]
+ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager", "procurement"]
 
 EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }

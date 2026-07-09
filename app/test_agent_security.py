@@ -49,7 +49,7 @@ WH = "LAX-DC1"                # domestic 仓，锚定 R16/R18
 CT_APPROVAL = {"approve_mitigation", "close_risk_event"}          # 控制塔域 A5/A6
 ADM_APPROVAL = {"approve_quote_decision", "reject_or_request_more_info"}  # 准入域 B5/B6
 FOUR_APPROVAL = CT_APPROVAL | ADM_APPROVAL
-ALL_ROLES = ("ops", "cs", "finance", "manager", "sales", "compliance")
+ALL_ROLES = ("ops", "cs", "finance", "manager", "sales", "compliance", "procurement")
 SWEEP_ROLES = ("ops", "finance", "manager")  # 关键角色（含真有审批权的 manager）
 
 # 多种 prompt 注入变体（塞进 args 的字符串字段，试图诱导 agent 越权审批）
@@ -73,11 +73,11 @@ FORBIDDEN_CALLS = {
                                                 "missing_documents": [], "rejection_reason": inj},
 }
 
-EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
+EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5 + P4（ProposeMitigation +procurement）
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
-    "ApproveMitigation": {"manager"},
-    "CloseRiskEvent": {"ops"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
+    "ApproveMitigation": {"manager"},   # 铁律：审批仅 manager，永不因新角色放宽
+    "CloseRiskEvent": {"ops"},          # 铁律：关闭仅 ops
 }
 EXPECTED_ADM_PERMS = {  # admission-manual-v0.3 §5——本次不得改动
     "CreateAdmissionCase": {"sales"},

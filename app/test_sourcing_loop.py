@@ -28,7 +28,7 @@ from agent.tools import AgentSession, FORBIDDEN_TOOLS
 FAILS = []
 EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }
@@ -188,8 +188,8 @@ def main():
     print("== ④ ROLE_PERMS / maker-checker / FORBIDDEN_TOOLS 未削弱；SOURCING_ACTIONS 已注册 ==")
     check("④ ROLE_PERMS 与基线一致（硬 gate 未削弱）", ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
     check("④ ApproveMitigation 仍仅 manager（maker-checker 硬 gate）", ROLE_PERMS["ApproveMitigation"] == {"manager"})
-    check("④ ProposeMitigation 仍 {ops,cs,finance}（采购富化2 处置沿用，未新增权限）",
-          ROLE_PERMS["ProposeMitigation"] == {"ops", "cs", "finance"})
+    check("④ ProposeMitigation = {ops,cs,finance,procurement}（P4 基线；采购富化2 处置沿用未额外加权）",
+          ROLE_PERMS["ProposeMitigation"] == {"ops", "cs", "finance", "procurement"})
     check("④ FORBIDDEN_TOOLS 含 approve/close（红线未削弱）",
           {"approve_mitigation", "close_risk_event"} <= FORBIDDEN_TOOLS)
     check("④ 三个采购富化2 处置动作已注册（proposed_action 扩展，走既有闭环）",

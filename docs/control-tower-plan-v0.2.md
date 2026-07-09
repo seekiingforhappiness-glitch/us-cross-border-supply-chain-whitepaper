@@ -220,6 +220,16 @@ approved PO / 非 approved 供应商 → 绕流程采购）。锚点复用 suppl
 默认取舍：容差/近期窗口(N 天)入 config；RFQ/RFQLine/Quote 走**标准视图**（不建富工作台）。
 铁律不变：引擎禁读真值、真值存 data/truth/、既有 R1-R18 R/P=1.000 不得扰动、agent 不越权。
 
+**P4 — 新增专职「采购 procurement」角色（2026-07-09，Daniel 经 AskUserQuestion 亲批）。**
+动因：系统已有完整采购业务域（R7-R15、采购工作台、三方对账），但 6 角色里无专职采购——采购处置此前
+折叠进 ops(收货/交期)+finance(供票/价量)+manager(审批)。Daniel 判断真实跨境公司采购/寻源是独立职能，
+面客 demo 应补齐。范围（最小、守护城河）：① 新角色 `procurement`，落地页=采购工作台，工作台 `[po, task, obj]`；
+② `ops` 去掉 po「回归纯物流」；③ 权限仅给 `ProposeMitigation` +procurement（采购处置提案是其核心活）；
+④ **AssignTask/CloseRiskEvent/ApproveMitigation 全不动**——`ApproveMitigation` 仍仅 manager、`CloseRiskEvent`
+仍仅 ops，形成「采购提案→经理审批→运营关闭」三方职责分离（比原来分离更强）。roster 加 u-proc-us/cn。
+铁律不变：agent 审批类工具从未注册（procurement agent 亦无）、越权动作层挡回、R1-R18 R/P=1.000 与 truth md5
+逐字节未动、maker-checker 不削弱。三处 EXPECTED_ROLE_PERMS 基线 + rbac/data_scope/smoke 契约同步更新（明批非削弱）。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

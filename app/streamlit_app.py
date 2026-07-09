@@ -509,7 +509,7 @@ def render_command_header(role, n_open):
     review_invoices = rows("SELECT count(*) c FROM invoices WHERE status='under_review'")[0]["c"]
     priced_cases = rows("SELECT count(*) c FROM admission_cases WHERE status='priced'")[0]["c"]
     role_label = {"ops": "物流运营", "cs": "客户成功", "manager": "经理", "sales": "销售",
-                  "compliance": "合规", "finance": "财务"}[role]
+                  "compliance": "合规", "finance": "财务", "procurement": "采购"}[role]
     meta = ROLE_WORKSPACE_META.get(role, ROLE_WORKSPACE_META["manager"])
     # 数据域改为真实 active scope（行级范围）：读任务台当前 mode（有 task tab 才信 session），
     # 无则用角色默认。manager 恒 Global，ops/cs 如 "US · 我的任务"。不再硬编码/占位。
@@ -552,12 +552,14 @@ with st.sidebar:
         </div>
     </div>
     """, unsafe_allow_html=True)
-    role = st.selectbox("当前角色", ["ops", "cs", "manager", "sales", "compliance", "finance"],
+    role = st.selectbox("当前角色",
+                        ["ops", "cs", "manager", "sales", "compliance", "finance", "procurement"],
                         key="role",
                         format_func=lambda r: {"ops": "物流运营 ops", "cs": "客户成功 cs",
                                                "manager": "经理 manager", "sales": "销售 sales",
                                                "compliance": "合规 compliance",
-                                               "finance": "财务 finance"}[r])
+                                               "finance": "财务 finance",
+                                               "procurement": "采购 procurement"}[r])
     actor = st.text_input("操作人", "daniel")
     st.caption(f"仿真时钟 as_of = **{AS_OF}**（D8）")
     n_open = rows("SELECT count(*) c FROM risk_events WHERE status NOT IN ('resolved','escalated')")[0]["c"]

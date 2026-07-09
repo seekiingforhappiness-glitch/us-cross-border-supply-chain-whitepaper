@@ -33,7 +33,7 @@ from agent.tools import AgentSession, FORBIDDEN_TOOLS
 FAILS = []
 EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
     "AssignTask": {"ops", "system"},
-    "ProposeMitigation": {"ops", "cs", "finance"},
+    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }
@@ -269,8 +269,8 @@ def main():
     print("== ⑥ ROLE_PERMS / maker-checker / FORBIDDEN_TOOLS 未削弱；WH_PERMS/WAREHOUSE_ACTIONS 已注册 ==")
     check("⑥ ROLE_PERMS 与基线一致（硬 gate 未削弱）", ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
     check("⑥ ApproveMitigation 仍仅 manager（maker-checker 硬 gate）", ROLE_PERMS["ApproveMitigation"] == {"manager"})
-    check("⑥ ProposeMitigation 仍 {ops,cs,finance}（仓储处置沿用，未新增权限）",
-          ROLE_PERMS["ProposeMitigation"] == {"ops", "cs", "finance"})
+    check("⑥ ProposeMitigation = {ops,cs,finance,procurement}（P4 基线；仓储处置沿用未额外加权）",
+          ROLE_PERMS["ProposeMitigation"] == {"ops", "cs", "finance", "procurement"})
     check("⑥ FORBIDDEN_TOOLS 含 approve/close（红线未削弱）",
           {"approve_mitigation", "close_risk_event"} <= FORBIDDEN_TOOLS)
     check("⑥ WH_PERMS：仓储四操作均运营域 {ops,system}", WH_PERMS == EXPECTED_WH_PERMS, str(WH_PERMS))

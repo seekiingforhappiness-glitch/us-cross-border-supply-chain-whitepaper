@@ -23,24 +23,27 @@ TAB_LABELS = {
 # 角色 → 工作台可见 tab（列表顺序即 tab 呈现顺序；每角色主战场排第一，成为默认落地页）
 # 审计日志(log)给「有审阅需要」的角色——运营(ops)/治理(compliance)/监督(manager)；且按 data_scope
 # 过滤（render_log_tab）：非 manager 只看本区域数据范围内对象的审计，manager 看全量（口径收敛）。
-# 采购工作台(po)给采购三方对账相关角色——运营(收货/交期处置)/财务(供票匹配/价量争议)/经理(全域)。
+# 采购工作台(po)：P4 起以专职「采购 procurement」为主场（po 落地页）；财务仍可见 po 做供票/价量对账；
+# 经理全域可见。P4：ops 去掉 po「回归纯物流」——采购三方对账归采购角色，采购提案→经理审批→运营关闭三方分离。
 ROLE_WORKSPACE = {
-    "ops":        ["risk", "task", "dq", "po", "obj", "log"],
-    "cs":         ["risk", "task", "obj"],
-    "finance":    ["cost", "po", "adm", "obj"],
-    "sales":      ["adm", "obj"],
-    "compliance": ["adm", "risk", "obj", "log"],
-    "manager":    ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
+    "ops":         ["risk", "task", "dq", "obj", "log"],
+    "cs":          ["risk", "task", "obj"],
+    "finance":     ["cost", "po", "adm", "obj"],
+    "procurement": ["po", "task", "obj"],
+    "sales":       ["adm", "obj"],
+    "compliance":  ["adm", "risk", "obj", "log"],
+    "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
 }
 
 # 每角色工作台名 + 数据域（命令栏呈现，让页面明显因角色而不同）
 ROLE_WORKSPACE_META = {
-    "ops":        {"name": "运营处置台", "domain": "物流风险 · 任务 · DQ"},
-    "cs":         {"name": "客户成功台", "domain": "客户交付风险 · 任务"},
-    "finance":    {"name": "费用成本台", "domain": "发票对账 · 成本情景"},
-    "sales":      {"name": "准入受理台", "domain": "准入案件"},
-    "compliance": {"name": "合规审查台", "domain": "准入合规 · 单证风险"},
-    "manager":    {"name": "经理总览台", "domain": "全域"},
+    "ops":         {"name": "运营处置台", "domain": "物流风险 · 任务 · DQ"},
+    "cs":          {"name": "客户成功台", "domain": "客户交付风险 · 任务"},
+    "finance":     {"name": "费用成本台", "domain": "发票对账 · 成本情景"},
+    "procurement": {"name": "采购处置台", "domain": "采购三方对账 · 供应商 · 寻源"},
+    "sales":       {"name": "准入受理台", "domain": "准入案件"},
+    "compliance":  {"name": "合规审查台", "domain": "准入合规 · 单证风险"},
+    "manager":     {"name": "经理总览台", "domain": "全域"},
 }
 
 
