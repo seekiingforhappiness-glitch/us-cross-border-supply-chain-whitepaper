@@ -57,9 +57,9 @@ UI 里 6 个对象工作台的「询问」按钮即用 Opus 4.8 作答：仅据�
 | --- | --- | --- |
 | 模拟数据 | `datagen/` | 各场景独立随机流；R1-R18 注入 + ground truth（真值只存 `data/truth/`、引擎禁读） |
 | 数据管道 | `pipeline/` | 判重/乱序消解/ER/MDM/DQ 队列；状态只从事件流推导 |
-| Ontology | `ontology/` + `data/ontology.sqlite` | **33 对象** · 多状态机 · 动作五要素 · 角色权限（v0.8.0） |
+| Ontology | `ontology/` + `data/ontology.sqlite` | **34 对象** · 多状态机 · 动作五要素 · 角色权限（v0.9.0） |
 | 风险引擎 | `engine/` | R1-R18；as_of 时间旅行安全；真值禁读 |
-| 运营应用 | `app/` | 真·角色导航 + 行级数据范围 + maker-checker + **6 富工作台 + 27 标准视图** |
+| 运营应用 | `app/` | 真·角色导航（7 角色）+ 行级数据范围 + maker-checker + **6 富工作台 + 28 标准视图** |
 | 对象中心 AI | `agent/` | permission-aware 对象级 agent（继承 UI 范围 · 审批永不注册 · 越权动作层挡回） |
 
 ## 导航

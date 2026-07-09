@@ -31,6 +31,8 @@ CONFIG = "config/datagen.yaml"
 
 # 种子标记：cleanup 只删本脚本造的行，绝不误伤真实 assign_task（其 policy_version 为 M2-demo-work-queue-v1）
 SEED_POLICY_VERSION = "demo-ops-seed-v1"
+# CL1 协调回路 demo 线程的独立种子标记（与运行期 CL1-coordination-v1 不同，故互不误伤）
+SEED_COORD_POLICY_VERSION = "demo-coordination-seed-v1"
 SEED_ACTOR = "seed_demo_ops"
 # Daniel 手工走查专用风险所在 shipment——种子不占用其任何风险（铁律 + test_closed_loop/test_outbox 依赖其 open 未派单）
 PROTECTED_SHIPMENT = "SHP-2026-0099"
@@ -129,9 +131,67 @@ def _select_risks(cur):
 
 
 def _cleanup(cur):
-    """幂等前置：只删本脚本造的 tasks 与 action_log。"""
+    """幂等前置：只删本脚本造的 tasks / coordination_threads / action_log。"""
     cur.execute("DELETE FROM tasks WHERE policy_version = ?", (SEED_POLICY_VERSION,))
+    cur.execute("DELETE FROM coordination_threads WHERE policy_version = ?",
+                (SEED_COORD_POLICY_VERSION,))
     cur.execute("DELETE FROM action_log WHERE actor = ?", (SEED_ACTOR,))
+
+
+def _seed_coordination_threads(cur, as_of_date, as_of_str):
+    """CL1 协调回路 demo 线程（幂等，锚到真实 seeded task）。返回统计 dict。
+
+    - 至少一条锚到延误 RSK-0031 的 task：counterparty=supplier、ask=工厂确认改期后交期、
+      next_action_due 早于 as_of → 派生 overdue。
+    - 一条 counterparty=customer、ask=接受拆单先发、state=responded（已回复）。
+    - 一条 counterparty=forwarder、state=escalated（overdue，展示升级态）。
+    幂等：cleanup 已按 policy_version 清本脚本造的线程；确定性 id COORD-DEMO-000N；as_of 显式（D8）。
+    """
+    rows = cur.execute(
+        """SELECT task_id, risk_event_id FROM tasks WHERE policy_version = ?
+           ORDER BY risk_event_id, task_id""", (SEED_POLICY_VERSION,)).fetchall()
+    if not rows:
+        return {"coordination_threads": 0, "note": "无 seeded task 可锚"}
+    by_risk = {r["risk_event_id"]: r["task_id"] for r in rows}
+    a_risk = "RSK-0031" if "RSK-0031" in by_risk else rows[0]["risk_event_id"]
+    a_task = by_risk[a_risk]
+    others = [r for r in rows if r["risk_event_id"] != a_risk]
+    b = others[0] if others else rows[0]
+    c = others[1] if len(others) > 1 else b
+    ts = f"{as_of_str}T00:00:00Z"
+    due_overdue2 = (as_of_date - timedelta(days=2)).isoformat()
+    due_overdue1 = (as_of_date - timedelta(days=1)).isoformat()
+    due_future = (as_of_date + timedelta(days=3)).isoformat()
+    # (cid, task_id, risk_id, cp_type, cp_ref, ask, state, fcount, esc, owner, due, last_response, outcome)
+    specs = [
+        ("COORD-DEMO-0001", a_task, a_risk, "supplier", "SUP·深圳工厂", "工厂确认改期后交期",
+         "awaiting", 2, 0, "u-ops-us", due_overdue2, None, None),
+        ("COORD-DEMO-0002", b["task_id"], b["risk_event_id"], "customer", "CUS·客户采购",
+         "接受拆单先发", "responded", 1, 0, "u-cs-us", due_future,
+         "客户同意先发目的仓现货部分、余量改期", None),
+        ("COORD-DEMO-0003", c["task_id"], c["risk_event_id"], "forwarder", "FWD·货代",
+         "确认改配船期舱位", "escalated", 3, 1, "u-ops-cn-lin", due_overdue1, None, None),
+    ]
+    n_overdue = 0
+    for (cid, task_id, risk_id, cp, ref, ask, state, fcount, esc, owner, due, resp, outc) in specs:
+        cur.execute(
+            """INSERT INTO coordination_threads
+               (coordination_id, task_id, risk_event_id, counterparty_type, counterparty_ref, ask,
+                state, followup_count, escalation_level, owner, next_action_due, last_response,
+                outcome, opened_at, last_update, policy_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (cid, task_id, risk_id, cp, ref, ask, state, fcount, esc, owner, due, resp, outc,
+             as_of_str, as_of_str, SEED_COORD_POLICY_VERSION))
+        cur.execute(
+            """INSERT INTO action_log (actor, role, action, target_object_id, params_json,
+               as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+            (SEED_ACTOR, "system", "OpenCoordination", cid,
+             json.dumps({"task_id": task_id, "risk_event_id": risk_id, "counterparty_type": cp,
+                         "ask": ask, "state": state}, ensure_ascii=False), as_of_str, ts, "ok"))
+        if state in ("awaiting", "escalated") and due < as_of_str:  # 派生 overdue（不落字段）
+            n_overdue += 1
+    return {"coordination_threads": len(specs), "coordination_overdue": n_overdue,
+            "anchor_rsk_0031": a_risk == "RSK-0031", "anchor_task_rsk_0031": a_task}
 
 
 def _build_plan(ct, cost, n_ct, n_cost):
@@ -215,11 +275,15 @@ def run(db_path: str = DB, config_path: str = CONFIG, as_of: str | None = None) 
         status_dist[status] = status_dist.get(status, 0) + 1
         escalations += esc
 
+    # CL1 协调回路 demo 线程（锚到刚造好的 task；同一事务内 cur 可见未提交行）
+    coord_stats = _seed_coordination_threads(cur, as_of_date, as_of_str)
+
     con.commit()
     con.close()
     return {"as_of": as_of_str, "tasks": len(plan), "sla_dist": sla_dist,
             "owner_dist": owner_dist, "status_dist": status_dist,
-            "escalations": escalations, "protected_shipment": PROTECTED_SHIPMENT}
+            "escalations": escalations, "protected_shipment": PROTECTED_SHIPMENT,
+            "coordination": coord_stats}
 
 
 def main():
@@ -235,6 +299,9 @@ def main():
     print(f"  owner 分布 : {stats['owner_dist']}")
     print(f"  状态 分布  : {stats['status_dist']}")
     print(f"  保护未派单 : {PROTECTED_SHIPMENT} 的 R1 风险仍 open（Daniel 手工走查专用）")
+    cs = stats.get("coordination", {})
+    print(f"  协调回路   : {cs.get('coordination_threads', 0)} 条 demo 线程"
+          f"（overdue {cs.get('coordination_overdue', 0)}；RSK-0031 锚={cs.get('anchor_rsk_0031')}）")
 
 
 if __name__ == "__main__":

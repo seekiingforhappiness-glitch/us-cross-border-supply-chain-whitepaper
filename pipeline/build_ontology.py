@@ -742,6 +742,15 @@ def main():
     cur.execute("""CREATE TABLE action_log (log_id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT,
         role TEXT, action TEXT, target_object_id TEXT, params_json TEXT, as_of_date TEXT,
         timestamp TEXT, result TEXT)""")
+    # CL1 协调回路（Coordination Loop，决策 CL1）：CoordinationThread 承载「延误处置时对外协调」的
+    #   运营状态（对供应商/货代/报关行/银行/客户的 ask→跟进→回复→升级）。空表，运行期由
+    #   app.coordination_actions 状态机写入；demo 快照由 datagen.seed_demo_ops 幂等 seed。
+    #   锚 Task（task_id）+ 冗余锚 RiskEvent（risk_event_id），overdue 为派生（不落字段）。
+    cur.execute("""CREATE TABLE coordination_threads (coordination_id TEXT PRIMARY KEY,
+        task_id TEXT, risk_event_id TEXT, counterparty_type TEXT, counterparty_ref TEXT,
+        ask TEXT, state TEXT, followup_count INTEGER, escalation_level INTEGER, owner TEXT,
+        next_action_due TEXT, last_response TEXT, outcome TEXT, opened_at TEXT,
+        last_update TEXT, policy_version TEXT)""")
     ensure_integration_outbox(con)
     cur.execute("""CREATE TABLE dq_issues (
         dq_issue_id TEXT PRIMARY KEY,

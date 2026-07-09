@@ -130,13 +130,13 @@ def main():
     for std in ("Shipment", "Customer", "Sku", "SalesOrderLine", "Container", "CostScenario",
                 "Supplier", "ShipmentMilestone", "InvoiceLine", "ExpectedCost", "LogisticsPlan",
                 "InventoryPosition", "InventoryReservation", "CycleCount",
-                "RFQ", "RFQLine", "Quote"):
+                "RFQ", "RFQLine", "Quote", "CoordinationThread"):
         check(f"③ {std} → standard", sov.route_object(std) == "standard")
     check("③ 未知类型 → unknown", sov.route_object("Nonexistent") == "unknown")
     check("③ OBJECT_REGISTRY 不含六核心（只覆盖非核心）",
           not (sov.RICH_OBJECT_TYPES & set(sov.OBJECT_REGISTRY)))
-    check("③ OBJECT_REGISTRY 覆盖 27 个非核心类型（Warehouse 升富对象：28→27）",
-          len(sov.OBJECT_REGISTRY) == 27, str(len(sov.OBJECT_REGISTRY)))
+    check("③ OBJECT_REGISTRY 覆盖 28 个非核心类型（CL1 新增 CoordinationThread：27→28）",
+          len(sov.OBJECT_REGISTRY) == 28, str(len(sov.OBJECT_REGISTRY)))
     # OBJECT_REGISTRY 值形如 (表名, 主键列, 关键展示字段)
     tbl, pkc, kf = sov.OBJECT_REGISTRY["Shipment"]
     check("③ OBJECT_REGISTRY[Shipment] = (shipments, shipment_id, 非空关键字段)",

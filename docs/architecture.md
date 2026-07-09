@@ -16,8 +16,8 @@ flowchart TB
         B1["判重·乱序消解·状态从事件流推导"]
         B2["ER · MDM crosswalk · DQ issue 队列"]
     end
-    subgraph L3["③ 统一 Ontology（data/ontology.sqlite，v0.8.0）"]
-        C1["33 对象类型 · 多状态机 · 动作五要素 · 角色权限"]
+    subgraph L3["③ 统一 Ontology（data/ontology.sqlite，v0.9.0）"]
+        C1["34 对象类型 · 多状态机 · 动作五要素 · 角色权限"]
         C2["object_relationships registry<br/>可解释对象路径（explain_path）"]
     end
     subgraph L4["④ 规则引擎 engine/"]
@@ -25,7 +25,7 @@ flowchart TB
     end
     subgraph L5["⑤ 运营应用 app/"]
         E1["动作层（权限·前置·maker-checker·审计）"]
-        E2["真·角色导航 + 行级数据范围 + 6 对象富工作台 + 27 标准视图"]
+        E2["真·角色导航 + 行级数据范围 + 6 对象富工作台 + 28 标准视图"]
     end
     subgraph L6["⑥ 对象中心 AI agent/"]
         F1["permission-aware 对象级 agent<br/>（继承 UI 数据范围 · 审批类永不注册 · 越权动作层挡回）"]
@@ -119,8 +119,8 @@ sequenceDiagram
 | | |
 | --- | --- |
 | 业务场景 | **5**（延误 / 费用 / 准入 / 采购 / 仓储） |
-| 对象类型 / 风险规则 | **33 / 18（R1-R18 全 P/R=1.000）** |
-| 对象富工作台 + 对象级 agent / 标准视图 | **6 / 27** |
-| 角色 / 门禁 | 6 角色（真·导航+行级数据范围+maker-checker）/ G1-G4 |
+| 对象类型 / 风险规则 | **34 / 18（R1-R18 全 P/R=1.000）** |
+| 对象富工作台 + 对象级 agent / 标准视图 | **6 / 28** |
+| 角色 / 门禁 | 7 角色（含专职采购，真·导航+行级数据范围+maker-checker）/ G1-G4 |
 | 跨场景连接 | 采购→仓储→履约→延误现货救援 |
 | 治理 | 决策日志 append-only、多评估器全绿、真值引擎禁读、agent 不越权 |

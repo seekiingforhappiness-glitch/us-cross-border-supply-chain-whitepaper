@@ -125,6 +125,9 @@ KEY_FIELDS = {
     "RFQ": ["sku_id", "status", "created_date"],
     "RFQLine": ["rfq_id", "sku_id", "qty"],
     "Quote": ["rfq_id", "supplier_id", "unit_price_usd", "status"],
+    # CL1 协调回路对象（决策日志 CL1）：标准视图展示字段（overdue 为派生，不落字段故不在此）
+    "CoordinationThread": ["counterparty_type", "counterparty_ref", "ask", "state",
+                           "followup_count", "next_action_due"],
 }
 
 # 非核心对象注册表：type → (表名, 主键列, 关键展示字段)。表名/主键来自 ontology 派生（TYPE_META），
@@ -179,6 +182,9 @@ FK_SUPPLEMENT = {
                 ("rfq_line_for_sku", "Sku", "fk_out", "sku_id")],
     "Quote": [("rfq_has_quote", "RFQ", "fk_out", "rfq_id"),
               ("quote_from_supplier", "Supplier", "fk_out", "supplier_id")],
+    # CL1 协调回路：线程锚回 Task（触发它的处置）+ RiskEvent（冗余锚，回到风险图）——两者为富对象
+    "CoordinationThread": [("coordination_on_task", "Task", "fk_out", "task_id"),
+                           ("coordination_on_risk", "RiskEvent", "fk_out", "risk_event_id")],
 }
 
 

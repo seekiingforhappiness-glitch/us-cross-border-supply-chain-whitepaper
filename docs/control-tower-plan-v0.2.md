@@ -230,6 +230,24 @@ approved PO / 非 approved 供应商 → 绕流程采购）。锚点复用 suppl
 铁律不变：agent 审批类工具从未注册（procurement agent 亦无）、越权动作层挡回、R1-R18 R/P=1.000 与 truth md5
 逐字节未动、maker-checker 不削弱。三处 EXPECTED_ROLE_PERMS 基线 + rbac/data_scope/smoke 契约同步更新（明批非削弱）。
 
+**CL1 — 协调回路（coordination loop）第一个纵向切片（2026-07-09，Daniel 经 AskUserQuestion 亲批）。**
+动因：用真实数据（两轮中立调研：4 岗位 + 跨境异常处理流程）做 A/B/C 缺口分析——系统现有功能 vs
+第一性原理必要功能表（见 `docs/notes-decision-rights-org-design.md §10`）vs 真实异常。**最响的信号**：
+真实世界里异常处理最难、最耗时的活是**跨外部主体的协调/催办/谈判/扯皮**（"驻厂催货"/"让客户去开证行认
+不符点"/"业务员指挥不动产线要老板出面"/"滞港费责任扯到打官司"），而系统核心闭环 检测→派单→提案→审批→关闭
+**完全没建**这个多方协调回路（grep coordination/协调/催办/谈判 = 0 命中）。这是**逻辑缺口**（作用于所有域、
+乘数效应），优先级高于"再加一个同形状的覆盖域"（海关/信用证/D&D 是覆盖缺口，记待办不在本切片）。
+与 §10 第一性原理一致：谈判/协调是一等必要功能、人的黏核，系统偏漏。
+范围（最小、复用骨架）：① 新对象 `CoordinationThread`（协调线程）锚在 Task 上：对手方类型(supplier/
+forwarder/customs_broker/bank/customer)+引用、ask、状态机(open→awaiting→responded→resolved/
+escalated/dead_ended、逾期 overdue)、催办次数、升级级别、内部协调人；② 新动作（走动作层+审计+
+permission-aware）：open_coordination/record_outreach/record_response/escalate_coordination/
+resolve_coordination/mark_dead_ended；③ 浮现 overdue（外部版 SLA）。**刻意不做**：不做真发消息/CRM，
+只建协调的状态+台账；对手方用轻引用，不建完整 Counterparty 对象图（留后续）。
+铁律不变：R1-R18 不动（新对象+动作，不碰检测）、truth md5 逐字节不变（协调是运营态，seed_demo_ops 幂等造，
+不碰 datagen 真值）、maker-checker 不削（既有 4 权限键不动、ApproveMitigation 仍仅 manager、协调动作是新权限组）、
+agent 不越权（协调写动作**不注册为 agent 工具**，agent 仍只读+提案）。demo：延误 RSK-0031 对工厂/客户各起一条协调。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。

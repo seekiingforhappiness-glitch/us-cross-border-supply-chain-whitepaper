@@ -1,5 +1,5 @@
 {
-  "version": "0.8.0",
+  "version": "0.9.0",
   "name": "cross_border_unified_ontology",
   "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账 + 仓储库存，五场景共享）",
   "scope": "Five scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice); (5) warehouse inventory accuracy (Warehouse / InventoryPosition / InventoryReservation / CycleCount) — all REUSING the RiskEvent/Task closed loop (F1/P1/W1). Shared objects zero duplication.",
@@ -655,6 +655,37 @@
         {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."}
       ],
       "dataQualityRules": ["quote_id unique", "rfq_id in rfqs", "supplier_id in suppliers"]
+    },
+    {
+      "type": "CoordinationThread",
+      "primaryKey": "coordination_id",
+      "ownerRole": "ops",
+      "statusField": "state",
+      "description": "Coordination Loop (decision CL1): a tracked outbound coordination with an external counterparty (supplier/forwarder/customs_broker/bank/customer) that handling a RiskEvent requires. Why: today a delay Task says 'expedite', but the real work is chasing the factory for a revised ready date or the customer for a split-ship acceptance -- that ask -> follow-up -> response -> escalate back-and-forth is real operational state the control tower must hold, not fire-and-forget. Anchored on the Task that spawned it (task_id) with a redundant risk_event_id anchor so a thread joins straight back to the risk graph. overdue is DERIVED (state in {awaiting,escalated} and next_action_due < as_of), never a stored field.",
+      "properties": [
+        {"name": "coordination_id", "type": "string", "required": true},
+        {"name": "task_id", "type": "string", "required": true, "description": "Anchor Task that this coordination serves (the mitigation being worked)."},
+        {"name": "risk_event_id", "type": "string", "required": true, "description": "Redundant anchor to the Task's RiskEvent, so a thread joins straight back to the risk graph."},
+        {"name": "counterparty_type", "type": "enum", "required": true, "values": ["supplier", "forwarder", "customs_broker", "bank", "customer"]},
+        {"name": "counterparty_ref", "type": "string", "required": true, "description": "Free-text handle for the counterparty (e.g. supplier id/name, forwarder, broker)."},
+        {"name": "ask", "type": "string", "required": true, "description": "What we need from the counterparty (e.g. 'confirm revised ready date after reschedule')."},
+        {"name": "state", "type": "enum", "required": true, "values": ["awaiting", "responded", "escalated", "resolved", "dead_ended"]},
+        {"name": "followup_count", "type": "number", "required": true, "description": "How many outreach touches sent (starts at 1 on open, ++ on each record_outreach)."},
+        {"name": "escalation_level", "type": "number", "required": true, "description": "0 initially; ++ on each escalate_coordination."},
+        {"name": "owner", "type": "string", "required": true, "description": "Internal owner chasing this thread (demo roster id)."},
+        {"name": "next_action_due", "type": "date", "required": true, "description": "When the next internal action is due; basis for the DERIVED overdue flag (explicit as_of, D8)."},
+        {"name": "last_response", "type": "string", "required": false, "description": "Latest counterparty response text; null until record_response."},
+        {"name": "outcome", "type": "string", "required": false, "description": "Terminal outcome text; null until resolve/mark_dead_ended."},
+        {"name": "opened_at", "type": "date", "required": true, "description": "as_of when opened (D8)."},
+        {"name": "last_update", "type": "date", "required": true, "description": "as_of of the last state change (D8)."},
+        {"name": "policy_version", "type": "string", "required": false, "description": "Marks demo-seeded threads for idempotent re-seed cleanup; runtime threads carry a runtime marker."}
+      ],
+      "dataQualityRules": [
+        "coordination_id unique",
+        "task_id in tasks (anchor integrity); risk_event_id in risk_events",
+        "terminal states {resolved, dead_ended} are final",
+        "overdue is derived (state in {awaiting,escalated} and next_action_due < as_of), never stored"
+      ]
     }
   ],
   "links": [
@@ -670,6 +701,8 @@
     {"linkType": "risk_on_shipment", "source": "RiskEvent", "target": "Shipment", "cardinality": "N:1"},
     {"linkType": "risk_affects_line", "source": "RiskEvent", "target": "SalesOrderLine", "cardinality": "N:M", "via": "affected_so_line_ids"},
     {"linkType": "task_handles_risk", "source": "Task", "target": "RiskEvent", "cardinality": "N:1"},
+    {"linkType": "coordination_on_task", "source": "CoordinationThread", "target": "Task", "cardinality": "N:1", "rule": "CL1: thread anchored on the mitigation Task"},
+    {"linkType": "coordination_on_risk", "source": "CoordinationThread", "target": "RiskEvent", "cardinality": "N:1", "rule": "CL1: redundant anchor so a thread joins back to the risk graph"},
     {"linkType": "case_has_sku", "source": "AdmissionCase", "target": "Sku", "cardinality": "N:1", "rule": "targets candidate SKU"},
     {"linkType": "case_for_customer", "source": "AdmissionCase", "target": "Customer", "cardinality": "N:1", "rule": "SAME Customer object as control tower (reuse proof, E2)"},
     {"linkType": "case_has_finding", "source": "AdmissionCase", "target": "ComplianceFinding", "cardinality": "1:N"},
@@ -823,6 +856,24 @@
         {"from": "invited", "to": "expired", "trigger": "no response before deadline"}
       ],
       "notes": "P3 Build A defines states. status='awarded' is the AVL entry read by R14 (single source) and R15 (approved-alternate exemption)."
+    },
+    "CoordinationThread": {
+      "states": ["awaiting", "responded", "escalated", "resolved", "dead_ended"],
+      "transitions": [
+        {"from": "(open)", "to": "awaiting", "trigger": "OpenCoordination (CL1): followup_count=1, next_action_due set"},
+        {"from": "awaiting", "to": "awaiting", "trigger": "RecordOutreach: followup_count++, next_action_due reset"},
+        {"from": "awaiting", "to": "responded", "trigger": "RecordResponse: store last_response"},
+        {"from": "escalated", "to": "responded", "trigger": "RecordResponse: store last_response"},
+        {"from": "awaiting", "to": "escalated", "trigger": "EscalateCoordination: escalation_level++"},
+        {"from": "responded", "to": "escalated", "trigger": "EscalateCoordination: escalation_level++"},
+        {"from": "awaiting", "to": "resolved", "trigger": "ResolveCoordination: store outcome"},
+        {"from": "responded", "to": "resolved", "trigger": "ResolveCoordination: store outcome"},
+        {"from": "escalated", "to": "resolved", "trigger": "ResolveCoordination: store outcome"},
+        {"from": "awaiting", "to": "dead_ended", "trigger": "MarkDeadEnded: store outcome"},
+        {"from": "responded", "to": "dead_ended", "trigger": "MarkDeadEnded: store outcome"},
+        {"from": "escalated", "to": "dead_ended", "trigger": "MarkDeadEnded: store outcome"}
+      ],
+      "notes": "Coordination Loop (decision CL1). Terminal: resolved, dead_ended. overdue is DERIVED (state in {awaiting,escalated} and next_action_due < as_of), not a state. Actions gated by new COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance}, an independent permission group -- maker-checker ROLE_PERMS unchanged (ApproveMitigation stays manager-only, CloseRiskEvent stays ops-only)."
     }
   },
   "actions": [
@@ -1072,6 +1123,60 @@
       "placeholder": "P3 Build A defines the shape only; the R15 remediation (retroactively attach the spend to an approved PO) lands in Build B as an approve_mitigation proposed_action.",
       "preconditions": ["linked risk is R15 maverick_spend", "approved (A5)"],
       "audit": ["risk_event_id", "supplier_invoice_id", "po_id"]
+    },
+    {
+      "id": "A20", "name": "OpenCoordination",
+      "signature": "open_coordination(task_id, counterparty_type, counterparty_ref, ask, owner, next_action_due, actor, role, as_of) -> Result",
+      "executors": ["ops", "cs", "procurement", "finance"],
+      "preconditions": ["role in COORD_PERMS.ManageCoordination (independent of maker-checker)", "task_id in tasks (anchor integrity)", "counterparty_type in enum"],
+      "successEffects": ["CoordinationThread=awaiting", "followup_count=1", "escalation_level=0", "risk_event_id derived from Task (redundant anchor)"],
+      "failureHandling": ["role not permitted -> deny + audit", "unknown task -> reject", "bad counterparty_type -> reject"],
+      "audit": ["task_id", "risk_event_id", "counterparty_type", "ask", "owner", "next_action_due"]
+    },
+    {
+      "id": "A21", "name": "RecordOutreach",
+      "signature": "record_outreach(coordination_id, next_action_due, note, actor, role, as_of) -> Result",
+      "executors": ["ops", "cs", "procurement", "finance"],
+      "preconditions": ["role in COORD_PERMS.ManageCoordination", "state == awaiting"],
+      "successEffects": ["state stays awaiting", "followup_count++", "next_action_due reset", "last_update=as_of"],
+      "failureHandling": ["role not permitted -> deny + audit", "illegal transition (state != awaiting) -> reject"],
+      "audit": ["followup_count", "next_action_due", "note"]
+    },
+    {
+      "id": "A22", "name": "RecordResponse",
+      "signature": "record_response(coordination_id, last_response, actor, role, as_of) -> Result",
+      "executors": ["ops", "cs", "procurement", "finance"],
+      "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, escalated}"],
+      "successEffects": ["state -> responded", "store last_response", "last_update=as_of"],
+      "failureHandling": ["role not permitted -> deny + audit", "illegal transition -> reject"],
+      "audit": ["last_response"]
+    },
+    {
+      "id": "A23", "name": "EscalateCoordination",
+      "signature": "escalate_coordination(coordination_id, next_action_due, actor, role, as_of) -> Result",
+      "executors": ["ops", "cs", "procurement", "finance"],
+      "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded}"],
+      "successEffects": ["state -> escalated", "escalation_level++", "next_action_due optionally reset", "last_update=as_of"],
+      "failureHandling": ["role not permitted -> deny + audit", "illegal transition -> reject"],
+      "audit": ["escalation_level", "next_action_due"]
+    },
+    {
+      "id": "A24", "name": "ResolveCoordination",
+      "signature": "resolve_coordination(coordination_id, outcome, actor, role, as_of) -> Result",
+      "executors": ["ops", "cs", "procurement", "finance"],
+      "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded, escalated} (active)"],
+      "successEffects": ["state -> resolved (terminal)", "store outcome", "last_update=as_of"],
+      "failureHandling": ["role not permitted -> deny + audit", "already terminal -> reject"],
+      "audit": ["outcome"]
+    },
+    {
+      "id": "A25", "name": "MarkDeadEnded",
+      "signature": "mark_dead_ended(coordination_id, outcome, actor, role, as_of) -> Result",
+      "executors": ["ops", "cs", "procurement", "finance"],
+      "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded, escalated} (active)"],
+      "successEffects": ["state -> dead_ended (terminal)", "store outcome", "last_update=as_of"],
+      "failureHandling": ["role not permitted -> deny + audit", "already terminal -> reject"],
+      "audit": ["outcome"]
     }
   ],
   "riskRules": [

@@ -21,13 +21,21 @@
 > **ApproveMitigation 仍仅 manager、CloseRiskEvent 仍仅 ops**（maker-checker 铁律不动，形成采购提案→经理审批→运营关闭三方分离）。
 > 全套回归绿（17 app 测试 + agent.evaluate + 4 评估器）、procurement agent 无审批工具、R1-R18 与 truth md5 未动。
 
+> **CL1 协调回路第一切片（2026-07-09，Daniel §3 亲批，决策日志 CL1）**：用真实数据做缺口分析发现系统核心闭环漏了
+> **跨外部主体的协调/催办/谈判**（真实世界最耗时的活）。新增对象 `CoordinationThread`（锚 Task，对手方 supplier/
+> forwarder/customs_broker/bank/customer，状态机 open→awaiting→responded→resolved/escalated/dead_ended、
+> overdue 派生）+ `app/coordination_actions.py` 6 动作（独立权限组 ManageCoordination={ops,cs,procurement,finance}，
+> 走审计）+ seed 3 条 demo + test_coordination_loop（22 断言）。**红线守住**：R1-R18/truth md5 未动、ROLE_PERMS 4 键+
+> FORBIDDEN 一字未改、协调写动作不注册为 agent 工具。对象 33→34、标准视图 27→28、ontology v0.9.0。
+> 缘起与第一性原理见 `docs/notes-decision-rights-org-design.md`。**下个候选切片**：协调回路接真发消息/对手方对象化，或补覆盖域（关务/信用证，§3）。
+
 - **阶段：5 个业务场景一本体，全部落地并通过 controller review**。场景：延误运营(R1-R3) / 费用稽核(R4-R6) /
   准入合规(门禁 G1-G4) / 采购(R7-R15：三方对账+预付款+资质+单一来源+maverick) / 仓储库存(R16-R18)。
-  **18 条风险规则全 P/R=1.000**；33 个对象类型；ontology **v0.8.0**。
+  **18 条风险规则全 P/R=1.000**；34 个对象类型（CL1 加 CoordinationThread）；ontology **v0.9.0**。
 - **成熟度做到教科书级**：真·角色导航(7 角色各自工作台，含 P4 新增专职采购 procurement) + 行级数据范围 + 经理 KPI + maker-checker + 审计 + 可插拔 LLM；
   **6 个对象富工作台(RiskEvent/Task/Invoice/AdmissionCase/PurchaseOrder/Warehouse) + permission-aware 对象级 agent**
   (agent 数据范围==UI、越权被动作层挡回、prompt 注入 "you are admin" 被拒——均已 controller 独立对抗验证) +
-  27 个自动标准视图(对象图可导航)。
+  28 个自动标准视图(对象图可导航，含 CL1 新增 CoordinationThread)。
 - **跨场景连成一张网**：采购收货→上架→库存→预留驱动 SalesOrderLine 履约 → 延误时查目的仓现货拆单先发+余量改期
   （白皮书业务问题落点）。
 - **工作模式**：主会话(controller)规划+对抗复核（"不信报告只信输出"，每次独立重跑），Opus 子代理执行；
