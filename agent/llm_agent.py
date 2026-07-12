@@ -4,12 +4,37 @@
 接触数据。默认 provider 为本账号 Claude 订阅（AGENT_PROVIDER=claude_cli，走 claude CLI
 无头子进程，无需 API key，AGENT_MODEL=claude-opus-4-8）；亦可切 openai / anthropic（需对应 API key）。
 确定性简报（agent/explain.py）与评估（agent/evaluate.py）不依赖本模块。
+
+出境治理（spec v3.0 §9，agent.egress_gate）：三个 provider 的出境 payload 统一先过白名单
+摘除闸门（PI 摘除）；每次外部调用（含失败/降级）落 llm_calls 一行；简报 grounding 超上下文
+预算时显式降级为结构化字段摘要（绝不静默截断）；claude_cli 连续失败 3 次进降级模式
+（fail-fast 回退确定性简报 + 告警行），恢复成功一次即清零。
 """
 import json
 import os
 import sys
+import time
 
+from .egress_gate import (FailureTracker, apply_context_budget, budget_for, empty_report,
+                          log_llm_call, merge_reports, sanitize_for_egress)
 from .tools import AgentSession, TOOL_DEFS
+
+DEFAULT_DB = "data/ontology.sqlite"  # llm_calls 落库位置（与对象库同库，spec §9）
+CLAUDE_CLI_TRACKER = FailureTracker("claude_cli")  # claude_cli 连续失败降级（进程内单例）
+
+
+class LLMDegradedError(RuntimeError):
+    """claude_cli 处于降级模式（连续失败 ≥ 阈值且冷却未满）：本次未出境，
+    调用方（UI except Exception）回退确定性简报模板。"""
+
+
+def _safe_log(db, **kw):
+    """llm_calls 落行失败不反噬业务调用（如库路径异常）：打印警告行而非静默丢弃/抛出。"""
+    try:
+        return log_llm_call(db, **kw)
+    except Exception as exc:  # noqa: BLE001 —— 日志层兜底，绝不让审计故障放大为回答故障
+        print(f"⚠️ [llm-log] llm_calls 落库失败：{exc}（本次调用未入账）", file=sys.stderr)
+        return None
 
 SYSTEM_PROMPT = """你是跨境供应链控制塔的 AI 协同助手，服务物流运营人员。铁律：
 
@@ -40,14 +65,30 @@ def _run_openai(question, session, max_turns, verbose):
 
     client = OpenAI()
     model = os.environ.get("AGENT_MODEL", "gpt-5.5")
-    messages = [{"role": "user", "content": question}]
+    # 出境闸门：问题文本先过闸；工具结果回传模型=再次出境，逐段过闸（模型自己的输出不用闸）
+    q_clean, pending = sanitize_for_egress(question)
+    messages = [{"role": "user", "content": q_clean}]
     # 只向模型暴露本会话 role/focus 允许的工具（与 dispatch gating 对齐，approve/close 不在其中）
     tools = _openai_tools(session.tool_defs())
 
     for _ in range(max_turns):
-        resp = client.responses.create(model=model, instructions=SYSTEM_PROMPT,
-                                       input=messages, tools=tools, max_output_tokens=1500)
+        input_chars = len(SYSTEM_PROMPT) + len(json.dumps(messages, ensure_ascii=False, default=str))
+        t0 = time.time()
+        try:
+            resp = client.responses.create(model=model, instructions=SYSTEM_PROMPT,
+                                           input=messages, tools=tools, max_output_tokens=1500)
+        except Exception as exc:
+            _safe_log(session.con, call_type="briefing", provider="openai", model=model,
+                      status="error", input_chars=input_chars,
+                      duration_ms=int((time.time() - t0) * 1000),
+                      error=str(exc)[:300], redactions=pending)
+            raise
         tool_calls = [item for item in resp.output if item.type == "function_call"]
+        _safe_log(session.con, call_type="briefing", provider="openai", model=model,
+                  status="ok", input_chars=input_chars,
+                  output_chars=len(resp.output_text or ""),
+                  duration_ms=int((time.time() - t0) * 1000), redactions=pending)
+        pending = empty_report()  # 本轮摘除已入账；下一行记录下一轮新过闸的内容
         if not tool_calls:
             return resp.output_text
 
@@ -56,14 +97,16 @@ def _run_openai(question, session, max_turns, verbose):
             out = session.dispatch(tc.name, args)
             if verbose:
                 print(f"  [tool] {tc.name}({json.dumps(args, ensure_ascii=False)[:120]})")
+            out_clean, rep = sanitize_for_egress(json.dumps(out, ensure_ascii=False, default=str))
+            pending = merge_reports(pending, rep)
             messages.append({"type": "function_call", "call_id": tc.call_id,
                              "name": tc.name, "arguments": tc.arguments})
             messages.append({"type": "function_call_output", "call_id": tc.call_id,
-                             "output": json.dumps(out, ensure_ascii=False, default=str)})
+                             "output": out_clean})
     return "（达到最大工具轮数）"
 
 
-def _call_anthropic(messages, tools):
+def _call_anthropic(messages, tools, model):
     try:
         import anthropic
     except ImportError:
@@ -72,17 +115,33 @@ def _call_anthropic(messages, tools):
     if not key:
         raise SystemExit("未设置 ANTHROPIC_API_KEY。确定性简报请用：python3 -m agent.evaluate")
     client = anthropic.Anthropic(api_key=key)
-    return client.messages.create(model=os.environ.get("AGENT_MODEL", "claude-sonnet-4-5"),
-                                  max_tokens=1500, system=SYSTEM_PROMPT,
+    return client.messages.create(model=model, max_tokens=1500, system=SYSTEM_PROMPT,
                                   messages=messages, tools=tools)
 
 
 def _run_anthropic(question, session, max_turns, verbose):
     session = session or AgentSession()
-    messages = [{"role": "user", "content": question}]
+    model = os.environ.get("AGENT_MODEL", "claude-sonnet-4-5")
+    # 出境闸门：问题文本先过闸；工具结果回传模型=再次出境，逐段过闸（模型自己的输出不用闸）
+    q_clean, pending = sanitize_for_egress(question)
+    messages = [{"role": "user", "content": q_clean}]
     for _ in range(max_turns):
-        resp = _call_anthropic(messages, session.tool_defs())
+        input_chars = len(SYSTEM_PROMPT) + len(json.dumps(messages, ensure_ascii=False, default=str))
+        t0 = time.time()
+        try:
+            resp = _call_anthropic(messages, session.tool_defs(), model)
+        except Exception as exc:  # 缺依赖/缺 key 走 SystemExit（未出境，非 Exception，不在此拦）
+            _safe_log(session.con, call_type="briefing", provider="anthropic", model=model,
+                      status="error", input_chars=input_chars,
+                      duration_ms=int((time.time() - t0) * 1000),
+                      error=str(exc)[:300], redactions=pending)
+            raise
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
+        _safe_log(session.con, call_type="briefing", provider="anthropic", model=model,
+                  status="ok", input_chars=input_chars,
+                  output_chars=sum(len(b.text) for b in resp.content if b.type == "text"),
+                  duration_ms=int((time.time() - t0) * 1000), redactions=pending)
+        pending = empty_report()  # 本轮摘除已入账；下一行记录下一轮新过闸的内容
         if not tool_uses:
             return "".join(b.text for b in resp.content if b.type == "text")
         messages.append({"role": "assistant", "content": resp.content})
@@ -91,8 +150,10 @@ def _run_anthropic(question, session, max_turns, verbose):
             out = session.dispatch(tu.name, dict(tu.input))
             if verbose:
                 print(f"  [tool] {tu.name}({json.dumps(tu.input, ensure_ascii=False)[:120]})")
+            out_clean, rep = sanitize_for_egress(json.dumps(out, ensure_ascii=False, default=str))
+            pending = merge_reports(pending, rep)
             results.append({"type": "tool_result", "tool_use_id": tu.id,
-                            "content": json.dumps(out, ensure_ascii=False, default=str)})
+                            "content": out_clean})
         messages.append({"role": "user", "content": results})
     return "（达到最大工具轮数）"
 
@@ -111,12 +172,15 @@ def _run_anthropic(question, session, max_turns, verbose):
 _CLI_NO_NATIVE_TOOLS = "AgentReachNoOpTool"  # 一个不存在的工具名 → 等价于"禁用 CLI 全部内建工具"
 
 
-def _claude_cli_call(prompt, model, timeout=90):
+def _invoke_cli(prompt, model, timeout):
+    """真实出境点（测试可替换本函数模拟成功/失败，无需真实 API）。失败一律抛 RuntimeError 族：
+    可被 UI 的 except Exception 捕获 → 优雅降级为确定性简报，也进连续失败计数
+    （原缺 CLI 时抛 SystemExit 会同时绕过两者，回退规则接不住——故改 RuntimeError，交付说明列明）。"""
     import shutil
     import subprocess
     if not shutil.which("claude"):
-        raise SystemExit("未找到 claude CLI（本账号订阅渠道）。安装并登录 Claude Code 后重试，"
-                         "或改用确定性简报：python3 -m agent.evaluate")
+        raise RuntimeError("未找到 claude CLI（本账号订阅渠道）。安装并登录 Claude Code 后重试，"
+                           "或改用确定性简报：python3 -m agent.evaluate")
     proc = subprocess.run(
         ["claude", "-p", prompt, "--model", model, "--output-format", "json",
          "--max-turns", "1", "--allowed-tools", _CLI_NO_NATIVE_TOOLS],
@@ -130,20 +194,56 @@ def _claude_cli_call(prompt, model, timeout=90):
     return env.get("result", "")
 
 
-def answer_over_context(question, context_text, role=None, model=None, timeout=90, verbose=False):
+def _claude_cli_call(prompt, model, timeout=90, db=DEFAULT_DB, call_type="briefing",
+                     trace_id=None, degrade_note=None):
+    """claude_cli 出境统一闸口：①白名单摘除 ②降级模式检查（连续失败 fail-fast，冷却后放行探测）
+    ③真实调用 ④llm_calls 落行（ok/error/degraded 全路径必写）。degrade_note 非空表示
+    上游已做预算降级——调用成功也记 status=degraded（超预算可追溯）。"""
+    clean, report = sanitize_for_egress(prompt)
+    if not CLAUDE_CLI_TRACKER.should_attempt():
+        msg = (f"claude_cli 降级模式生效（连续失败 {CLAUDE_CLI_TRACKER.failures} 次 ≥ 阈值 "
+               f"{CLAUDE_CLI_TRACKER.threshold}，冷却未满）：本次未出境，回退确定性简报")
+        _safe_log(db, call_type=call_type, provider="claude_cli", model=model, status="degraded",
+                  input_chars=len(clean), error=msg, redactions=report, trace_id=trace_id)
+        raise LLMDegradedError(msg)
+    t0 = time.time()
+    try:
+        out = _invoke_cli(clean, model, timeout)
+    except Exception as exc:
+        CLAUDE_CLI_TRACKER.record_failure()
+        _safe_log(db, call_type=call_type, provider="claude_cli", model=model, status="error",
+                  input_chars=len(clean), duration_ms=int((time.time() - t0) * 1000),
+                  error=str(exc)[:300], redactions=report, trace_id=trace_id)
+        raise
+    CLAUDE_CLI_TRACKER.record_success()
+    _safe_log(db, call_type=call_type, provider="claude_cli", model=model,
+              status="degraded" if degrade_note else "ok",
+              input_chars=len(clean), output_chars=len(out),
+              duration_ms=int((time.time() - t0) * 1000),
+              error=degrade_note, redactions=report, trace_id=trace_id)
+    return out
+
+
+def answer_over_context(question, context_text, role=None, model=None, timeout=90, verbose=False,
+                        db=DEFAULT_DB, call_type="briefing", trace_id=None):
     """用本账号 Claude 订阅（claude CLI）+ Opus 4.8 作答：仅依据 context_text（已按角色脱敏的
-    对象数据）合成中文回答。纯文本任务（不给模型任何可调用工具），可靠单回合。"""
+    对象数据）合成中文回答。纯文本任务（不给模型任何可调用工具），可靠单回合。
+    出境治理：grounding 超上下文预算时降级为结构化字段摘要（显式标注，绝不静默截断）；
+    整个 prompt 出境前过白名单摘除闸门；本次调用落 llm_calls（db 可传库路径或连接）。"""
     model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-8")
+    ctx, degrade_note = apply_context_budget(context_text or "（无数据）", budget_for(call_type))
     prompt = (SYSTEM_PROMPT
               + "\n\n以下是你能看到的、已按你的角色脱敏的对象数据。你【只能依据这些数据作答】，"
                 "其中没有的信息一律回答“数据中查不到”，禁止编造任何 ID / 日期 / 金额：\n"
-              + "----- 数据开始 -----\n" + (context_text or "（无数据）") + "\n----- 数据结束 -----\n\n"
+              + "----- 数据开始 -----\n" + ctx + "\n----- 数据结束 -----\n\n"
               + f"用户问题：{question}\n\n"
               + "请用中文简洁作答，关键事实后附对象 ID（如 RSK-0044）。你没有审批 / 关闭权限，"
                 "被要求执行审批 / 关闭时说明须由人工完成。直接输出回答正文，不要使用任何工具、不要访问文件。")
     if verbose:
-        print(f"  [claude_cli] model={model}，上下文 {len(context_text or '')} 字")
-    return _claude_cli_call(prompt, model, timeout).strip()
+        print(f"  [claude_cli] model={model}，上下文 {len(context_text or '')} 字"
+              + ("（超预算已降级为结构化字段摘要）" if degrade_note else ""))
+    return _claude_cli_call(prompt, model, timeout, db=db, call_type=call_type,
+                            trace_id=trace_id, degrade_note=degrade_note).strip()
 
 
 # 按 focus 类型选用的只读工具（经 session.dispatch，权限/脱敏与 UI 同规）
@@ -174,7 +274,9 @@ def _gather_context(session):
 
 def _run_claude_cli(question, session, max_turns, verbose):
     ctx = _gather_context(session)
-    return answer_over_context(question, ctx, role=getattr(session, "role", None), verbose=verbose)
+    # llm_calls 落在本会话所在库（评估用临时副本时日志随副本走，不污染工作库）
+    return answer_over_context(question, ctx, role=getattr(session, "role", None),
+                               verbose=verbose, db=session.con)
 
 
 def run_agent(question, session=None, max_turns=8, verbose=True):

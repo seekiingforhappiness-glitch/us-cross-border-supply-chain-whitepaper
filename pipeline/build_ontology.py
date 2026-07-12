@@ -18,6 +18,9 @@ from .dq_issues import create_unresolved_milestone_issues
 from .outbox import ensure_integration_outbox
 from engine.graph import upsert_relationship
 from engine.resolution_memory import ensure_resolution_memory_table
+# 跨目录引用（agent/）原因：llm_calls 的 DDL 单一事实源在 agent.egress_gate（LLM 出境治理层，
+# 仅标准库+yaml，无 app/streamlit 依赖链）；建表职责在本模块（与 resolution_memory 同模式）。
+from agent.egress_gate import ensure_llm_calls_table
 
 RAW = Path("data/raw")
 DB = Path("data/ontology.sqlite")
@@ -755,6 +758,9 @@ def main():
     # C1 处置记忆表（决策 C1）：空表，运行期由动作层在 approve（决定写入）/close（结果回填）时写；
     #   AI 仅有只读检索工具。DDL 单一事实源在 engine.resolution_memory（schema 不在两处维护）。
     ensure_resolution_memory_table(con)
+    # llm_calls 结构化日志表（spec v3.0 §9）：空表，运行期由 agent.llm_agent 每次外部 LLM 调用
+    #   （含失败/降级）落行；重建对象库=日志随库清空（合成世界可接受，同 resolution_memory）。
+    ensure_llm_calls_table(con)
     ensure_integration_outbox(con)
     cur.execute("""CREATE TABLE dq_issues (
         dq_issue_id TEXT PRIMARY KEY,
