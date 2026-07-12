@@ -17,6 +17,7 @@ from .mdm import CrosswalkEntry, resolve_crosswalk
 from .dq_issues import create_unresolved_milestone_issues
 from .outbox import ensure_integration_outbox
 from engine.graph import upsert_relationship
+from engine.resolution_memory import ensure_resolution_memory_table
 
 RAW = Path("data/raw")
 DB = Path("data/ontology.sqlite")
@@ -751,6 +752,9 @@ def main():
         ask TEXT, state TEXT, followup_count INTEGER, escalation_level INTEGER, owner TEXT,
         next_action_due TEXT, last_response TEXT, outcome TEXT, opened_at TEXT,
         last_update TEXT, policy_version TEXT)""")
+    # C1 处置记忆表（决策 C1）：空表，运行期由动作层在 approve（决定写入）/close（结果回填）时写；
+    #   AI 仅有只读检索工具。DDL 单一事实源在 engine.resolution_memory（schema 不在两处维护）。
+    ensure_resolution_memory_table(con)
     ensure_integration_outbox(con)
     cur.execute("""CREATE TABLE dq_issues (
         dq_issue_id TEXT PRIMARY KEY,

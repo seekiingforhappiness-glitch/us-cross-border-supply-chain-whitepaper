@@ -60,6 +60,9 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
     import standard_object_view as sov
     from executive_view import build_executive_summary
 
+# C1 处置记忆：先例检索/渲染是引擎层只读函数（顶部已补项目根进 sys.path，同 pipeline 导入方式）
+from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
+
 st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
 AS_OF = CFG["window"]["as_of"]
@@ -755,9 +758,15 @@ def render_risk_tab():
             st.markdown("**关闭风险（A6，运营）**")
             outcome = st.selectbox("结论", ["mitigated", "accepted_delay", "false_alarm", "escalated"])
             summary = st.text_input("处理小结")
+            # C1 质量标签（Daniel 裁决 Q3）：专员关闭时顺手三选一，默认不打；人打标签 AI 不自评
+            _q = st.selectbox("AI 建议质量标签（选填，C1）",
+                              ["（不打标）", "有效", "部分有效", "无效"],
+                              help="对本案已批提案的实际效果打标（3 秒）——一致率成绩单与评估集的原料")
             if st.form_submit_button("关闭"):
-                show_result(close_risk_event(db(), sel, outcome, summary,
-                                             actor=actor, role=role, as_of=AS_OF))
+                show_result(close_risk_event(
+                    db(), sel, outcome, summary, actor=actor, role=role, as_of=AS_OF,
+                    quality_label={"有效": "effective", "部分有效": "partial",
+                                   "无效": "ineffective"}.get(_q)))
         # 对象工作台入口：点选的 risk → 进入 RiskEvent 富工作台（session_state 存 focus）
         st.divider()
         st.session_state["focus_risk_event_id"] = sel
@@ -800,6 +809,18 @@ def render_task_tab():
             if role == "cs" and "est_cost_usd" in p:
                 p["est_cost_usd"] = "🔒无权查看"
             st.markdown(f"当前提案：`{t['proposed_action']}` {p}")
+        # C1 先例区块（提案/审批前先看同类旧案）：rule_id 精确匹配 + 同航线（Daniel 裁决），
+        # 数字每次渲染时从 resolution_memory 现算（可回查，禁缓存）；无先例如实显示"首例"。
+        if t["status"] == "assigned" or t["approval_status"] == "pending":
+            _rk = rows("SELECT rule_id, shipment_id FROM risk_events WHERE risk_event_id=?",
+                       t["risk_event_id"])
+            if _rk:
+                with db() as _con:
+                    _lane = lane_for_shipment(_con, _rk[0]["shipment_id"])
+                    _sim = find_similar(_con, _rk[0]["rule_id"], _lane,
+                                        exclude_risk_id=t["risk_event_id"])
+                st.info(f"先例参考（C1 处置记忆，rule={_rk[0]['rule_id']}"
+                        f"、lane={_lane or '-'}）：{render_precedent_block(_sim)}")
         if t["status"] == "assigned" and t["risk_type"] in COST_TYPES:
             # 费用异常处置：方案改为 dispute/accept_charge/rebill_customer（finance 可提，P3）
             rinfo = rows("""SELECT s.incoterm, r.affected_value_usd FROM risk_events r
@@ -867,9 +888,14 @@ def render_task_tab():
                 st.markdown("**审批（A5，仅经理）**")
                 decision = st.radio("决定", ["approved", "rejected"], horizontal=True)
                 comment = st.text_input("批注")
+                # C1 场外依据（可选）：电话/群聊等系统外信息进决策血缘，避免"看不见的理由"
+                offsite = st.text_input("场外依据（选填）",
+                                        help="系统外的决策依据（客户电话、工厂群聊、口头承诺等），"
+                                             "随本次决定归档进处置记忆（C1）")
                 if st.form_submit_button("提交审批"):
                     show_result(approve_mitigation(db(), tsel, decision, comment,
-                                                   actor=actor, role=role, as_of=AS_OF))
+                                                   actor=actor, role=role, as_of=AS_OF,
+                                                   offsite_basis=offsite.strip() or None))
         # 对象工作台入口：点选的 task → 进入 Task 富工作台（同 RiskEvent 的 focus 机制）
         st.divider()
         st.session_state["focus_task_id"] = tsel

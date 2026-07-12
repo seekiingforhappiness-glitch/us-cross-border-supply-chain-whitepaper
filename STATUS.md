@@ -32,7 +32,15 @@
 > 第七路检查表评审 5 条入 v2.2 §6）；**实施手册 v1.1 采纳**（`docs/enterprise-ai-implementation-playbook.md`，
 > 斯坦福 51 部署报告的项目翻译版，关键数字已核验；§3 已按 Daniel"不等访谈"裁决改并行）；
 > **L 编号统一**：L0-L4=自主等级（手册 §4 为基准），动作风险用文字名，宪法⑤改"冻结区人审不可放弃"。
-> 下一步不变：C1 处置记忆（立即可开工）+ Daniel 访谈轨并行。
+> **C1 处置记忆已完成并通过主会话独立复核（2026-07-13 凌晨）**：resolution_memory 表（审批时归档
+> 决定+关闭时回填结果与质量标签）、同 rule_id+同航线（LOCODE 对）只读检索、提案先例区块（1 条讲透+
+> 汇总行，数字现查现算可回查）、DecisionRecord 血缘雏形（提案版本戳+场外依据框）、AI 仅获只读工具
+> get_similar_resolutions。**复核以重跑为准**：真值 md5 逐字节一致、engine R/P=1.000、新测试 28 断言+
+> agent_security+closed_loop+outbox+agent.evaluate 全绿；FORBIDDEN/ROLE_PERMS 零改动（diff 为证）。
+> **待 Daniel：五分钟 UI 走查**（任务台看先例区块→审批填场外依据→风险塔关闭打质量标签）。
+> 子代理列明 5 条业务语义歧义（modified 决定不可达/非航线域第二维度/rejected 计入统计口径/
+> 一案多决定回填/无记忆行打标）——均按最保守读法实现，Daniel 有空时裁决，不阻塞。
+> 下一步：A 信息流入（前置：介质普查半天+接真实数据前重走 §3）+ Daniel 访谈轨并行。
 > ⑦ **完整版规格 v3.0 已转正（Daniel 裁决，唯一执行规格）**：`docs/superpowers/specs/2026-07-12-product-spec-v3-consolidated.md`
 > ——v2.1+v2.2+手册纪律层+全部裁决的无新增合并版（单一文档看全貌，附文档地图）；
 > v2.1/v2.2 降为裁决记录存档。**当前动作：C1 设计提案已备好等 Daniel 亲批（§3 流程），批后写代码。**

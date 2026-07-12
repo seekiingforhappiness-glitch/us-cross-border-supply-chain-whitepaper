@@ -16,6 +16,8 @@ from app.actions import assign_task, propose_mitigation, _log, ROLE_PERMS
 from app.admission_actions import (ADM_PERMS, create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario)
 from engine.graph import explain_path
+# C1 只读检索处置记忆（写入函数不 import——AI 永远拿不到写工具）
+from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
 
 AI_ACTOR = "ai-agent"
 AI_ROLE = "ops"  # 默认角色（不传 role 时的向后兼容值）
@@ -36,7 +38,8 @@ MASK = "🔒无权查看"
 # role 相关性 scoping。ops 保留全域（历史基线，不回归 agent.evaluate）；cs 无成本域（"无 cost 相关"）；
 # finance 可成本域；manager 全域只读。写工具白名单完全由 app.actions.ROLE_PERMS 决定（不复制权限）。
 RISK_READ_TOOLS = {"list_open_risks", "get_risk", "get_shipment_context",
-                   "get_impact_chain", "get_audit_trail", "explain_relationship_path"}
+                   "get_impact_chain", "get_audit_trail", "explain_relationship_path",
+                   "get_similar_resolutions"}  # C1 先例检索：只读，随风险域对全角色开放
 COST_READ_TOOLS = {"list_invoices", "get_invoice_context"}
 ADMISSION_READ_TOOLS = {"list_admission_cases", "get_admission_context"}
 COST_READ_ROLES = {"ops", "finance", "manager"}
@@ -117,6 +120,13 @@ TOOL_DEFS = [
                     "（与 UI 费用工作台 mask_cost 同规：finance/manager 可见，其余掩码）",
      "input_schema": {"type": "object", "properties": {
          "invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
+    {"name": "get_similar_resolutions",
+     "description": "C1 只读检索处置记忆：按规则类型精确匹配+同航线（origin→destination LOCODE）"
+                    "查同类风险的历史处置——同类 N 次、按方案/决定的统计、最相似 1 案详情"
+                    "（当时提案/人的决定/实际结果/质量标签）。所有数字运行时从 resolution_memory "
+                    "现算可回查；无先例如实返回首例；被屏蔽（voided）的记忆不返回",
+     "input_schema": {"type": "object", "properties": {
+         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
     {"name": "explain_relationship_path",
      "description": "只读查询 object_relationships：解释两个对象之间的有向关系路径",
          "input_schema": {"type": "object", "properties": {
@@ -327,6 +337,19 @@ class AgentSession:
                              FROM action_log WHERE target_object_id=? ORDER BY log_id""", object_id)
         return {"object_id": object_id, "entries": rows} if rows else \
             {"error": f"未找到 {object_id} 的审计记录"}
+
+    def get_similar_resolutions(self, risk_event_id):
+        """C1 只读先例检索：以 risk 的 rule_id+lane 为键查 resolution_memory（排除本案），
+        返回统计 + 最相似 1 案 + 渲染好的先例区块。纯查询——AI 无任何处置记忆写工具。"""
+        r = self._rows("""SELECT risk_event_id, rule_id, shipment_id FROM risk_events
+                          WHERE risk_event_id=?""", risk_event_id)
+        if not r:
+            return {"error": f"风险事件 {risk_event_id} 不存在"}
+        lane = lane_for_shipment(self.con, r[0]["shipment_id"])
+        similar = find_similar(self.con, r[0]["rule_id"], lane, exclude_risk_id=risk_event_id)
+        return {**similar, "risk_event_id": risk_event_id,
+                "precedent_block": render_precedent_block(similar),
+                "note": "只读检索；数字运行时从 resolution_memory 现算，可回查核对（C1）"}
 
     def list_admission_cases(self, status=None):
         sql = """SELECT admission_case_id, case_title, customer_id, sku_id, incoterm_candidate,
@@ -697,6 +720,7 @@ class AgentSession:
                     "get_admission_context": self.get_admission_context,
                     "list_invoices": self.list_invoices,
                     "get_invoice_context": self.get_invoice_context,
+                    "get_similar_resolutions": self.get_similar_resolutions,
                     "explain_relationship_path": self.explain_relationship_path,
                     "assign_task": self._assign_task,
                     "propose_mitigation": self._propose_mitigation,

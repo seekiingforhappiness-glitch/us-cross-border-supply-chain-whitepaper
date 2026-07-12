@@ -16,6 +16,9 @@ except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上�
     from work_queue import Owner, assign_owner, sla_state
 
 from pipeline.outbox import enqueue_writeback
+# C1 处置记忆：写入只在动作层 approve/close 成功路径挂钩（AI 无写工具，检索另走只读工具）
+from engine.resolution_memory import (QUALITY_LABELS, backfill_outcome,
+                                      ensure_resolution_memory_table, write_decision_memory)
 
 ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3；P4：+procurement）
     "AssignTask": {"ops", "system"},
@@ -385,8 +388,10 @@ def _distinct_invoice_col(cur, column, invoice_line_ids):
         invoice_line_ids)]
 
 
-def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
-    """A5：审批（仅经理）。approved 按方案回写；rejected 退回 assigned，提案留痕于 action_log。"""
+def approve_mitigation(con, task_id, decision, comment, actor, role, as_of,
+                       offsite_basis=None, proposal_version=None):
+    """A5：审批（仅经理）。approved 按方案回写；rejected 退回 assigned，提案留痕于 action_log。
+    C1：成功路径归档处置记忆（决策血缘：提案版本戳+引用先例+决策人+场外依据，均可选传入）。"""
     if role not in ROLE_PERMS["ApproveMitigation"]:
         return _denied(con, "ApproveMitigation", task_id, actor, role, as_of)
     cur = con.cursor()
@@ -395,6 +400,7 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
         return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
                      "任务不存在或无待审批提案")
     _ensure_task_governance_columns(con, cur)
+    ensure_resolution_memory_table(con)  # C1：旧库副本兼容（仿 M2 模式），事务外幂等建表
     task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
     proposer_actor_id = task["proposal_actor_id"]
     if not proposer_actor_id:
@@ -542,8 +548,18 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
                                approved_by_role=?, action_taken=? WHERE task_id=?""",
                             (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
                 effects.append(f"Task {task_id}: →done")
+            # C1 处置记忆：approved/rejected 都是"人的决定"，同事务归档（失败随审批一起回滚）。
+            # 决定映射：approved→adopted、rejected→rejected（现有闭环无"改后批"路径，modified 暂不可达）。
+            memory_id = write_decision_memory(
+                con, task["risk_event_id"], task_id=task_id, proposed_action=act,
+                proposal_params=params,
+                decision="adopted" if decision == "approved" else "rejected",
+                decision_note=comment, decided_by=actor, as_of=as_of,
+                offsite_basis=offsite_basis, proposal_version=proposal_version)
+            effects.append(f"处置记忆已归档 {memory_id}（C1 决策血缘）")
             _log(cur, actor, role, "ApproveMitigation", task_id,
-                 {"decision": decision, "comment": comment, "proposal": params}, as_of, "ok")
+                 {"decision": decision, "comment": comment, "proposal": params,
+                  "offsite_basis": offsite_basis, "memory_id": memory_id}, as_of, "ok")
     except (ValueError, sqlite3.Error) as exc:
         # M7 加固：outbox 入队等异常先经 transaction 回滚（业务状态与写回一起撤销），
         # 再转结构化失败返回，守住 actions.py 顶部“从不抛异常给调用方”契约。
@@ -552,10 +568,17 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of):
     return _res(True, task_id, effects)
 
 
-def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, role, as_of):
-    """A6：关闭。前置：任务全终态（false_alarm 例外：联动取消）；mitigated 须有已批准提案。"""
+def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, role, as_of,
+                     quality_label=None):
+    """A6：关闭。前置：任务全终态（false_alarm 例外：联动取消）；mitigated 须有已批准提案。
+    C1：quality_label 可空三选一（effective/partial/ineffective，专员关闭时顺手打），
+    连同 outcome/耗时回填本风险的处置记忆（既有调用不传即维持原行为）。"""
     if role not in ROLE_PERMS["CloseRiskEvent"]:
         return _denied(con, "CloseRiskEvent", risk_event_id, actor, role, as_of)
+    if quality_label is not None and quality_label not in QUALITY_LABELS:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                     f"quality_label 必须是 {sorted(QUALITY_LABELS)} 之一或不填（C1 三值校验）",
+                     {"quality_label": quality_label})
     cur = con.cursor()
     risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?", (risk_event_id,)).fetchone()
     if not risk or risk["status"] in RISK_TERMINAL:
@@ -586,10 +609,17 @@ def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, rol
     cur.execute("""UPDATE risk_events SET status=?, outcome=?, resolution_summary=?, resolved_at=?
                    WHERE risk_event_id=?""",
                 (status, outcome, resolution_summary, as_of, risk_event_id))
+    # C1：关闭时回填处置记忆的实际结果（同一 commit；无记忆行则 0 行回填，兼容无提案关闭路径）
+    n_mem = backfill_outcome(con, risk_event_id, quality_label, closed_by=actor,
+                             as_of=as_of, outcome=outcome)
     _log(cur, actor, role, "CloseRiskEvent", risk_event_id,
-         {"outcome": outcome, "resolution_summary": resolution_summary}, as_of, "ok")
+         {"outcome": outcome, "resolution_summary": resolution_summary,
+          "quality_label": quality_label}, as_of, "ok")
     con.commit()
     effects.append(f"RiskEvent {risk_event_id}: →{status} ({outcome})")
+    if n_mem:
+        effects.append(f"处置记忆结果已回填 {n_mem} 条"
+                       + (f"（质量标签 {quality_label}）" if quality_label else "（未打质量标签）"))
     return _res(True, risk_event_id, effects)
 
 
