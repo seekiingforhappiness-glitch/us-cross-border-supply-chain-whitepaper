@@ -50,6 +50,7 @@ try:
                                 audit_region_index, audit_in_scope)
     from app import object_workbench
     from app import standard_object_view as sov
+    from app import knowledge_graph as kg
     from app.executive_view import build_executive_summary
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
@@ -58,6 +59,7 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
                             audit_region_index, audit_in_scope)
     import object_workbench
     import standard_object_view as sov
+    import knowledge_graph as kg
     from executive_view import build_executive_summary
 
 # C1 处置记忆：先例检索/渲染是引擎层只读函数（顶部已补项目根进 sys.path，同 pipeline 导入方式）
@@ -1328,11 +1330,18 @@ def render_coord_tab():
         st.divider()
 
 
+def render_kg_tab():
+    """知识图谱（只读呈现层薄壳）：本体地图 + 对象邻域，全部逻辑在 app/knowledge_graph.py
+    （纯函数产 DOT 交 st.graphviz_chart 前端渲染，零新依赖）；实例级查询过 data_scope。"""
+    kg.render_knowledge_graph_tab(db, role)
+
+
 # ---------- 真·角色导航：按 ROLE_WORKSPACE 只渲染该角色可见的工作台 tab ----------
 TAB_RENDERERS = {
     "kpi": render_kpi_tab, "risk": render_risk_tab, "task": render_task_tab,
     "coord": render_coord_tab, "cost": render_cost_tab, "po": render_po_tab,
-    "obj": render_obj_tab, "dq": render_dq_tab, "adm": render_adm_tab, "log": render_log_tab,
+    "obj": render_obj_tab, "kg": render_kg_tab, "dq": render_dq_tab,
+    "adm": render_adm_tab, "log": render_log_tab,
 }
 _keys = visible_tabs(role)
 for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):

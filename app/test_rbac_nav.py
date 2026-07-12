@@ -16,7 +16,7 @@ from .coordination_actions import COORD_PERMS
 
 FAILS = []
 ROLES = ["ops", "cs", "finance", "sales", "compliance", "manager", "procurement"]
-ALL_TABS = {"kpi", "risk", "task", "coord", "cost", "po", "obj", "dq", "adm", "log"}
+ALL_TABS = {"kpi", "risk", "task", "coord", "cost", "po", "obj", "kg", "dq", "adm", "log"}
 # 协调收件箱(coord)是 COORD_PERMS 作用域内的 tab，manager 不含它（与权限组同集），故 manager
 # 覆盖 ALL_TABS - {coord}；下方 EXPECTED_WORKSPACE 与断言据此冻结。
 MANAGER_TABS = ALL_TABS - {"coord"}
@@ -27,14 +27,16 @@ MANAGER_TABS = ALL_TABS - {"coord"}
 # P4：ops 去掉 po「回归纯物流」。
 # 协调收件箱(coord)：CL1 呈现层切片——仅给 COORD_PERMS 的 ops/cs/finance/procurement（放各自主战场后），
 # 与 coordination_actions.COORD_PERMS 严格同集；sales/compliance/manager 不加（本切片不放宽协调写权限）。
+# 知识图谱(kg)：纯只读呈现层（本体地图+对象邻域 trace，无任何写动作/agent 工具）——挂 manager（监督者）
+# 与 ops（理解者），紧跟对象详情(obj)；实例级查询过 data_scope（ops 区域过滤、manager 全量）。
 EXPECTED_WORKSPACE = {
-    "ops":         ["risk", "task", "coord", "dq", "obj", "log"],
+    "ops":         ["risk", "task", "coord", "dq", "obj", "kg", "log"],
     "cs":          ["risk", "task", "coord", "obj"],
     "finance":     ["cost", "po", "coord", "adm", "obj"],
     "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
     "compliance":  ["adm", "risk", "obj", "log"],
-    "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
+    "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "kg", "dq", "adm", "log"],
 }
 
 # 动作层权限矩阵（manual §6 + cost-manual §5 + P4：ProposeMitigation +procurement）
@@ -61,7 +63,7 @@ def main():
         check(f"{r} 映射与需求一致", ROLE_WORKSPACE.get(r) == EXPECTED_WORKSPACE[r],
               f"{ROLE_WORKSPACE.get(r)} != {EXPECTED_WORKSPACE[r]}")
     for r in ROLES:
-        check(f"{r} 的 tab 全部合法（∈ 10 个已知 tab）",
+        check(f"{r} 的 tab 全部合法（∈ 11 个已知 tab）",
               set(ROLE_WORKSPACE[r]) <= ALL_TABS,
               str(set(ROLE_WORKSPACE[r]) - ALL_TABS))
     for r in ROLES:
@@ -75,7 +77,7 @@ def main():
     check("manager 工作台最全（tab 数严格最多）",
           all(len(ROLE_WORKSPACE["manager"]) > len(ROLE_WORKSPACE[r])
               for r in ROLES if r != "manager"))
-    check("manager 覆盖除 coord 外全部 9 个运营 tab（coord 属 COORD_PERMS 作用域，manager 不含）",
+    check("manager 覆盖除 coord 外全部 10 个运营 tab（coord 属 COORD_PERMS 作用域，manager 不含）",
           set(ROLE_WORKSPACE["manager"]) == MANAGER_TABS,
           str(set(ROLE_WORKSPACE["manager"]) ^ MANAGER_TABS))
     check("sales 不含费用工作台(cost)", "cost" not in ROLE_WORKSPACE["sales"])
@@ -96,6 +98,12 @@ def main():
           str(sorted(r for r in ROLES if "coord" in ROLE_WORKSPACE[r])))
     check("协调收件箱(coord)对 sales/compliance/manager 不可见（与 COORD_PERMS 严格同集，不放宽写权限）",
           not any("coord" in ROLE_WORKSPACE[r] for r in ("sales", "compliance", "manager")))
+    check("知识图谱(kg)仅 manager（监督者）+ ops（理解者）可见——纯只读呈现层切片",
+          sorted(r for r in ROLES if "kg" in ROLE_WORKSPACE[r]) == ["manager", "ops"],
+          str(sorted(r for r in ROLES if "kg" in ROLE_WORKSPACE[r])))
+    check("知识图谱(kg)对 cs/finance/sales/compliance/procurement 不可见（本切片不扩散）",
+          not any("kg" in ROLE_WORKSPACE[r]
+                  for r in ("cs", "finance", "sales", "compliance", "procurement")))
     check("coord 导航集 == COORD_PERMS.ManageCoordination（导航与权限组同集，谁能看即谁能写，不多不少）",
           {r for r in ROLES if "coord" in ROLE_WORKSPACE[r]} == COORD_PERMS["ManageCoordination"],
           f"{ {r for r in ROLES if 'coord' in ROLE_WORKSPACE[r]} } vs {COORD_PERMS['ManageCoordination']}")
@@ -106,7 +114,7 @@ def main():
               visible_tabs(r) == EXPECTED_WORKSPACE[r], str(visible_tabs(r)))
     for r in ROLES:
         good = all(can_see_tab(r, t) == (t in ROLE_WORKSPACE[r]) for t in ALL_TABS)
-        check(f"can_see_tab({r}, *) 对 10 个 tab 全部正确", good)
+        check(f"can_see_tab({r}, *) 对 11 个 tab 全部正确", good)
     check("未知角色回退经理全量（visible_tabs）",
           visible_tabs("intern") == ROLE_WORKSPACE["manager"])
     check("未知角色回退经理全量（can_see_tab kpi）", can_see_tab("intern", "kpi"))

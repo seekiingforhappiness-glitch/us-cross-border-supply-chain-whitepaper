@@ -16,6 +16,7 @@ TAB_LABELS = {
     "cost": "费用工作台",
     "po": "采购工作台",
     "obj": "对象详情",
+    "kg": "知识图谱",
     "dq": "DQ 处置",
     "adm": "准入工作台",
     "log": "审计日志",
@@ -29,14 +30,16 @@ TAB_LABELS = {
 # 协调收件箱(coord)：CL1 协调回路的呈现层入口——放在各角色主战场之后。仅给 COORD_PERMS 的
 # 4 角色（ops/cs/finance/procurement），与 coordination_actions.COORD_PERMS 一致；manager/sales/
 # compliance 不加（本切片不放宽协调写权限，导航与权限组严格同集）。写动作仍由动作层独立 gate。
+# 知识图谱(kg)：纯只读呈现层（本体地图 + 对象邻域 trace），零写动作零 agent 工具——挂 manager
+# （监督者）与 ops（理解者）两个工作台，紧跟对象详情(obj)；实例级查询过 data_scope（ops 区域过滤）。
 ROLE_WORKSPACE = {
-    "ops":         ["risk", "task", "coord", "dq", "obj", "log"],
+    "ops":         ["risk", "task", "coord", "dq", "obj", "kg", "log"],
     "cs":          ["risk", "task", "coord", "obj"],
     "finance":     ["cost", "po", "coord", "adm", "obj"],
     "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
     "compliance":  ["adm", "risk", "obj", "log"],
-    "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "dq", "adm", "log"],
+    "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "kg", "dq", "adm", "log"],
 }
 
 # 每角色工作台名 + 数据域（命令栏呈现，让页面明显因角色而不同）
