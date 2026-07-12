@@ -1,7 +1,10 @@
-"""控制塔 UI（W5 + RBAC 深化）：streamlit run app/streamlit_app.py
+"""控制塔 UI（W5 + RBAC 深化 + 前后台分离）：streamlit run app/streamlit_app.py
 
 真·角色导航：不同角色登录后只渲染自己的工作台 tab（见 app/rbac_nav.ROLE_WORKSPACE），
-不是全渲染再脱敏。经理额外拥有 KPI 总览落地页。
+不是全渲染再脱敏。
+前后台二分（Daniel 裁决「前端使用界面与后端信息界面分开设计」）：sidebar 角色之下再选导航面——
+「工作台」（默认，操作型标签 + 首屏「我的今天」计数卡）与「控制室」（理解与监督：对象详情/知识
+图谱/审计日志/DQ 处置/经理 KPI 总览，只读为主）。分面只是 ROLE_WORKSPACE 的归组，可见性不变。
 动作全部经 app/actions.py（权限、前置校验、审计在动作层，UI 只是壳）——导航层不放宽任何动作权限。
 字段级权限（manual §6）：ops 不可见 Customer.tier；cs 不可见 est_cost_usd（保留）。
 """
@@ -44,7 +47,8 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
                                       resolve_coordination, mark_dead_ended)
 
 try:
-    from app.rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
+    from app.rbac_nav import (ROLE_WORKSPACE_META, SURFACE_LABELS, SURFACES,
+                              TAB_LABELS, visible_tabs)
     from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                                 risk_in_region_scope, scope_for_role,
                                 audit_region_index, audit_in_scope)
@@ -52,8 +56,10 @@ try:
     from app import standard_object_view as sov
     from app import knowledge_graph as kg
     from app.executive_view import build_executive_summary
+    from app.my_today import build_my_today
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
-    from rbac_nav import ROLE_WORKSPACE_META, TAB_LABELS, visible_tabs
+    from rbac_nav import (ROLE_WORKSPACE_META, SURFACE_LABELS, SURFACES,
+                          TAB_LABELS, visible_tabs)
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                             risk_in_region_scope, scope_for_role,
                             audit_region_index, audit_in_scope)
@@ -61,6 +67,7 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
     import standard_object_view as sov
     import knowledge_graph as kg
     from executive_view import build_executive_summary
+    from my_today import build_my_today
 
 # C1 处置记忆：先例检索/渲染是引擎层只读函数（顶部已补项目根进 sys.path，同 pipeline 导入方式）
 from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
@@ -253,6 +260,24 @@ def inject_design_system():
         color: var(--cyan);
         font-size: 0.72rem;
         font-style: normal;
+    }
+
+    /* 控制室标识条：command-header 的轻量变体，琥珀左边框区分「理解与监督」面 */
+    .surface-banner {
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--amber);
+        background:
+            linear-gradient(135deg, rgba(255, 180, 84, 0.10), transparent 42%),
+            rgba(12, 24, 28, 0.82);
+        color: var(--muted);
+        font-size: 0.84rem;
+        padding: 0.6rem 0.9rem;
+        margin-bottom: 0.9rem;
+    }
+
+    .surface-banner strong {
+        color: var(--amber);
+        font-weight: 700;
     }
 
     div[data-testid="stMetric"] {
@@ -571,6 +596,11 @@ with st.sidebar:
                                                "compliance": "合规 compliance",
                                                "finance": "财务 finance",
                                                "procurement": "采购 procurement"}[r])
+    # 前后台二分（角色选择之下）：工作台=干活（默认）；控制室=理解与监督（只读为主）
+    surface = st.radio("导航", SURFACES, key="nav_surface", horizontal=True,
+                       format_func=lambda s: SURFACE_LABELS[s],
+                       help="工作台：操作型标签（处置/提案/审批/催办）；"
+                            "控制室：理解与监督视图（对象详情/知识图谱/审计/DQ/KPI，只读为主）")
     actor = st.text_input("操作人", "daniel")
     st.caption(f"仿真时钟 as_of = **{AS_OF}**（D8）")
     n_open = rows("SELECT count(*) c FROM risk_events WHERE status NOT IN ('resolved','escalated')")[0]["c"]
@@ -1336,14 +1366,39 @@ def render_kg_tab():
     kg.render_knowledge_graph_tab(db, role)
 
 
-# ---------- 真·角色导航：按 ROLE_WORKSPACE 只渲染该角色可见的工作台 tab ----------
+# ---------- 真·角色导航 × 前后台二分：按 ROLE_WORKSPACE 的当前导航面渲染 ----------
+# 为什么这样建（≤5 行）：Daniel 裁决「前端使用界面与后端信息界面分开设计」——干活的人进工作台
+# （操作型标签 + 首屏「我的今天」），理解/监督进控制室（只读为主）。实现选 sidebar radio 二分
+# 而非 st.navigation/st.Page 多页：单文件全局态（role/actor/db 闭包）无需重构、AppTest 可直设
+# session_state 驱动、不与自定义 sidebar CSS 冲突；页面切换同样整脚本重跑，多页 API 无净收益。
 TAB_RENDERERS = {
     "kpi": render_kpi_tab, "risk": render_risk_tab, "task": render_task_tab,
     "coord": render_coord_tab, "cost": render_cost_tab, "po": render_po_tab,
     "obj": render_obj_tab, "kg": render_kg_tab, "dq": render_dq_tab,
     "adm": render_adm_tab, "log": render_log_tab,
 }
-_keys = visible_tabs(role)
+
+
+def render_my_today():
+    """工作台首屏「我的今天」：按当前角色 + data_scope 现算的待办计数卡（app/my_today 纯函数，
+    口径与各 tab 一致）；卡下一行 <em> 即「去 XX 标签处理」引导。复用 signal-card 既有样式。"""
+    st.markdown("#### 我的今天")
+    _rm = st.session_state.get("risk_scope_mode")  # 跟随风险队列当前数据范围（未选则用角色默认）
+    with db() as _con:
+        cards = build_my_today(_con, role, AS_OF, risk_mode=_rm)
+    if not cards:
+        st.caption("当前角色今日无聚合待办计数——直接进入下方工作台标签处理（如准入案件）。")
+        return
+    _signal_strip([(c["label"], c["count"], c["go"]) for c in cards])
+
+
+_surface = surface if surface in SURFACES else "work"
+if _surface == "control":
+    st.markdown('<div class="surface-banner"><strong>控制室</strong> · 理解与监督视图'
+                '（只读为主，处置请回工作台）</div>', unsafe_allow_html=True)
+else:
+    render_my_today()
+_keys = visible_tabs(role, _surface)
 for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):
     with _tab:
         TAB_RENDERERS[_key]()

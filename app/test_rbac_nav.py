@@ -4,12 +4,15 @@
 ① 每个角色的 ROLE_WORKSPACE 只含允许的 tab（映射正确、manager 含 KPI 且最全、sales 不含费用工作台等）
 ② can_see_tab / visible_tabs 对每角色返回正确集合
 ③ 动作层权限（ROLE_PERMS）未被改动——本次只动导航层，硬 gate 不变
+④（前后台分离）SURFACE_TABS 是 11 tab 的完全划分；visible_tabs(role, surface) 是原列表的
+   保序子列表、两面并集 == 分面前全集（可见性零变化）——细粒度分组契约见 test_layout_split
 
 不改任何对象/规则/KPI；纯读断言。
 """
 import sys
 
-from .rbac_nav import (ROLE_WORKSPACE, ROLE_WORKSPACE_META, TAB_LABELS,
+from .rbac_nav import (ROLE_WORKSPACE, ROLE_WORKSPACE_META, SURFACE_LABELS,
+                       SURFACE_TABS, SURFACES, TAB_LABELS,
                        can_see_tab, visible_tabs)
 from .actions import ROLE_PERMS
 from .coordination_actions import COORD_PERMS
@@ -123,6 +126,25 @@ def main():
     check("每个角色都有工作台名 + 数据域",
           all(r in ROLE_WORKSPACE_META and {"name", "domain"} <= set(ROLE_WORKSPACE_META[r])
               for r in ROLES))
+
+    print("== ④b 前后台分离：SURFACE 划分契约（细粒度分组断言见 test_layout_split）==")
+    check("SURFACES=(work,control) 且工作台默认在前", SURFACES == ("work", "control"))
+    check("导航面标签 工作台/控制室",
+          SURFACE_LABELS == {"work": "工作台", "control": "控制室"}, str(SURFACE_LABELS))
+    _w, _c = set(SURFACE_TABS["work"]), set(SURFACE_TABS["control"])
+    check("两面是 11 tab 的完全划分（不重不漏）", not (_w & _c) and (_w | _c) == ALL_TABS,
+          f"交={_w & _c} 并异={( _w | _c) ^ ALL_TABS}")
+    check("控制室=理解与监督 5 tab（kpi/obj/kg/dq/log）", _c == {"kpi", "obj", "kg", "dq", "log"},
+          str(_c))
+    for r in ROLES:
+        _sub = visible_tabs(r, "work") + visible_tabs(r, "control")
+        check(f"{r} 两面并集 == 分面前全集（RBAC 可见性零变化）",
+              sorted(_sub) == sorted(visible_tabs(r)), str(_sub))
+        check(f"{r} 各面为保序子列表",
+              all(visible_tabs(r, s) == [k for k in visible_tabs(r) if k in set(SURFACE_TABS[s])]
+                  for s in SURFACES))
+    check("visible_tabs 不带 surface 参数语义不变（向后兼容全集）",
+          all(visible_tabs(r) == EXPECTED_WORKSPACE[r] for r in ROLES))
 
     print("== ⑤ 动作层权限（ROLE_PERMS）未被改动 ==")
     check("ROLE_PERMS 与基线完全一致（硬 gate 未削弱）",

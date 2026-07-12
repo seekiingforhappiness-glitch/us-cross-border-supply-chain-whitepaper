@@ -279,6 +279,7 @@ def main():
         for mode in ("map", "nbr"):
             at = AppTest.from_file("app/streamlit_app.py", default_timeout=120)
             at.session_state["role"] = role
+            at.session_state["nav_surface"] = "control"  # 前后台分离后 kg 挂「控制室」导航面
             at.session_state["kg_view_mode"] = mode
             at.run()
             excs = list(at.exception)

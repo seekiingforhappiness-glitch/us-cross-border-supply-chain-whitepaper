@@ -1,8 +1,10 @@
-"""RBAC 导航层（真·角色导航）：角色 → 可见工作台 tab 的纯映射与查询。
+"""RBAC 导航层（真·角色导航 + 前后台二分）：角色 → 可见工作台 tab 的纯映射与查询。
 
 设计动机（≤5 行「为什么这样建」）：
 - 原 UI 七个 tab 对所有角色全渲染再脱敏，是「假 RBAC」；本模块让不同角色只渲染自己的工作台，
   demo 一试就像真实系统。
+- 前后台分离（Daniel 裁决）：tab 再分两个导航面——「工作台」（操作型，干活的人）与「控制室」
+  （理解与监督，只读为主）。分面是 ROLE_WORKSPACE 的**划分**：不增不减任何角色的可见 tab。
 - 纯数据 + 纯函数、零 Streamlit 依赖，可被 streamlit_app 与 test_rbac_nav 直接 import 而无副作用。
 - **只管导航呈现，不放宽任何动作**：动作层权限仍由 app/actions.py ROLE_PERMS + M1 maker-checker 硬 gate。
 """
@@ -54,9 +56,30 @@ ROLE_WORKSPACE_META = {
 }
 
 
-def visible_tabs(role):
-    """返回该角色可见的 tab key 列表（按 ROLE_WORKSPACE 定义顺序）。未知角色回退经理全量。"""
-    return list(ROLE_WORKSPACE.get(role, ROLE_WORKSPACE["manager"]))
+# ---------- 前后台二分（顶层导航面）----------
+# 工作台(work)=操作型标签（干活：处置/提案/审批/催办/建案）；控制室(control)=理解与监督
+# （对象详情/知识图谱/审计日志/DQ 处置/经理 KPI 总览，只读为主）。两组是 11 个 tab 的完全划分
+# （不重不漏）；每角色在某导航面可见的 tab = 该角色 ROLE_WORKSPACE 列表按组过滤（保持原相对顺序），
+# 故任何角色的可见 tab 全集与分面前完全一致——RBAC 语义零变化，只是归组。
+SURFACES = ("work", "control")           # 顺序即 sidebar 呈现顺序；work 是默认落地面
+SURFACE_LABELS = {"work": "工作台", "control": "控制室"}
+SURFACE_TABS = {
+    "work":    ("risk", "task", "coord", "cost", "po", "adm"),
+    "control": ("kpi", "obj", "kg", "dq", "log"),
+}
+
+
+def visible_tabs(role, surface=None):
+    """返回该角色可见的 tab key 列表（按 ROLE_WORKSPACE 定义顺序）。未知角色回退经理全量。
+
+    surface=None → 全集（分面前语义，向后兼容）；surface∈SURFACES → 该导航面内的子列表
+    （原相对顺序）。未知 surface 回退全集（同未知角色的「不误藏数据」哲学）。
+    """
+    tabs = list(ROLE_WORKSPACE.get(role, ROLE_WORKSPACE["manager"]))
+    if surface not in SURFACES:
+        return tabs
+    group = set(SURFACE_TABS[surface])
+    return [k for k in tabs if k in group]
 
 
 def can_see_tab(role, tab_key):

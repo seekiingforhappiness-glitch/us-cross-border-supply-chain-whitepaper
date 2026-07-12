@@ -209,6 +209,7 @@ def main():
         from streamlit.testing.v1 import AppTest
         at = AppTest.from_file("app/streamlit_app.py", default_timeout=90)
         at.session_state["role"] = "ops"
+        at.session_state["nav_surface"] = "control"  # 前后台分离后对象详情(obj)挂「控制室」导航面
         at.session_state["obj_type_sel"] = "Warehouse"
         at.session_state["obj_id_sel_Warehouse"] = WH
         at.run()
