@@ -1,8 +1,16 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-12（产品化轨合流）
+更新时间：2026-07-12（企业 AI 实施手册）
 
 ## 当前位置
+
+> **企业 AI 实施手册（2026-07-12）**：基于 Stanford Digital Economy Lab 2026-04 官方报告
+> *The Enterprise AI Playbook: Lessons from 51 Successful Deployments* 的 51 个成功部署研究，新增
+> `docs/enterprise-ai-implementation-playbook.md`。手册没有改变既有范围或路线，维持 B（已完成）→C1→A→C2/C3→D；
+> 把外部证据落成六阶段门（基线与责任→C1 决策血缘→A 影子接入→受控试点→分域放权→复制/停止）、
+> 四类指标、Sponsor 周节奏、变更闸门与现场清单。特别记录证据边界：报告是成功案例导向、自报为主，
+> “异常升级制 71% 中位生产率提升”存在任务选择混杂，不能据此取消 proposal-only / maker-checker。
+> **下一验收点仍为 C1 处置记忆→更好提案；本次只交付研究与实施手册，未批准或修改对象/动作/KPI/代码。**
 
 > **产品化轨已并入主干（2026-07-12 深夜合流，Daniel 裁决方案甲：Codex 线为主干）。**
 > 07-10~12 的 Claude 产品化会话成果全部并入本仓库：
