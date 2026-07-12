@@ -596,11 +596,7 @@ with st.sidebar:
                                                "compliance": "合规 compliance",
                                                "finance": "财务 finance",
                                                "procurement": "采购 procurement"}[r])
-    # 前后台二分（角色选择之下）：工作台=干活（默认）；控制室=理解与监督（只读为主）
-    surface = st.radio("导航", SURFACES, key="nav_surface", horizontal=True,
-                       format_func=lambda s: SURFACE_LABELS[s],
-                       help="工作台：操作型标签（处置/提案/审批/催办）；"
-                            "控制室：理解与监督视图（对象详情/知识图谱/审计/DQ/KPI，只读为主）")
+    # 前后台导航已移至主区顶部（Daniel 反馈：侧栏折叠后找不到导航——导航必须永远可见）
     actor = st.text_input("操作人", "daniel")
     st.caption(f"仿真时钟 as_of = **{AS_OF}**（D8）")
     n_open = rows("SELECT count(*) c FROM risk_events WHERE status NOT IN ('resolved','escalated')")[0]["c"]
@@ -623,6 +619,13 @@ ROLE_RISK_FOCUS = {
 }
 
 render_command_header(role, n_open)
+
+# 前后台二分开关（主区顶部，永远可见——不依赖侧栏展开状态；Daniel 反馈驱动）。
+# key 不变（nav_surface），AppTest session_state 驱动兼容。
+surface = st.radio("导航", SURFACES, key="nav_surface", horizontal=True,
+                   format_func=lambda s: SURFACE_LABELS[s],
+                   help="工作台：操作型标签（处置/提案/审批/催办）；"
+                        "控制室：理解与监督视图（对象详情/知识图谱/审计/DQ/KPI，只读为主）")
 
 # ---------- 全局 Executive 一页视图（manager 专属落地页）----------
 def _signal_strip(cards):
