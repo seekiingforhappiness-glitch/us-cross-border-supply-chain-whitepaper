@@ -72,7 +72,7 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
 # C1 处置记忆：先例检索/渲染是引擎层只读函数（顶部已补项目根进 sys.path，同 pipeline 导入方式）
 from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
 
-st.set_page_config(page_title="跨境供应链控制塔", layout="wide")
+st.set_page_config(page_title="跨境供应链控制塔", layout="wide", initial_sidebar_state="expanded")
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
 AS_OF = CFG["window"]["as_of"]
 SEV_ICON = {"critical": "CRIT ", "high": "HIGH ", "medium": "MED "}
