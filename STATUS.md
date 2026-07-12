@@ -4,6 +4,8 @@
 
 ## 当前位置
 
+> **FDE × Ontology 系列研究手册（2026-07-12）**：已用 Record & Replay 确认“纳米巨人”抖音主页第 1—11 集系列边界，逐集取得真实媒体（约 75 分钟）并用本地 Whisper small 离线转写；结合 Palantir/OpenAI/Blackstone 官方资料完成事实核验与方法内化。新增 `docs/fde-ontology-delivery-playbook.md`：把系列观点转成 1—5 天 Bootcamp、最小本体、动作/权限、自主权、评估与 FDE 产品化的可执行手册，并明确未证实实现细节与本仓库真实缺口。未修改 ontology、规则、代码、KPI 或决策日志。
+
 > **企业 AI 实施手册（2026-07-12）**：基于 Stanford Digital Economy Lab 2026-04 官方报告
 > *The Enterprise AI Playbook: Lessons from 51 Successful Deployments* 的 51 个成功部署研究，新增
 > `docs/enterprise-ai-implementation-playbook.md`。手册没有改变既有范围或路线，维持 B（已完成）→C1→A→C2/C3→D；
