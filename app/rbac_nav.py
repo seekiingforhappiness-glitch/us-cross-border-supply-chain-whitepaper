@@ -9,9 +9,10 @@
 - **只管导航呈现，不放宽任何动作**：动作层权限仍由 app/actions.py ROLE_PERMS + M1 maker-checker 硬 gate。
 """
 
-# tab key → 显示标签
+# tab key → 显示标签（kpi/dq 按 Daniel「命名去黑话」改名：原「KPI 总览」「DQ 处置」；
+# obj/kg/log 在控制室内不再作为独立标签呈现——见下方 CONTROL_GROUPS 三问句合并组）
 TAB_LABELS = {
-    "kpi": "KPI 总览",
+    "kpi": "全局概览",
     "risk": "风险队列",
     "task": "任务处理台",
     "coord": "协调收件箱",
@@ -19,7 +20,7 @@ TAB_LABELS = {
     "po": "采购工作台",
     "obj": "对象详情",
     "kg": "知识图谱",
-    "dq": "DQ 处置",
+    "dq": "待核对的数据",
     "adm": "准入工作台",
     "log": "审计日志",
 }
@@ -67,6 +68,39 @@ SURFACE_TABS = {
     "work":    ("risk", "task", "coord", "cost", "po", "adm"),
     "control": ("kpi", "obj", "kg", "dq", "log"),
 }
+
+
+# ---------- 控制室三问句合并组（Daniel 批准：5 个工程师标签 → 3 个大白话标签）----------
+# 为什么这样建（≤5 行）：控制室原 5 tab 命名全是黑话且逻辑割裂（Daniel 反馈）；改为三个问句——
+# 「全局概览」=生意整体怎么样（原 KPI）；「追查一件事」=一件事的来龙去脉（对象详情+知识图谱合一）；
+# 「操作与异常记录」=谁做了什么+哪些数据待核对（审计日志+DQ 合一）。纯呈现层归组红线：
+# 组可见 = 至少能看一个成员 tab；组内只渲染该角色原本有权看的成员——ROLE_WORKSPACE 的
+# 成员级可见性仍是唯一权限真源，不增不减任何角色能看到的内容。
+CONTROL_GROUPS = {
+    "overview": ("kpi",),          # 全局概览：生意整体怎么样（仅 manager 可见，维持原规则）
+    "trace":    ("obj", "kg"),     # 追查一件事：对象只读视图 + （有 kg 权限时）邻域图/本体地图
+    "records":  ("log", "dq"),     # 操作与异常记录：审计流水分节 + 待核对数据分节（成员序=分节序）
+}
+CONTROL_GROUP_ORDER = ("overview", "trace", "records")
+CONTROL_GROUP_LABELS = {"overview": "全局概览", "trace": "追查一件事",
+                        "records": "操作与异常记录"}
+# 成员 tab → 所属组（my_today 引导文案与测试用：控制室 tab 的入口是它的组标签）
+CONTROL_GROUP_OF = {t: g for g, members in CONTROL_GROUPS.items() for t in members}
+
+
+def visible_control_groups(role):
+    """控制室导航面的合并标签：[(组 key, [该角色可见成员 tab]), ...]。
+
+    组序 = CONTROL_GROUP_ORDER，成员序 = CONTROL_GROUPS 定义序（即分节呈现序）。
+    组内可见成员为空 → 整组不出现（组可见性 = 成员可见性的并集，零放宽零收紧）。
+    """
+    seen = set(visible_tabs(role, "control"))
+    out = []
+    for g in CONTROL_GROUP_ORDER:
+        members = [t for t in CONTROL_GROUPS[g] if t in seen]
+        if members:
+            out.append((g, members))
+    return out
 
 
 def visible_tabs(role, surface=None):

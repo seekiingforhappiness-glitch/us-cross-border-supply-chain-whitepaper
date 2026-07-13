@@ -2,9 +2,11 @@
 
 真·角色导航：不同角色登录后只渲染自己的工作台 tab（见 app/rbac_nav.ROLE_WORKSPACE），
 不是全渲染再脱敏。
-前后台二分（Daniel 裁决「前端使用界面与后端信息界面分开设计」）：sidebar 角色之下再选导航面——
-「工作台」（默认，操作型标签 + 首屏「我的今天」计数卡）与「控制室」（理解与监督：对象详情/知识
-图谱/审计日志/DQ 处置/经理 KPI 总览，只读为主）。分面只是 ROLE_WORKSPACE 的归组，可见性不变。
+前后台二分（Daniel 裁决「前端使用界面与后端信息界面分开设计」）：主区顶部选导航面——
+「工作台」（默认，操作型标签 + 首屏「我的今天」计数卡）与「控制室」（理解与监督，只读为主）。
+控制室为三个大白话标签（Daniel 批准的三问句结构，rbac_nav.CONTROL_GROUPS）：「全局概览」（原 KPI）、
+「追查一件事」（对象详情+知识图谱合一）、「操作与异常记录」（审计日志+待核对数据合一）。
+分面与合并都只是 ROLE_WORKSPACE 的呈现层归组：组可见=成员并集、组内只渲染有权成员，可见性不变。
 动作全部经 app/actions.py（权限、前置校验、审计在动作层，UI 只是壳）——导航层不放宽任何动作权限。
 字段级权限（manual §6）：ops 不可见 Customer.tier；cs 不可见 est_cost_usd（保留）。
 """
@@ -47,8 +49,9 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
                                       resolve_coordination, mark_dead_ended)
 
 try:
-    from app.rbac_nav import (ROLE_WORKSPACE_META, SURFACE_LABELS, SURFACES,
-                              TAB_LABELS, visible_tabs)
+    from app.rbac_nav import (CONTROL_GROUP_LABELS, ROLE_WORKSPACE_META,
+                              SURFACE_LABELS, SURFACES, TAB_LABELS,
+                              visible_control_groups, visible_tabs)
     from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                                 risk_in_region_scope, scope_for_role,
                                 audit_region_index, audit_in_scope)
@@ -58,8 +61,9 @@ try:
     from app.executive_view import build_executive_summary
     from app.my_today import build_my_today
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
-    from rbac_nav import (ROLE_WORKSPACE_META, SURFACE_LABELS, SURFACES,
-                          TAB_LABELS, visible_tabs)
+    from rbac_nav import (CONTROL_GROUP_LABELS, ROLE_WORKSPACE_META,
+                          SURFACE_LABELS, SURFACES, TAB_LABELS,
+                          visible_control_groups, visible_tabs)
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                             risk_in_region_scope, scope_for_role,
                             audit_region_index, audit_in_scope)
@@ -624,8 +628,9 @@ render_command_header(role, n_open)
 # key 不变（nav_surface），AppTest session_state 驱动兼容。
 surface = st.radio("导航", SURFACES, key="nav_surface", horizontal=True,
                    format_func=lambda s: SURFACE_LABELS[s],
-                   help="工作台：操作型标签（处置/提案/审批/催办）；"
-                        "控制室：理解与监督视图（对象详情/知识图谱/审计/DQ/KPI，只读为主）")
+                   help="工作台：操作型标签（处置/提案/审批/催办）；控制室：三个问题——"
+                        "全局概览（生意整体怎么样）/ 追查一件事（一件事的来龙去脉）/ "
+                        "操作与异常记录（谁做了什么、哪些数据待核对），只读为主")
 
 # ---------- 全局 Executive 一页视图（manager 专属落地页）----------
 def _signal_strip(cards):
@@ -654,7 +659,7 @@ def render_kpi_tab():
         ("任务逾期", sla["overdue"], "SLA overdue"),
         ("今日到期", sla["due_today"], "due today"),
         ("升级候选", cross["escalation_candidates"], "overdue / escalated"),
-        ("DQ 待处置", cross["dq_open"], "data quality open"),
+        ("待核对的数据", cross["dq_open"], "data quality open"),
     ])
 
     # ---- 场景 1 · 延误运营（R1-R3）----
@@ -1024,6 +1029,7 @@ def render_obj_tab():
     标准视图（app/standard_object_view.py）是「Foundry 标准对象视图」兜底：非核心对象自动生成的
     只读视图（属性 + 关联对象，可点击导航）。四个富工作台对象（RiskEvent/AdmissionCase/Task/Invoice）
     的动作/对象级 AI 仍在各自标签，此处只做只读浏览与对象图导航（不重复渲染其 keyed 富工作台部件）。
+    返回当前选中的 (对象类型, 对象 ID)（无数据时 None）——「追查一件事」用它把邻域图嵌在对象下方。
     """
     types = sov.navigable_types()
     # 关联对象导航：读挂起的跳转目标（点关联对象按钮时写入），设定类型 + id 的 widget 状态
@@ -1055,7 +1061,7 @@ def render_obj_tab():
         ids = [cur_id] + ids  # 导航目标不在前 500 时补进选项首位，避免 selectbox 报错
     if not ids:
         st.warning(f"{otype} 暂无数据")
-        return
+        return None
     if len(ids) >= 500:
         st.caption("（该类型对象较多，选择框仅列前 500；可经关联对象按钮导航到其余对象）")
     oid = st.selectbox("对象 ID", ids, key=f"obj_id_sel_{otype}")
@@ -1071,10 +1077,11 @@ def render_obj_tab():
     else:
         with db() as con:
             sov.render_standard_view(con, otype, oid, role, render_table, on_navigate=_navigate)
+    return (otype, oid)
 
-# ---------- DQ 处置（M6）----------
+# ---------- 待核对的数据（原 DQ 处置，M6；用户侧去「DQ」黑话，代码内部标识符不变）----------
 def render_dq_tab():
-    show_closed_dq = st.checkbox("显示已关闭 DQ issue", value=False)
+    show_closed_dq = st.checkbox("显示已核对关闭的记录", value=False)
     where_dq = "" if show_closed_dq else "WHERE d.status!='closed'"
     dq_items = rows(f"""SELECT d.*, u.booking_no, u.container_no, u.event_type, u.source_system, u.reason
                         FROM dq_issues d
@@ -1085,7 +1092,7 @@ def render_dq_tab():
                         ORDER BY CASE d.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
                                       WHEN 'medium' THEN 2 ELSE 3 END,
                                  d.created_at DESC, d.dq_issue_id""")
-    render_table([{"DQ issue": d["dq_issue_id"], "类型": d["issue_type"], "严重度": d["severity"],
+    render_table([{"待核对项": d["dq_issue_id"], "类型": d["issue_type"], "严重度": d["severity"],
                    "状态": d["status"], "负责人": d["assignee_user_id"] or "-",
                    "源表": d["source_table"], "源记录": d["source_record_id"],
                    "booking": d["booking_no"] or "-", "container": d["container_no"] or "-",
@@ -1093,22 +1100,22 @@ def render_dq_tab():
                    "原因": d["reason"] or "-"} for d in dq_items],
                  height=280)
     if dq_items:
-        dqsel = st.selectbox("处理 DQ issue", [d["dq_issue_id"] for d in dq_items])
+        dqsel = st.selectbox("选择要核对的记录", [d["dq_issue_id"] for d in dq_items])
         issue = next(x for x in dq_items if x["dq_issue_id"] == dqsel)
         st.markdown(f"**{dqsel}**　`{issue['issue_type']}`　状态 `{issue['status']}`　"
                     f"源 `{issue['source_table']}.{issue['source_record_id']}`")
         render_table(detail_rows(issue["detail_json"]))
         c1, c2 = st.columns(2)
         with c1, st.form(f"dq_assign_{dqsel}"):
-            st.markdown("**分派 DQ issue（运营/经理/系统）**")
+            st.markdown("**分派待核对记录（运营/经理/系统）**")
             assignee = st.text_input("负责人 user_id", issue["assignee_user_id"] or "u-ops-us")
             if st.form_submit_button("分派"):
                 show_result(assign_dq_issue(db(), dqsel, assignee,
                                             actor=actor, role=role, as_of=AS_OF))
         with c2, st.form(f"dq_close_{dqsel}"):
-            st.markdown("**关闭 DQ issue（只记录处置，不修复源系统）**")
+            st.markdown("**核对完成，关闭记录（只记录处置，不修复源系统）**")
             resolution = st.text_input("处置说明")
-            if st.form_submit_button("关闭 DQ"):
+            if st.form_submit_button("确认关闭"):
                 show_result(close_dq_issue(db(), dqsel, resolution,
                                            actor=actor, role=role, as_of=AS_OF))
 
@@ -1363,10 +1370,41 @@ def render_coord_tab():
         st.divider()
 
 
-def render_kg_tab():
-    """知识图谱（只读呈现层薄壳）：本体地图 + 对象邻域，全部逻辑在 app/knowledge_graph.py
-    （纯函数产 DOT 交 st.graphviz_chart 前端渲染，零新依赖）；实例级查询过 data_scope。"""
-    kg.render_knowledge_graph_tab(db, role)
+# ---------- 控制室三问句合并组（Daniel 批准：5 个工程师标签 → 3 个大白话标签）----------
+# 为什么这样建（≤5 行）：Daniel 反馈控制室「内容难理解/布局不清爽/命名全是黑话」——改成三个问句：
+# 全局概览=生意整体怎么样；追查一件事=一件事的来龙去脉（对象详情+邻域图合一，本体地图降级页尾折叠）；
+# 操作与异常记录=谁做了什么+哪些数据待核对（审计+DQ 合一分节）。纯呈现层：组可见=成员可见性并集，
+# 组内只渲染该角色原本有权看的成员（rbac_nav.visible_control_groups），权限语义零变化。
+def render_trace_group(members):
+    """「追查一件事」：对象选择器 + 只读视图（原对象详情）；有 kg 权限的角色再嵌邻域图与页尾本体地图。"""
+    st.caption("选一件事（一票货 / 一个风险 / 一个案子），看它的来龙去脉。")
+    sel = render_obj_tab()
+    if "kg" in members:
+        if sel:
+            st.divider()
+            kg.render_neighborhood_section(db, role, sel[0], sel[1])
+        kg.render_ontology_map_expander(db)
+
+
+def render_records_group(members):
+    """「操作与异常记录」：谁在什么时候做了什么（原审计日志）+ 待核对的数据（原 DQ 处置）。"""
+    if "log" in members:
+        st.markdown("##### 谁在什么时候做了什么")
+        st.caption("系统里每一次人工 / AI 操作的流水记录，改不了删不掉，用来回查责任与过程。")
+        render_log_tab()
+    if "log" in members and "dq" in members:
+        st.divider()
+    if "dq" in members:
+        st.markdown("##### 待核对的数据")
+        st.caption("来源系统送来的数据没对上或读不懂时，系统不猜——列在这里等人核对后处置。")
+        render_dq_tab()
+
+
+CONTROL_GROUP_RENDERERS = {
+    "overview": lambda members: render_kpi_tab(),
+    "trace": render_trace_group,
+    "records": render_records_group,
+}
 
 
 # ---------- 真·角色导航 × 前后台二分：按 ROLE_WORKSPACE 的当前导航面渲染 ----------
@@ -1374,10 +1412,11 @@ def render_kg_tab():
 # （操作型标签 + 首屏「我的今天」），理解/监督进控制室（只读为主）。实现选 sidebar radio 二分
 # 而非 st.navigation/st.Page 多页：单文件全局态（role/actor/db 闭包）无需重构、AppTest 可直设
 # session_state 驱动、不与自定义 sidebar CSS 冲突；页面切换同样整脚本重跑，多页 API 无净收益。
+# 工作台面逐 tab 渲染；控制室面走 CONTROL_GROUP_RENDERERS（kg 无独立渲染器：只在 trace 组内嵌）。
 TAB_RENDERERS = {
     "kpi": render_kpi_tab, "risk": render_risk_tab, "task": render_task_tab,
     "coord": render_coord_tab, "cost": render_cost_tab, "po": render_po_tab,
-    "obj": render_obj_tab, "kg": render_kg_tab, "dq": render_dq_tab,
+    "obj": render_obj_tab, "dq": render_dq_tab,
     "adm": render_adm_tab, "log": render_log_tab,
 }
 
@@ -1397,11 +1436,17 @@ def render_my_today():
 
 _surface = surface if surface in SURFACES else "work"
 if _surface == "control":
-    st.markdown('<div class="surface-banner"><strong>控制室</strong> · 理解与监督视图'
+    st.markdown('<div class="surface-banner"><strong>控制室</strong> · 理解与监督视图 · '
+                '三个问题：生意整体怎么样 / 一件事的来龙去脉 / 谁做了什么与哪些数据待核对'
                 '（只读为主，处置请回工作台）</div>', unsafe_allow_html=True)
+    _groups = visible_control_groups(role)
+    for (_gkey, _members), _tab in zip(
+            _groups, st.tabs([CONTROL_GROUP_LABELS[g] for g, _m in _groups])):
+        with _tab:
+            CONTROL_GROUP_RENDERERS[_gkey](_members)
 else:
     render_my_today()
-_keys = visible_tabs(role, _surface)
-for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):
-    with _tab:
-        TAB_RENDERERS[_key]()
+    _keys = visible_tabs(role, _surface)
+    for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):
+        with _tab:
+            TAB_RENDERERS[_key]()

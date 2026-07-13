@@ -1,13 +1,20 @@
 """知识图谱呈现层测试：python3 -m app.test_knowledge_graph
 
-锁定六项保证（+一条 trace 附加验证）：
+锁定八项保证（+一条 trace 附加验证）：
 ① 类型级本体地图：DOT 非空、含 digraph 声明；34 个 ontology 对象类型全为节点；
    object_relationships 登记表中出现的全部类型/DISTINCT 关系三元组都入图（实线），计数与 DOT 同源
 ② 实例级邻域：以设计案例船 SHP-2026-0099 为中心，1/2 跳可达性正确（已知链路在、3 跳外不在）
+②b 三刀之一「收起重复扇出」：同关系同类型邻居 >4 收成「类型 ×N」聚合节点（计数与库一致、
+   双边框区分、被吸收成员不再单独出现也不向外扩展）；主干类型（RiskEvent/Task/SalesOrderLine/
+   Customer/CoordinationThread/Shipment/PurchaseOrder）永不聚合；≤4 的同型邻居不收
+②c 三刀之二「左→右流向」：邻域 DOT rankdir=LR 存在
+②d 三刀之三「大白话旁白」：Shipment/RiskEvent/通用三款旁白数字全部与库独立复算一致（现算禁编造）；
+   金额仅 finance/manager 可见（同 mask_cost 口径）——无权角色旁白与 figures 中金额零出现
 ③ 敏感字段零泄漏：金额/成本/tier 等字段模式与真实金额值在 DOT 字符串中零出现（含 manager 全量视图）
 ④ 数据范围：ops 的邻域结果被 data_scope 区域过滤（CN 节点被滤/越域中心被拒），manager 全量
 ⑤ DOT 转义安全：对象 ID 含引号/反斜杠/换行/注入片段，不破坏 DOT 语法（引号平衡、只以转义形态出现）
-⑥ AppTest：manager / ops 打开知识图谱 tab（两个视图模式）0 未捕获异常
+⑥ AppTest：manager / ops 打开控制室「追查一件事」（对象详情+内嵌邻域图+页尾本体地图）0 未捕获
+   异常、≥2 张 graphviz 图真实渲染、旁白行出现且 ops 旁白无金额
 ⑦ trace 附加：风险→任务→协调线程 一条链在邻域图中肉眼可见（决策纪要 §2 的"理解原子是一条 trace"）
 
 红线自检：本模块只读（源码零写 SQL）、agent/ 目录零引用（不给 AI 任何新工具）。
@@ -23,8 +30,8 @@ import tempfile
 from pathlib import Path
 
 from . import knowledge_graph as kgm
-from .knowledge_graph import (build_neighborhood_dot, build_ontology_map_dot,
-                              open_risk_candidates)
+from .knowledge_graph import (build_neighborhood_dot, build_neighborhood_narration,
+                              build_ontology_map_dot)
 
 DB = "data/ontology.sqlite"
 FAILS = []
@@ -127,7 +134,151 @@ def main():
           build_neighborhood_dot(con, "Shipment", "SHP-NOPE", "manager")["error"] is not None)
     check("② 未知类型 → 友好 error 不抛",
           build_neighborhood_dot(con, "NotAType", "x", "manager")["error"] is not None)
-    print(f"  规模：2 跳 {n2['nodes']} 节点/{n2['edges']} 边；1 跳 {n1['nodes']} 节点/{n1['edges']} 边")
+    print(f"  规模：2 跳 {n2['nodes']} 节点/{n2['edges']} 边；1 跳 {n1['nodes']} 节点/{n1['edges']} 边"
+          f"（聚合节点 {n2['agg_nodes']} 个，收起成员 {n2['collapsed_members']} 个）")
+
+    # ===== ②b 三刀之一：收起重复扇出（聚合节点）=====
+    print("\n== ②b 聚合：>4 同关系同类型收成「类型 ×N」；主干永不聚合；≤4 不收 ==")
+    n_exp = con.execute(
+        """SELECT count(DISTINCT target_id) FROM object_relationships
+           WHERE source_type='Shipment' AND source_id='SHP-2026-0099'
+             AND relationship_type='derived_shipment_has_expected_cost'""").fetchone()[0]
+    n_ms = con.execute(
+        """SELECT count(DISTINCT target_id) FROM object_relationships
+           WHERE source_type='Shipment' AND source_id='SHP-2026-0099'
+             AND relationship_type='shipment_has_milestone'""").fetchone()[0]
+    check(f"②b 前置：设计案例船 ExpectedCost 扇出 {n_exp} 个（>4）、里程碑 {n_ms} 个（≤4）",
+          n_exp > 4 and n_ms <= 4)
+    check(f"②b ExpectedCost ×{n_exp} 聚合节点出现且计数与库一致",
+          f'label="ExpectedCost ×{n_exp}"' in n2["dot"])
+    check("②b 被吸收的 ExpectedCost 不再逐个出现（个体节点零声明）",
+          '"ExpectedCost|' not in n2["dot"])
+    check("②b 聚合节点用双边框+虚线与单节点区分（peripheries=2, dashed）",
+          re.search(r'label="ExpectedCost ×\d+"[^\]]*peripheries=2[^\]]*dashed', n2["dot"])
+          is not None)
+    check("②b 返回计数与 DOT 同源（agg_nodes/collapsed_members）",
+          n2["agg_nodes"] == n2["dot"].count("peripheries=2")
+          and n2["collapsed_members"] >= n_exp,
+          f"agg={n2['agg_nodes']} collapsed={n2['collapsed_members']}")
+    check(f"②b ≤4 的同型邻居不收：{n_ms} 个里程碑仍逐个出现且无聚合",
+          len(re.findall(r'^\s*"ShipmentMilestone\|[^"]*" \[', n2["dot"], re.M)) == n_ms
+          and "ShipmentMilestone ×" not in n2["dot"])
+    # 主干类型永不聚合：找一个 >4 行的销售订单为中心——SalesOrderLine 是主角，必须逐个可见
+    so5 = con.execute("""SELECT so_id, count(*) c FROM sales_order_lines
+                         GROUP BY so_id HAVING c>4 ORDER BY so_id LIMIT 1""").fetchone()
+    check("②b 前置：存在 >4 行的销售订单", so5 is not None)
+    if so5:
+        nso = build_neighborhood_dot(con, "SalesOrder", so5["so_id"], "manager", max_hops=1)
+        n_line_nodes = len(re.findall(r'^\s*"SalesOrderLine\|[^"]*" \[', nso["dot"], re.M))
+        check(f"②b 主干 SalesOrderLine 永不聚合（{so5['c']} 行逐个可见、无 ×N）",
+              n_line_nodes == so5["c"] and "SalesOrderLine ×" not in nso["dot"],
+              f"nodes={n_line_nodes}")
+    for bt in sorted(kgm.BACKBONE_TYPES):
+        check(f"②b 主干 {bt} 在全部样例 DOT 中零聚合标签", f"{bt} ×" not in n2["dot"])
+    # 阈值边界 + 聚合节点不向外扩展：临时副本把里程碑扇出补到 5（>4）→ 聚合出现、成员消失
+    tmpb = _copy_db()
+    tb = _conn(tmpb)
+    need = 5 - n_ms
+    for k in range(need):
+        tb.execute("""INSERT INTO object_relationships VALUES
+                      (?, 'Shipment','SHP-2026-0099','ShipmentMilestone', ?,
+                       'shipment_has_milestone', 1.0, 'test')""",
+                   (f"REL-aggtest-{k}", f"MS-AGGTEST-{k}"))
+    tb.commit()
+    nb = build_neighborhood_dot(tb, "Shipment", "SHP-2026-0099", "manager", max_hops=2)
+    check("②b 阈值边界：补到 5 个（>4）后 ShipmentMilestone 收成 ×5 且个体消失",
+          'label="ShipmentMilestone ×5"' in nb["dot"] and '"ShipmentMilestone|' not in nb["dot"])
+    ms1 = con.execute("""SELECT target_id FROM object_relationships
+                         WHERE source_type='Shipment' AND source_id='SHP-2026-0099'
+                           AND relationship_type='shipment_has_milestone'
+                         ORDER BY target_id LIMIT 1""").fetchone()[0]
+    ms_nbr = {(r[0], r[1]) for r in tb.execute(
+        """SELECT target_type, target_id FROM object_relationships
+           WHERE source_type='ShipmentMilestone' AND source_id=?
+           UNION SELECT source_type, source_id FROM object_relationships
+           WHERE target_type='ShipmentMilestone' AND target_id=?""", (ms1, ms1))}
+    only_via_ms = {f"{t}|{i}" for t, i in ms_nbr} - {"Shipment|SHP-2026-0099"} \
+        - _node_ids(build_neighborhood_dot(tb, "Shipment", "SHP-2026-0099", "manager",
+                                           max_hops=1)["dot"])
+    check("②b 聚合节点是终点：被收起的里程碑不再向外扩展下一跳",
+          all(k not in _node_ids(nb["dot"]) for k in only_via_ms), str(list(only_via_ms)[:3]))
+    tb.close()
+    Path(tmpb).unlink()
+
+    # ===== ②c 三刀之二：左→右流向 =====
+    print("\n== ②c 流向：rankdir=LR（左→右像一条河）==")
+    check("②c 邻域 DOT 含 rankdir=LR", 'rankdir="LR"' in n2["dot"])
+    check("②c 本体地图 DOT 含 rankdir=LR", 'rankdir="LR"' in dot)
+
+    # ===== ②d 三刀之三：大白话旁白（现查现算 + 按角色脱敏）=====
+    print("\n== ②d 旁白：数字与库独立复算一致；金额仅 finance/manager（mask_cost 口径）==")
+    srow = con.execute("SELECT delay_days, status FROM shipments WHERE shipment_id='SHP-2026-0099'"
+                       ).fetchone()
+    s_lines = [r[0] for r in con.execute(
+        """SELECT DISTINCT target_id FROM object_relationships
+           WHERE source_type='Shipment' AND source_id='SHP-2026-0099'
+             AND relationship_type='derived_shipment_allocates_line'""")]
+    ph = ",".join("?" * len(s_lines))
+    s_cust = con.execute(
+        f"""SELECT count(DISTINCT so.customer_id) FROM sales_order_lines l
+            JOIN sales_orders so ON so.so_id=l.so_id WHERE l.so_line_id IN ({ph})""",
+        s_lines).fetchone()[0]
+    s_open, s_val = con.execute(
+        """SELECT count(*), COALESCE(sum(affected_value_usd),0) FROM risk_events
+           WHERE shipment_id='SHP-2026-0099' AND status NOT IN ('resolved','escalated')"""
+    ).fetchone()
+    nar_m = build_neighborhood_narration(con, "Shipment", "SHP-2026-0099", "manager")
+    nar_o = build_neighborhood_narration(con, "Shipment", "SHP-2026-0099", "ops")
+    check("②d Shipment 旁白（manager）数字与库一致：延误/客户数/订单行数/未结风险数",
+          f"延误 {srow['delay_days']} 天" in nar_m["text"]
+          and f"{s_cust} 个客户" in nar_m["text"]
+          and f"{len(s_lines)} 个订单行" in nar_m["text"]
+          and f"{s_open} 个未结风险" in nar_m["text"], nar_m["text"])
+    check("②d Shipment 旁白（manager）金额=库中未结风险影响额合计（千分位）",
+          f"${s_val:,.0f}" in nar_m["text"], nar_m["text"])
+    check("②d figures 与文本同源（双路对账）",
+          nar_m["figures"] == {"delay_days": srow["delay_days"], "status": srow["status"],
+                               "customers": s_cust, "so_lines": len(s_lines),
+                               "open_risks": s_open, "affected_value_usd": s_val},
+          str(nar_m["figures"]))
+    check("②d Shipment 旁白（ops）金额零出现（$ 与数值都不在，figures 无金额键）",
+          "$" not in nar_o["text"] and f"{s_val:,.0f}" not in nar_o["text"]
+          and "affected_value_usd" not in nar_o["figures"], nar_o["text"])
+    check("②d 旁白与图一致：订单行数 == 图中 1 跳 SalesOrderLine 节点数",
+          len(re.findall(r'^\s*"SalesOrderLine\|[^"]*" \[', n1["dot"], re.M)) == len(s_lines))
+    r68 = con.execute("""SELECT severity, type, status, affected_so_line_ids, affected_value_usd
+                         FROM risk_events WHERE risk_event_id='RSK-0068'""").fetchone()
+    r_lines = len(json.loads(r68["affected_so_line_ids"]))
+    r_tasks = con.execute("SELECT count(*) FROM tasks WHERE risk_event_id='RSK-0068'").fetchone()[0]
+    r_thr = con.execute("SELECT count(*) FROM coordination_threads WHERE risk_event_id='RSK-0068'"
+                        ).fetchone()[0]
+    nr_m = build_neighborhood_narration(con, "RiskEvent", "RSK-0068", "manager")
+    nr_c = build_neighborhood_narration(con, "RiskEvent", "RSK-0068", "cs")
+    check("②d RiskEvent 旁白（manager）级别/类型/行数/任务数/线程数与库一致",
+          f"级别 {r68['severity']}" in nr_m["text"] and f"类型 {r68['type']}" in nr_m["text"]
+          and f"{r_lines} 个订单行" in nr_m["text"] and f"{r_tasks} 个处理任务" in nr_m["text"]
+          and f"{r_thr} 条催办线程" in nr_m["text"], nr_m["text"])
+    check("②d RiskEvent 旁白（manager）金额与库一致",
+          f"${r68['affected_value_usd']:,.0f}" in nr_m["text"], nr_m["text"])
+    check("②d RiskEvent 旁白（cs 无金额权）金额零出现", "$" not in nr_c["text"], nr_c["text"])
+    # 通用旁白：Customer——独立复算邻居数（registry 双向 ∪ sales_orders FK ∪ admission FK）
+    cust_id = con.execute("SELECT customer_id FROM customers ORDER BY customer_id LIMIT 1"
+                          ).fetchone()[0]
+    others = {(r[0], r[1]) for r in con.execute(
+        """SELECT target_type, target_id FROM object_relationships
+           WHERE source_type='Customer' AND source_id=?
+           UNION SELECT source_type, source_id FROM object_relationships
+           WHERE target_type='Customer' AND target_id=?""", (cust_id, cust_id))}
+    others |= {("SalesOrder", r[0]) for r in con.execute(
+        "SELECT so_id FROM sales_orders WHERE customer_id=?", (cust_id,))}
+    others |= {("AdmissionCase", r[0]) for r in con.execute(
+        "SELECT admission_case_id FROM admission_cases WHERE customer_id=?", (cust_id,))}
+    ng = build_neighborhood_narration(con, "Customer", cust_id, "ops")
+    check(f"②d 通用旁白（Customer {cust_id}）邻居数与库独立复算一致（{len(others)}）",
+          f"直接关联 **{len(others)}** 个对象" in ng["text"]
+          and ng["figures"]["neighbors"] == len(others), ng["text"])
+    check("②d 不存在的对象 → 旁白 text=None 不抛",
+          build_neighborhood_narration(con, "Shipment", "SHP-NOPE", "manager")["text"] is None)
 
     # ===== ③ 敏感字段零泄漏 =====
     print("\n== ③ 敏感字段（amount/cost/tier/usd 等模式 + 真实金额值）DOT 零出现 ==")
@@ -199,12 +350,7 @@ def main():
               blocked["out_of_scope"] is True and blocked["dot"] is None)
         check("④ manager 以 CN 船为中心 → 正常出图",
               build_neighborhood_dot(tc, "Shipment", flip, "manager")["dot"] is not None)
-        mgr_c = {c["risk_event_id"] for c in open_risk_candidates(tc, "manager")}
-        ops_c = {c["risk_event_id"] for c in open_risk_candidates(tc, "ops")}
-        check(f"④ 起点候选：manager 含 CN 风险 {flip_risk}、ops 不含（与风险队列同规）",
-              flip_risk in mgr_c and flip_risk not in ops_c)
-        check("④ ops 候选是 manager 候选的真子集", ops_c < mgr_c,
-              f"ops={len(ops_c)} mgr={len(mgr_c)}")
+        _ = flip_risk  # CN 船上的 open 风险（组合前置用；起点候选下拉已随合并撤除）
     tc.close()
     Path(tmp).unlink()
 
@@ -272,21 +418,32 @@ def main():
     check("红线：agent/ 目录零引用（不给 AI 任何新工具）", not agent_refs, str(agent_refs))
     con.close()
 
-    # ===== ⑥ AppTest：manager / ops 两视图模式 0 异常 =====
-    print("\n== ⑥ AppTest：manager / ops 打开知识图谱（本体地图 + 对象邻域）0 异常 ==")
+    # ===== ⑥ AppTest：manager / ops 打开控制室「追查一件事」0 异常 =====
+    print("\n== ⑥ AppTest：控制室「追查一件事」（对象详情+内嵌邻域图+页尾本体地图）==")
     from streamlit.testing.v1 import AppTest
     for role in ("manager", "ops"):
-        for mode in ("map", "nbr"):
-            at = AppTest.from_file("app/streamlit_app.py", default_timeout=120)
-            at.session_state["role"] = role
-            at.session_state["nav_surface"] = "control"  # 前后台分离后 kg 挂「控制室」导航面
-            at.session_state["kg_view_mode"] = mode
-            at.run()
-            excs = list(at.exception)
-            check(f"⑥ role={role} · 视图={mode} 0 未捕获异常", not excs, str(excs[:1]))
-            charts = at.get("graphviz_chart")
-            check(f"⑥ role={role} · 视图={mode} graphviz 图元素真实渲染（≥1 张含 digraph）",
-                  len(charts) >= 1, f"charts={len(charts)}")
+        at = AppTest.from_file("app/streamlit_app.py", default_timeout=120)
+        at.session_state["role"] = role
+        at.session_state["nav_surface"] = "control"  # 三问句合并后 obj+kg 同在「追查一件事」
+        at.run()
+        excs = list(at.exception)
+        check(f"⑥ role={role} 控制室 0 未捕获异常", not excs, str(excs[:1]))
+        charts = at.get("graphviz_chart")
+        check(f"⑥ role={role} graphviz 图 ≥2 张（默认船的邻域图 + 页尾本体地图）",
+              len(charts) >= 2, f"charts={len(charts)}")
+        md = " ||| ".join((m.value or "") for m in at.markdown)
+        check(f"⑥ role={role} 旁白行出现（默认对象 SHP-2026-0099 的大白话一句）",
+              "这票货" in md and "个未结风险" in md)
+        nar_line = next((m.value for m in at.markdown if "这票货" in (m.value or "")), "")
+        if role == "ops":
+            check("⑥ ops 旁白无金额（$ 零出现——UI 渲染层同 mask_cost 口径）",
+                  "$" not in nar_line, nar_line)
+        else:
+            check("⑥ manager 旁白含金额（$ 千分位）", "$" in nar_line, nar_line)
+        # 不再有独立「知识图谱」标签与视图切换 radio（合并进「追查一件事」）
+        tabs = [t.label for t in at.tabs]
+        check(f"⑥ role={role} 控制室无独立「知识图谱」tab（已并入追查一件事）",
+              "知识图谱" not in tabs and "追查一件事" in tabs, str(tabs))
 
     md5_after = hashlib.md5(open(DB, "rb").read()).hexdigest()
     check("真实 DB 未被污染（md5 逐字节一致）", md5_before == md5_after,

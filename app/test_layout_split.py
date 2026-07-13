@@ -1,17 +1,21 @@
 """前后台界面分离测试：python3 -m app.test_layout_split
 
-锁定六项保证（Daniel 裁决「前端使用界面与后端信息界面分开设计」的呈现层契约）：
+锁定七项保证（Daniel 裁决「前端使用界面与后端信息界面分开设计」+ 控制室三问句结构的呈现层契约）：
 ① 分组契约：SURFACE_TABS 是 11 个 tab 的完全划分（不重不漏）；每角色的工作台/控制室子列表
    与冻结契约一致、保持 ROLE_WORKSPACE 原相对顺序；两面并集 == 分面前全集（RBAC 语义零变化）
+①b 控制室三问句合并组：CONTROL_GROUPS 是控制室 5 成员 tab 的完全划分；每角色可见组 = 冻结契约；
+   组可见 == 成员可见性并集（能看≥1 个成员才见组，组内成员列表=该角色有权成员，零放宽零收紧）
 ② 「我的今天」计数与对应 tab 内的数一致：build_my_today 的每个数字 =（用各 tab 的**原样查询/
-   过滤**独立复算的数字）= seed 数据冻结的具体数字（风险 76 / DQ 11 / 待批 3 / 协调逾期 2）；
+   过滤**独立复算的数字）= seed 数据冻结的具体数字（风险 76 / 待核对 11 / 待批 3 / 协调逾期 2）；
    区域过滤真实生效（临时副本把一票翻成 CN → ops 区域计数下降而 manager 全量不变）；
-   卡只在角色能见对应 tab 时出现、引导文字指向真实存在的 tab 标签
+   卡只在角色能见对应 tab 时出现、引导文字指向真实入口（控制室成员 tab 指向其合并组标签）
 ③ 控制室标识行存在（只读为主，处置请回工作台）；工作台无标识行、有「我的今天」；
-   manager 工作台首屏卡上数字与函数级计数一致（UI 渲染值即真值）
-④ AppTest 7 角色 × 两导航面 0 未捕获异常；每个 (角色, 面) 的 tab 标签串与分组契约一致
+   manager 工作台首屏卡上数字与函数级计数一致（UI 渲染值即真值）；控制室分节标题存在、
+   用户侧无「DQ 处置 / DQ issue / KPI 总览」等旧黑话字样
+④ AppTest 7 角色 × 两导航面 0 未捕获异常；工作台 tab 标签=TAB_LABELS 契约，
+   控制室 tab 标签=三问句组标签契约
 ⑤ 空库 × 控制室 7 角色 0 异常（分面后 test_smoke 默认只走工作台面，此处补控制室面的空库覆盖）
-⑥ 红线：动作层 ROLE_PERMS 与基线一致（分面不碰权限）；真实 DB md5 逐字节不变（纯读）
+⑥ 红线：动作层 ROLE_PERMS 与基线一致（分面/合并不碰权限）；真实 DB md5 逐字节不变（纯读）
 
 不改任何对象/规则/KPI/schema/权限；临时副本承载 CN 翻转与空库，绝不污染 data/ontology.sqlite。
 """
@@ -30,8 +34,9 @@ from .coordination_actions import is_overdue
 from .data_scope import risk_in_region_scope, scope_for_role
 from .my_today import (build_my_today, count_my_risks, count_open_dq,
                        count_overdue_coordinations, count_pending_approvals)
-from .rbac_nav import (ROLE_WORKSPACE, SURFACE_LABELS, SURFACE_TABS, SURFACES,
-                       TAB_LABELS, visible_tabs)
+from .rbac_nav import (CONTROL_GROUP_LABELS, CONTROL_GROUP_OF, CONTROL_GROUP_ORDER,
+                       CONTROL_GROUPS, ROLE_WORKSPACE, SURFACE_LABELS, SURFACE_TABS,
+                       SURFACES, TAB_LABELS, visible_control_groups, visible_tabs)
 
 DB = "data/ontology.sqlite"
 ROLES = ("ops", "cs", "finance", "procurement", "sales", "compliance", "manager")
@@ -61,6 +66,22 @@ EXPECTED_CONTROL = {
     "compliance":  ["obj", "log"],
     "manager":     ["kpi", "obj", "kg", "dq", "log"],
 }
+
+# ---- 冻结契约：控制室三问句合并组（Daniel 批准）——组可见 = 成员可见性并集，组内只含有权成员 ----
+# 全局概览(kpi 仅 manager)；追查一件事(obj+kg：人人有 obj，kg 仅 ops/manager 带图)；
+# 操作与异常记录(log+dq：ops/manager 双分节，compliance 仅审计分节)。
+EXPECTED_CONTROL_GROUPS = {
+    "ops":         [("trace", ["obj", "kg"]), ("records", ["log", "dq"])],
+    "cs":          [("trace", ["obj"])],
+    "finance":     [("trace", ["obj"])],
+    "procurement": [("trace", ["obj"])],
+    "sales":       [("trace", ["obj"])],
+    "compliance":  [("trace", ["obj"]), ("records", ["log"])],
+    "manager":     [("overview", ["kpi"]), ("trace", ["obj", "kg"]),
+                    ("records", ["log", "dq"])],
+}
+EXPECTED_GROUP_LABELS = {"overview": "全局概览", "trace": "追查一件事",
+                         "records": "操作与异常记录"}
 
 # ---- 冻结契约：seed 数据下每角色「我的今天」卡（key, 计数）----
 # 风险 76：风险队列口径 = open 风险 JOIN shipments（po/仓储锚定无货运的风险不进队列）；
@@ -183,6 +204,32 @@ def main():
     check("未知角色回退经理全量（surface 维度同样成立）",
           visible_tabs("intern", "control") == visible_tabs("manager", "control"))
 
+    # ===== ①b 控制室三问句合并组（纯函数层）=====
+    print("\n== ①b 控制室三问句合并组 · 组契约 + 可见性=成员并集 ==")
+    grp_members = [t for g in CONTROL_GROUP_ORDER for t in CONTROL_GROUPS[g]]
+    check("组序为 全局概览→追查一件事→操作与异常记录",
+          CONTROL_GROUP_ORDER == ("overview", "trace", "records"))
+    check("组标签为三问句大白话", CONTROL_GROUP_LABELS == EXPECTED_GROUP_LABELS,
+          str(CONTROL_GROUP_LABELS))
+    check("合并组是控制室 5 成员 tab 的完全划分（不重不漏）",
+          sorted(grp_members) == sorted(SURFACE_TABS["control"])
+          and len(grp_members) == len(set(grp_members)), str(grp_members))
+    check("追查一件事 = obj+kg（对象详情在前，图在后）", CONTROL_GROUPS["trace"] == ("obj", "kg"))
+    check("操作与异常记录 = log+dq（审计分节在前，待核对分节在后）",
+          CONTROL_GROUPS["records"] == ("log", "dq"))
+    check("全局概览 = 原 kpi 改名（TAB_LABELS 同步）",
+          CONTROL_GROUPS["overview"] == ("kpi",) and TAB_LABELS["kpi"] == "全局概览")
+    check("dq 的 TAB_LABELS 已去黑话（待核对的数据）", TAB_LABELS["dq"] == "待核对的数据")
+    for r in ROLES:
+        got = visible_control_groups(r)
+        check(f"{r} 可见组与冻结契约一致", got == EXPECTED_CONTROL_GROUPS[r],
+              f"{got} != {EXPECTED_CONTROL_GROUPS[r]}")
+        # 组可见性 == 成员可见性并集（性质级双算：不依赖冻结表）
+        derived = [(g, [t for t in CONTROL_GROUPS[g] if t in set(visible_tabs(r, "control"))])
+                   for g in CONTROL_GROUP_ORDER]
+        derived = [(g, m) for g, m in derived if m]
+        check(f"{r} 组可见=成员并集（零放宽零收紧）", got == derived, f"{got} != {derived}")
+
     # ===== ② 「我的今天」计数 == 对应 tab 内的数（双路对账 + seed 冻结数字）=====
     print("\n== ② 我的今天 · 计数与各 tab 双路对账 + seed 冻结数字 ==")
     con = _conn()
@@ -197,16 +244,21 @@ def main():
                        "coord": lambda: tab_coord_overdue_count(con)}[x["key"]]()
             check(f"{r} 卡「{x['label']}」计数 == 对应 tab 独立复算（{x['count']}）",
                   x["count"] == tab_val, f"card={x['count']} tab={tab_val}")
-    # 卡出现条件与引导可达性：卡的 tab 角色可见；引导文字含该 tab 的真实标签；控制室面 tab 注明控制室
+    # 卡出现条件与引导可达性：卡的 tab 角色可见；引导文字指向真实入口——工作台 tab 用其
+    # TAB_LABELS 标签，控制室成员 tab 用其三问句合并组标签（成员不再独立成 tab）+ 注明控制室
     card_tab = {"risk": "risk", "dq": "dq", "approve": "task", "coord": "coord"}
     for r in ROLES:
         for x in build_my_today(con, r, AS_OF):
             tkey = card_tab[x["key"]]
             check(f"{r} 卡「{x['label']}」对应 tab 该角色可见（引导可达）", tkey in visible_tabs(r))
-            check(f"{r} 卡「{x['label']}」引导含 tab 标签「{TAB_LABELS[tkey]}」",
-                  TAB_LABELS[tkey] in x["go"], x["go"])
             if tkey in SURFACE_TABS["control"]:
+                glabel = CONTROL_GROUP_LABELS[CONTROL_GROUP_OF[tkey]]
+                check(f"{r} 卡「{x['label']}」引导含合并组标签「{glabel}」",
+                      glabel in x["go"], x["go"])
                 check(f"{r} 卡「{x['label']}」引导注明控制室（跨面跳转说清楚）", "控制室" in x["go"], x["go"])
+            else:
+                check(f"{r} 卡「{x['label']}」引导含 tab 标签「{TAB_LABELS[tkey]}」",
+                      TAB_LABELS[tkey] in x["go"], x["go"])
     check("sales 无聚合卡（risk/dq/coord/task 皆不可见——最保守读法）",
           build_my_today(con, "sales", AS_OF) == [])
     check("审批卡仅 manager（cs/ops/procurement 有 task tab 也不出现）",
@@ -252,14 +304,30 @@ def main():
             excs = list(at.exception)
             check(f"④ {r} × {SURFACE_LABELS[surf]} 0 未捕获异常", not excs, str(excs[:1]))
             labels = [t.label for t in at.tabs]
-            exp = [TAB_LABELS[k] for k in (EXPECTED_WORK if surf == "work" else EXPECTED_CONTROL)[r]]
+            if surf == "work":
+                exp = [TAB_LABELS[k] for k in EXPECTED_WORK[r]]
+            else:  # 控制室：三问句合并组标签（成员 tab 不再独立呈现）
+                exp = [CONTROL_GROUP_LABELS[g] for g, _m in EXPECTED_CONTROL_GROUPS[r]]
             check(f"④ {r} × {SURFACE_LABELS[surf]} tab 标签与契约一致", labels == exp,
                   f"{labels} != {exp}")
             md = " ||| ".join((m.value or "") for m in at.markdown)
+            md_cap = md + " ||| " + " ||| ".join((c.value or "") for c in at.caption)
             if surf == "control":
                 check(f"③ {r} 控制室标识行存在（理解与监督/处置请回工作台）",
                       "理解与监督视图" in md and "处置请回工作台" in md)
                 check(f"③ {r} 控制室无「我的今天」（聚合卡属于工作台首屏）", "我的今天" not in md)
+                check(f"③ {r} 追查一件事有「选一件事…来龙去脉」引导行",
+                      "选一件事" in md_cap and "来龙去脉" in md_cap)
+                check(f"③ {r} 控制室用户侧无旧黑话（DQ 处置/DQ issue/KPI 总览）",
+                      all(w not in md_cap for w in ("DQ 处置", "DQ issue", "KPI 总览")))
+                if "log" in set(visible_tabs(r, "control")):
+                    check(f"③ {r} 操作与异常记录含「谁在什么时候做了什么」分节标题",
+                          "谁在什么时候做了什么" in md)
+                if "dq" in set(visible_tabs(r, "control")):
+                    check(f"③ {r} 操作与异常记录含「待核对的数据」分节标题", "待核对的数据" in md)
+                else:
+                    check(f"③ {r} 无 dq 权限则无「待核对的数据」分节（组内只渲染有权成员）",
+                          "待核对的数据" not in md)
             else:
                 check(f"③ {r} 工作台有「我的今天」首屏区", "我的今天" in md)
                 check(f"③ {r} 工作台无控制室标识行", "理解与监督视图" not in md)
@@ -267,7 +335,7 @@ def main():
                 strip = next((m.value for m in at.markdown if "待我处理的风险" in (m.value or "")), "")
                 nums = dict(re.findall(r"<span>([^<]+)</span><strong>(\d+)</strong>", strip))
                 check("③ manager 首屏卡 UI 数字 = 76/11/3（与 tab 一致的渲染真值）",
-                      nums.get("待我处理的风险") == "76" and nums.get("待我确认的解析/DQ") == "11"
+                      nums.get("待我处理的风险") == "76" and nums.get("待我核对的数据") == "11"
                       and nums.get("待我批准的提案") == "3", str(nums))
 
     # ===== ⑤ 空库 × 控制室 7 角色 0 异常（补 test_smoke 分面后的空库覆盖缺口）=====

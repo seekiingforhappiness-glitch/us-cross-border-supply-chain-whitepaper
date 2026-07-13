@@ -63,9 +63,9 @@ def build_my_today(con, role, as_of, risk_mode=None):
                       "count": count_my_risks(con, role, risk_mode),
                       "go": "去「风险队列」处理"})
     if "dq" in tabs:
-        cards.append({"key": "dq", "label": "待我确认的解析/DQ",
+        cards.append({"key": "dq", "label": "待我核对的数据",
                       "count": count_open_dq(con),
-                      "go": "去 控制室→「DQ 处置」确认"})
+                      "go": "去 控制室→「操作与异常记录」核对"})
     if role == "manager" and "task" in tabs:
         cards.append({"key": "approve", "label": "待我批准的提案",
                       "count": count_pending_approvals(con),

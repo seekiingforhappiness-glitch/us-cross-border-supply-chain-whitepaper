@@ -6,14 +6,17 @@
 ③ 动作层权限（ROLE_PERMS）未被改动——本次只动导航层，硬 gate 不变
 ④（前后台分离）SURFACE_TABS 是 11 tab 的完全划分；visible_tabs(role, surface) 是原列表的
    保序子列表、两面并集 == 分面前全集（可见性零变化）——细粒度分组契约见 test_layout_split
+④c（控制室三问句）CONTROL_GROUPS 是控制室 5 成员 tab 的完全划分；visible_control_groups
+   的组可见性 == 成员可见性并集、组内成员 = 该角色有权成员（合并纯呈现层，权限语义零变化）
 
 不改任何对象/规则/KPI；纯读断言。
 """
 import sys
 
-from .rbac_nav import (ROLE_WORKSPACE, ROLE_WORKSPACE_META, SURFACE_LABELS,
-                       SURFACE_TABS, SURFACES, TAB_LABELS,
-                       can_see_tab, visible_tabs)
+from .rbac_nav import (CONTROL_GROUP_LABELS, CONTROL_GROUP_OF, CONTROL_GROUP_ORDER,
+                       CONTROL_GROUPS, ROLE_WORKSPACE, ROLE_WORKSPACE_META,
+                       SURFACE_LABELS, SURFACE_TABS, SURFACES, TAB_LABELS,
+                       can_see_tab, visible_control_groups, visible_tabs)
 from .actions import ROLE_PERMS
 from .coordination_actions import COORD_PERMS
 
@@ -145,6 +148,36 @@ def main():
                   for s in SURFACES))
     check("visible_tabs 不带 surface 参数语义不变（向后兼容全集）",
           all(visible_tabs(r) == EXPECTED_WORKSPACE[r] for r in ROLES))
+
+    print("== ④c 控制室三问句合并组：完全划分 + 组可见=成员并集（细粒度见 test_layout_split）==")
+    _members = [t for g in CONTROL_GROUP_ORDER for t in CONTROL_GROUPS[g]]
+    check("合并组是控制室 5 成员 tab 的完全划分（不重不漏）",
+          sorted(_members) == sorted(SURFACE_TABS["control"])
+          and len(_members) == len(set(_members)), str(_members))
+    check("三问句组标签（全局概览/追查一件事/操作与异常记录）",
+          CONTROL_GROUP_LABELS == {"overview": "全局概览", "trace": "追查一件事",
+                                   "records": "操作与异常记录"}, str(CONTROL_GROUP_LABELS))
+    check("CONTROL_GROUP_OF 反查与 CONTROL_GROUPS 一致",
+          all(t in CONTROL_GROUPS[g] for t, g in CONTROL_GROUP_OF.items())
+          and set(CONTROL_GROUP_OF) == set(_members))
+    for r in ROLES:
+        got = visible_control_groups(r)
+        seen = set(visible_tabs(r, "control"))
+        derived = [(g, [t for t in CONTROL_GROUPS[g] if t in seen])
+                   for g in CONTROL_GROUP_ORDER]
+        derived = [(g, m) for g, m in derived if m]
+        check(f"{r} 组可见=成员可见性并集且组内只含有权成员（零放宽零收紧）",
+              got == derived, f"{got} != {derived}")
+        check(f"{r} 组成员并集 == 控制室面可见 tab 全集（合并不增不减内容）",
+              sorted(t for _g, m in got for t in m) == sorted(seen))
+    check("kpi 组（全局概览）仅 manager 可见（原规则维持）",
+          [r for r in ROLES if any(g == "overview" for g, _m in visible_control_groups(r))]
+          == ["manager"])
+    check("追查一件事人人可见（obj 全角色可见 → 组并集可见性）",
+          all(any(g == "trace" for g, _m in visible_control_groups(r)) for r in ROLES))
+    check("cs/finance/procurement/sales 的追查一件事无图部分（kg 成员不在组内）",
+          all(dict(visible_control_groups(r)).get("trace") == ["obj"]
+              for r in ("cs", "finance", "procurement", "sales")))
 
     print("== ⑤ 动作层权限（ROLE_PERMS）未被改动 ==")
     check("ROLE_PERMS 与基线完全一致（硬 gate 未削弱）",

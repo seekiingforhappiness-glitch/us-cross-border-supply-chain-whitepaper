@@ -8,6 +8,8 @@
   声明关系画虚线——34 个对象类型全为节点，按业务域着色分簇（"系统的地图"，服务新人上手）。
 - 邻域图参照 engine/graph.explain_path 的 BFS/visited/深度上限，双向化 + 并入 standard_object_view
   的 FK_SUPPLEMENT 声明边（同一套"关联对象"口径）；节点只含 类型/ID/状态 三样，绝不放金额/成本/tier。
+- 三刀改造（Daniel 反馈"难理解/不清爽"）：① 同关系同类型邻居 >4 收成「类型 ×N」聚合节点（主干
+  对象永不聚合）② rankdir=LR 左→右像一条河 ③ 图上方大白话旁白（现查现算、按角色脱敏金额）。
 """
 from __future__ import annotations
 
@@ -18,12 +20,10 @@ from pathlib import Path
 
 try:  # 包上下文（python3 -m app.*）
     from app import standard_object_view as sov
-    from app.data_scope import (audit_in_scope, audit_region_index,
-                                risk_in_region_scope, scope_for_role)
+    from app.data_scope import audit_in_scope, audit_region_index, scope_for_role
 except ImportError:  # streamlit run app/streamlit_app.py：脚本目录在 sys.path
     import standard_object_view as sov
-    from data_scope import (audit_in_scope, audit_region_index,
-                            risk_in_region_scope, scope_for_role)
+    from data_scope import audit_in_scope, audit_region_index, scope_for_role
 
 _ONTOLOGY_PATH = Path(__file__).resolve().parent.parent / "ontology" / "control-tower-ontology.json"
 
@@ -94,6 +94,19 @@ RICH_FK_SUPPLEMENT = {
 
 # 邻域图节点数上限（呈现层防刷屏，同 standard_object_view.LINK_ITEM_CAP 精神；超限截断并标注）。
 MAX_NEIGHBORHOOD_NODES = 60
+
+# 主干对象类型：业务故事的主角（风险→任务→协调、货→订单行→客户、采购单），永不被聚合收起——
+# 聚合只收"同型配角"（里程碑/预期费用/发票行等），主角必须逐个可见才能讲一条 trace。
+BACKBONE_TYPES = frozenset({"RiskEvent", "Task", "SalesOrderLine", "Customer",
+                            "CoordinationThread", "Shipment", "PurchaseOrder"})
+
+# 同一展开点上「同关系、同类型」的新邻居数超过此值 → 收成一个「类型 ×N」聚合节点
+# （双边框+虚线区分单节点；聚合节点是终点，不再向外扩展下一跳）。
+AGG_FANOUT_THRESHOLD = 4
+
+# 旁白金额可见角色——与 streamlit_app.mask_cost 完全同口径（finance/manager）；
+# 无权角色的金额片段整体不出现（不是打码是缺席，与图内"敏感字段结构上不可达"同一红线）。
+AMOUNT_VISIBLE_ROLES = ("finance", "manager")
 
 
 # ---------- DOT 基础 ----------
@@ -294,10 +307,13 @@ def build_neighborhood_dot(conn: sqlite3.Connection, obj_type: str, obj_id: str,
     - 数据范围：复用 audit_region_index/audit_in_scope（审计日志同一套 scope 口径）——中心越域直接
       拒绝（out_of_scope），邻域内越域节点被过滤；manager=all 全量。actor 仅备签名兼容/呈现，
       区域取自 DEMO_ROSTER（与风险队列 scope_for_role(role,'team') 同规）。
-    - 节点标签只有 类型+ID+状态；中心节点高亮。返回 {dot, nodes, edges, truncated, out_of_scope, error}。
+    - 收起重复扇出：同一展开点上「同关系、同类型」新邻居 > AGG_FANOUT_THRESHOLD 且非主干类型
+      （BACKBONE_TYPES）→ 收成一个「类型 ×N」聚合节点（双边框虚线），不再向外扩展下一跳。
+    - 节点标签只有 类型+ID+状态；中心节点高亮。返回 {dot, nodes, edges, truncated, out_of_scope,
+      error, agg_nodes, collapsed_members}——nodes/edges 含聚合节点/边（与 DOT 同源）。
     """
     empty = {"dot": None, "nodes": 0, "edges": 0, "truncated": False,
-             "out_of_scope": False, "error": None}
+             "out_of_scope": False, "error": None, "agg_nodes": 0, "collapsed_members": 0}
     if not obj_type or not obj_id:
         return {**empty, "error": "缺少对象类型或对象 ID"}
     meta = sov.TYPE_META.get(obj_type)
@@ -316,35 +332,78 @@ def build_neighborhood_dot(conn: sqlite3.Connection, obj_type: str, obj_id: str,
     center = (obj_type, obj_id)
     hops = {center: 0}
     order = [center]
-    edge_set = set()
+    edge_set = set()      # 实节点↔实节点的边（5 元组）
+    agg_nodes = {}        # 聚合节点 key → {"type", "count"}（key 编码展开点+关系+类型+方向）
+    agg_edges = set()     # 触及聚合节点的边：(src_key, tgt_key, rel)，key=DOT 节点 id
+    absorbed = {}         # 被聚合吸收的成员 (type, id) → 聚合节点 key（后续发现的边改指聚合节点）
+    collapsed = 0
     truncated = False
     queue = deque([center])
+
+    def _key(t, i):
+        return f"{t}|{i}"
+
     while queue:
         node = queue.popleft()
         if hops[node] >= max_hops:
             continue
-        for src_t, src_i, tgt_t, tgt_i, rel in _neighbors(conn, node[0], node[1]):
+        # 按 (关系, 邻居类型, 方向) 分组——聚合判定的粒度即"同关系、同类型的重复扇出"
+        groups = {}
+        for e in _neighbors(conn, node[0], node[1]):
+            src_t, src_i, tgt_t, tgt_i, rel = e
             other = (tgt_t, tgt_i) if (src_t, src_i) == node else (src_t, src_i)
+            if other == node:  # 防御自环
+                continue
             # 数据范围过滤：越域节点不进图（audit_in_scope 未覆盖的对象兜底本区域，不过度隐藏）
             if not audit_in_scope(scope, other[1], region_index):
                 continue
-            if other not in hops:
-                if len(hops) >= max_nodes:
+            outward = (src_t, src_i) == node
+            groups.setdefault((rel, other[0], outward), []).append((other, e))
+        for (rel, other_type, outward), items in sorted(groups.items()):
+            fresh = sorted(x for x in items if x[0] not in hops and x[0] not in absorbed)
+            for other, e in items:
+                if other in hops:        # 已入图的实节点：边照画
+                    edge_set.add(e)
+                elif other in absorbed:  # 已被别处聚合吸收：边改指其聚合节点（不复活单节点）
+                    a, b = ((_key(*node), absorbed[other]) if outward
+                            else (absorbed[other], _key(*node)))
+                    agg_edges.add((a, b, rel))
+            if not fresh:
+                continue
+            if len(fresh) > AGG_FANOUT_THRESHOLD and other_type not in BACKBONE_TYPES:
+                # 收起重复扇出：>4 个同关系同类型新邻居 → 单个「类型 ×N」聚合节点（终点，不扩展）
+                agg_key = f"agg|{node[0]}|{node[1]}|{rel}|{other_type}|" \
+                          f"{'out' if outward else 'in'}"
+                if len(hops) + len(agg_nodes) >= max_nodes:
                     truncated = True
                     continue
-                hops[other] = hops[node] + 1
-                order.append(other)
-                queue.append(other)
-            edge_set.add((src_t, src_i, tgt_t, tgt_i, rel))
+                agg_nodes[agg_key] = {"type": other_type, "count": len(fresh)}
+                a, b = ((_key(*node), agg_key) if outward else (agg_key, _key(*node)))
+                agg_edges.add((a, b, rel))
+                for other, _e in fresh:
+                    absorbed[other] = agg_key
+                collapsed += len(fresh)
+            else:
+                for other, e in fresh:
+                    if other not in hops:
+                        if len(hops) + len(agg_nodes) >= max_nodes:
+                            truncated = True
+                            continue
+                        hops[other] = hops[node] + 1
+                        order.append(other)
+                        queue.append(other)
+                    edge_set.add(e)
 
-    # 只保留两端都入图的边（截断/越域丢弃的端点，其边一并丢弃）
+    # 只保留两端都入图的边（截断/越域丢弃的端点，其边一并丢弃）；聚合边构造时两端已保证存在
     edges = sorted(e for e in edge_set if (e[0], e[1]) in hops and (e[2], e[3]) in hops)
     status = _status_by_node(conn, order)
 
     lines = [
         "digraph neighborhood {",
+        # rankdir=LR：左→右像一条河流过业务（上游采购/船 → 中游分配/订单 → 下游客户/风险/任务）；
+        # ranksep/nodesep 较默认加大，让"跳"的层次一眼可辨
         '  graph [bgcolor="transparent", rankdir="LR", splines="true", pad="0.2",'
-        ' nodesep="0.3", ranksep="0.7", fontname="Helvetica"];',
+        ' nodesep="0.42", ranksep="1.0", fontname="Helvetica"];',
         '  node [shape="box", style="rounded,filled", fontname="Helvetica", fontsize=10,'
         ' fontcolor="#e8f4f3", color="#5b7f84", penwidth=1];',
         '  edge [color="#7c9a9e", fontcolor="#a8c5c9", fontsize=8, fontname="Helvetica",'
@@ -357,43 +416,155 @@ def build_neighborhood_dot(conn: sqlite3.Connection, obj_type: str, obj_id: str,
         if (t, i) == center:  # 中心节点高亮：亮青描边加粗（配色同 app 主题 --cyan）
             attrs += ', color="#22d7e6", penwidth=3'
         lines.append(f"  {_dot_quote(t + '|' + str(i))} [{attrs}];")
+    for agg_key in sorted(agg_nodes):
+        info = agg_nodes[agg_key]
+        fill = DOMAIN_COLORS.get(DOMAIN_OF.get(info["type"], ""), "#37474f")
+        # 聚合节点与单节点视觉区分：双边框（peripheries=2）+ 虚线描边；标签只有 类型 ×N，零敏感字段
+        lines.append(f"  {_dot_quote(agg_key)} [label={_dot_quote(info['type'] + ' ×' + str(info['count']))},"
+                     f" fillcolor={_dot_quote(fill)}, peripheries=2, style=\"rounded,filled,dashed\"];")
     for src_t, src_i, tgt_t, tgt_i, rel in edges:
         lines.append(f"  {_dot_quote(src_t + '|' + str(src_i))} -> "
                      f"{_dot_quote(tgt_t + '|' + str(tgt_i))} [label={_dot_quote(rel)}];")
+    for a, b, rel in sorted(agg_edges):
+        lines.append(f"  {_dot_quote(a)} -> {_dot_quote(b)}"
+                     f" [label={_dot_quote(rel)}, style=\"dashed\"];")
     lines.append("}")
-    return {"dot": "\n".join(lines), "nodes": len(order), "edges": len(edges),
-            "truncated": truncated, "out_of_scope": False, "error": None}
+    return {"dot": "\n".join(lines), "nodes": len(order) + len(agg_nodes),
+            "edges": len(edges) + len(agg_edges), "truncated": truncated,
+            "out_of_scope": False, "error": None,
+            "agg_nodes": len(agg_nodes), "collapsed_members": collapsed}
 
 
-def open_risk_candidates(conn: sqlite3.Connection, role: str) -> list:
-    """邻域起点默认候选：open 状态 RiskEvent（含无货运锚点的采购/仓储风险），按角色数据范围过滤
-    （与风险队列同规：scope_for_role(role,'team') + 目的地 region；manager 全量）。纯读。"""
-    if not _table_exists(conn, "risk_events"):
-        return []
-    scope = scope_for_role(role, "team")
-    out = []
-    for r in conn.execute(
-            """SELECT r.risk_event_id, r.rule_id, r.type, r.severity, s.destination_port_locode
-               FROM risk_events r LEFT JOIN shipments s ON s.shipment_id=r.shipment_id
-               WHERE r.status='open' ORDER BY r.risk_event_id"""):
-        if risk_in_region_scope(scope, r[4]):
-            out.append({"risk_event_id": r[0], "rule_id": r[1], "type": r[2], "severity": r[3]})
-    return out
+# ---------- 大白话旁白（图上方一行话，现查现算，禁编造）----------
+def _fmt_usd(v) -> str:
+    return f"${v:,.0f}"
+
+
+def build_neighborhood_narration(conn: sqlite3.Connection, obj_type: str, obj_id: str,
+                                 role: str) -> dict:
+    """邻域图上方的大白话旁白：从中心对象**现查现算**，返回 {"text", "figures"}。
+
+    - Shipment：延误天数/状态 + 装了几个客户的几个订单行 + 影响金额 + 未结风险数
+    - RiskEvent：级别/类型/状态 + 影响几个订单行共多少钱 + 处理任务数 + 催办线程数
+    - 其他类型：通用旁白（类型 + 状态 + 一跳直接关联对象数）
+    - 金额仅 finance/manager 可见（与 streamlit_app.mask_cost 同口径）；无权角色的金额片段
+      整体不出现，figures 同步不含金额键——旁白与图共用同一条敏感红线。
+    """
+    meta = sov.TYPE_META.get(obj_type)
+    if not meta or not _table_exists(conn, meta["table"]):
+        return {"text": None, "figures": {}}
+    cur = conn.execute(f"SELECT * FROM {meta['table']} WHERE {meta['pk']}=?", (obj_id,))
+    fetched = cur.fetchone()
+    if not fetched:
+        return {"text": None, "figures": {}}
+    row = dict(zip([c[0] for c in cur.description], fetched))
+    show_amount = role in AMOUNT_VISIBLE_ROLES
+
+    if obj_type == "Shipment":
+        delay = row.get("delay_days") or 0
+        status = row.get("status") or "-"
+        lines = [r[0] for r in conn.execute(
+            """SELECT DISTINCT target_id FROM object_relationships
+               WHERE source_type='Shipment' AND source_id=?
+                 AND relationship_type='derived_shipment_allocates_line'""", (obj_id,))] \
+            if _table_exists(conn, "object_relationships") else []
+        n_cust = 0
+        if lines:
+            ph = ",".join("?" * len(lines))
+            n_cust = conn.execute(
+                f"""SELECT count(DISTINCT so.customer_id) FROM sales_order_lines l
+                    JOIN sales_orders so ON so.so_id=l.so_id
+                    WHERE l.so_line_id IN ({ph})""", lines).fetchone()[0]
+        k_open, z = conn.execute(
+            """SELECT count(*), COALESCE(sum(affected_value_usd), 0) FROM risk_events
+               WHERE shipment_id=? AND status NOT IN ('resolved','escalated')""",
+            (obj_id,)).fetchone()
+        delay_part = f"**延误 {delay} 天**" if delay > 0 else "未延误"
+        text = (f"这票货（{delay_part}，状态 {status}）装着 **{n_cust} 个客户** 的 "
+                f"{len(lines)} 个订单行"
+                + (f"，影响金额 **{_fmt_usd(z)}**" if show_amount else "")
+                + f"，有 {k_open} 个未结风险。")
+        figures = {"delay_days": delay, "status": status, "customers": n_cust,
+                   "so_lines": len(lines), "open_risks": k_open}
+        if show_amount:
+            figures["affected_value_usd"] = z
+        return {"text": text, "figures": figures}
+
+    if obj_type == "RiskEvent":
+        sev = row.get("severity") or "-"
+        rtype = row.get("type") or "-"
+        status = row.get("status") or "-"
+        try:
+            n_lines = len(json.loads(row.get("affected_so_line_ids") or "[]"))
+        except (TypeError, ValueError):
+            n_lines = 0
+        z = row.get("affected_value_usd")
+        m_tasks = conn.execute("SELECT count(*) FROM tasks WHERE risk_event_id=?",
+                               (obj_id,)).fetchone()[0] if _table_exists(conn, "tasks") else 0
+        k_thr = conn.execute("SELECT count(*) FROM coordination_threads WHERE risk_event_id=?",
+                             (obj_id,)).fetchone()[0] \
+            if _table_exists(conn, "coordination_threads") else 0
+        text = (f"这个风险（级别 {sev} / 类型 {rtype}，状态 {status}）影响 {n_lines} 个订单行"
+                + (f"（共 **{_fmt_usd(z)}**）" if show_amount and z is not None else "")
+                + f"，当前有 {m_tasks} 个处理任务、{k_thr} 条催办线程。")
+        figures = {"severity": sev, "type": rtype, "status": status, "so_lines": n_lines,
+                   "tasks": m_tasks, "threads": k_thr}
+        if show_amount and z is not None:
+            figures["affected_value_usd"] = z
+        return {"text": text, "figures": figures}
+
+    # 通用旁白：类型 + 状态（白名单状态列，同节点标签口径）+ 一跳直接关联对象数
+    status_col = next((c for c in STATUS_FIELD_CANDIDATES if c in row), None)
+    status_part = (f"，状态 {row[status_col]}"
+                   if status_col and row.get(status_col) not in (None, "") else "")
+    others = set()
+    for src_t, src_i, tgt_t, tgt_i, _rel in _neighbors(conn, obj_type, obj_id):
+        other = (tgt_t, tgt_i) if (src_t, src_i) == (obj_type, obj_id) else (src_t, src_i)
+        if other != (obj_type, obj_id):
+            others.add(other)
+    text = f"这个 **{obj_type}**（{obj_id}{status_part}）直接关联 **{len(others)}** 个对象。"
+    return {"text": text, "figures": {"neighbors": len(others)}}
 
 
 # ---------- Streamlit 渲染（延迟 import st；纯逻辑测试不触及）----------
-def render_knowledge_graph_tab(db, role: str) -> None:
-    """知识图谱 tab（只读呈现层）：本体地图 / 对象邻域 两个视图。db 为连接工厂（streamlit_app.db）。"""
+def render_neighborhood_section(db, role: str, obj_type: str, obj_id: str) -> None:
+    """「追查一件事」内嵌的邻域区块：大白话旁白 + 邻域图 + 怎么读。db 为连接工厂（streamlit_app.db）。
+
+    嵌在所选对象只读视图下方（不再自带对象选择器——选谁看谁，跟随上方选择器）。纯只读。
+    """
     import streamlit as st
 
-    st.caption("知识图谱（只读理解/监督视图）：**本体地图**看\"系统的地图\"（34 个对象类型怎么连），"
-               "**对象邻域**看\"一件事的世界\"（一个对象 2 跳内的实例关系 trace）。"
-               "图上节点只含 类型 / ID / 状态，无金额、成本、客户等级等敏感字段。")
-    mode = st.radio("视图", ["map", "nbr"], horizontal=True, key="kg_view_mode",
-                    format_func=lambda m: {"map": "本体地图（类型级）",
-                                           "nbr": "对象邻域（实例级）"}[m])
+    st.markdown("##### 来龙去脉图（它连着谁）")
+    hops = st.radio("看多远", [1, 2], index=1, horizontal=True, key="kg_hops",
+                    format_func=lambda h: {1: "只看直接相关（1 跳）",
+                                           2: "再往外看一层（2 跳）"}[h])
+    with db() as con:
+        res = build_neighborhood_dot(con, obj_type, obj_id, role, max_hops=hops)
+        nar = (build_neighborhood_narration(con, obj_type, obj_id, role)
+               if not res["error"] else None)
+    if res["error"]:
+        (st.warning if res["out_of_scope"] else st.info)(res["error"])
+        return
+    if nar and nar["text"]:
+        st.markdown(nar["text"])
+    st.graphviz_chart(res["dot"], width="stretch")
+    trunc = f"（已达 {MAX_NEIGHBORHOOD_NODES} 节点上限，图有截断）" if res["truncated"] else ""
+    agg = (f" · 已把 {res['collapsed_members']} 个同类对象收进 {res['agg_nodes']} 个"
+           "「类型 ×N」聚合框" if res["agg_nodes"] else "")
+    st.caption(f"中心 {obj_type} {obj_id} · {hops} 跳内节点 {res['nodes']} 个 · "
+               f"边 {res['edges']} 条{agg}{trunc}")
+    st.caption("怎么读：**从左往右**顺着箭头就是这件事的业务流向；节点＝类型+ID+状态"
+               "（颜色=业务域，青色粗框=当前追查的这件事）；同类配角超过 4 个会收成一个"
+               "虚线双框「类型 ×N」，主角对象（货运/订单行/客户/风险/任务/采购单/协调线程）"
+               "永不收起。不展示金额 / 成本 / 客户等级等敏感字段。")
+    st.caption("本图只读，操作请回工作台（风险队列 / 任务台 / 费用 / 采购 / 准入 / 协调）。")
 
-    if mode == "map":
+
+def render_ontology_map_expander(db) -> None:
+    """「追查一件事」页尾折叠的系统全貌（本体地图，build_ontology_map_dot 原样复用）。"""
+    import streamlit as st
+
+    with st.expander("想看系统全貌（34 类对象怎么连）？展开"):
         with db() as con:
             res = build_ontology_map_dot(con)
         st.graphviz_chart(res["dot"], width="stretch")
@@ -406,48 +577,4 @@ def render_knowledge_graph_tab(db, role: str) -> None:
             for d in DOMAINS)
         st.markdown(f"<div style='font-size:0.8rem'>图例：{legend}"
                     "（RiskEvent/Task 跨场景复用，着延误运营色）</div>", unsafe_allow_html=True)
-        st.caption("本图只读，操作请回各工作台（风险队列 / 任务台 / 费用 / 采购 / 准入 / 协调）。")
-        return
-
-    # ---- 对象邻域（实例级）----
-    types = sov.navigable_types()
-    default_type = "RiskEvent" if "RiskEvent" in types else types[0]
-    otype = st.selectbox("起点对象类型", types, index=types.index(default_type),
-                         key="kg_obj_type")
-
-    with db() as con:
-        if otype == "RiskEvent":
-            cands = open_risk_candidates(con, role)
-            ids = [c["risk_event_id"] for c in cands]
-            labels = {c["risk_event_id"]:
-                      f"{c['risk_event_id']} · {c['rule_id']} {c['type']}（{c['severity']}）"
-                      for c in cands}
-            hint = "默认候选 = 当前 open 状态风险事件（按角色数据范围过滤）"
-        else:
-            meta = sov.TYPE_META[otype]
-            all_ids = [r[0] for r in con.execute(
-                f"SELECT {meta['pk']} FROM {meta['table']} ORDER BY {meta['pk']} LIMIT 300")] \
-                if _table_exists(con, meta["table"]) else []
-            scope = scope_for_role(role, "team")
-            if scope.mode != "all" and all_ids:
-                ridx = audit_region_index(con)
-                all_ids = [i for i in all_ids if audit_in_scope(scope, i, ridx)]
-            ids, labels = all_ids, {}
-            hint = "（列前 300 个；按角色数据范围过滤）"
-        if not ids:
-            st.info(f"{otype} 当前无可选实例（或均在数据范围之外）。")
-            return
-        oid = st.selectbox(f"起点对象 ID {hint}", ids, key=f"kg_obj_id_{otype}",
-                           format_func=lambda i: labels.get(i, i))
-        hops = st.radio("跳数（邻域半径）", [1, 2], index=1, horizontal=True, key="kg_hops")
-        res = build_neighborhood_dot(con, otype, oid, role, max_hops=hops)
-
-    if res["error"]:
-        (st.warning if res["out_of_scope"] else st.info)(res["error"])
-        return
-    st.graphviz_chart(res["dot"], width="stretch")
-    trunc = f"（已达 {MAX_NEIGHBORHOOD_NODES} 节点上限，图有截断）" if res["truncated"] else ""
-    st.caption(f"中心 {otype} {oid} · {hops} 跳内节点 {res['nodes']} 个 · 边 {res['edges']} 条{trunc}")
-    st.caption("图例：节点＝类型+ID+状态（颜色=业务域，青色粗框=中心对象）；边＝对象关系"
-               "（object_relationships 登记 + 本体声明外键）；不展示金额 / 成本 / 客户等级等敏感字段。")
-    st.caption("本图只读，操作请回各工作台（风险队列 / 任务台 / 费用 / 采购 / 准入 / 协调）。")
+        st.caption("本图只读，操作请回工作台（风险队列 / 任务台 / 费用 / 采购 / 准入 / 协调）。")
