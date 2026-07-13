@@ -1,6 +1,6 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-13（V5 MCP PoC 终验 3/3 收口，API 层=桥2+桥3+MCP 正式化启动）
+更新时间：2026-07-14（V5 API 层收官：桥2+桥3+MCP 正式化五单全交付，两张皮 15→0）
 
 ## 当前位置
 
@@ -24,11 +24,40 @@
 > stream-json 可见 mcp__ontology__* tool_use 事件），每轮 num_turns=7、44-48s、订阅通道零 API 费——
 > 模型自主规划调用序列（查货件→沿关系走风险→逐个深查详情），"朗读简报"时代结束。
 > 回填见 PoC 报告 §4（docs/research/2026-07-13-mcp-poc-report.md）。
-> **API 层接管会话已启动（worktree 分支 claude/project-handoff-api-layer-cd4f51，自 7f30659 快进）**：
-> 接管自检全过——worktree 重建起步十评估器全绿（datagen.verify/pipeline.evaluate/engine.evaluate/
-> 三个 loop 测试/agent.evaluate）+ 桥1 闸门 15 处基线逐条复现（A10/B2/C0/D3）+ MCP server 自测 8/8。
-> **进行中：API 层=桥2（声明驱动）+桥3（结构生成）+MCP 正式化**（V5 决议①②授权范围），plan 见
-> docs/superpowers/plans/。之后 → 前台驾驶舱 → 透视镜 v3。
+> **API 层五单全交付（2026-07-14，worktree 分支 claude/project-handoff-api-layer-cd4f51，
+> Fable 编排评审 + Opus×4/Sonnet×1 执行，每单主会话重跑复核后提交）**——plan：
+> docs/superpowers/plans/2026-07-14-api-layer-bridges-mcp.md（执行中勘误 3 处，全部由执行层论证抓出）：
+> **M1 桥2-本体侧**（31f7ba2）：本体 0.9.0→0.10.0——roles 补 procurement（P4 追平）、31 动作加
+> exposed_as_tool/ai_executable(auto6/frozen4/never21)/enforcement/permission_key、A 类 4 列补登记、
+> payload 删除、links 加 storage 承载声明；lint 改读声明字段，差异 15→5+1 豁免。
+> **M2 桥2-运行时侧**（ea01134）：pipeline/ontology_runtime.py——5 权限字典+FORBIDDEN+TOOL_DEFS
+> 从本体解释生成，硬编码退役；迁移零行为漂移（落死基线+EXPECTED_* 人批口径双守护）；评审变异
+> 测试暴露"KeyError 运气防线"后加 _validate_ai_invariants 显式断言（frozen∩exposed=∅ 等）+
+> 三变异用例固化常驻。**M3 桥3 结构生成**（aeba1ac）：34 Pydantic 模型+DDL 从本体生成（GENERATED
+> 入版本库），影子模式确认恰 5 处（skus 五字段 TEXT→REAL）才切换 build_ontology；插入前
+> model_validate（enforce 0 违例）；本体 30 处 number→integer 精化（评审审计金额/费率/尺寸零降级）；
+> traverse 通用遍历下沉 ontology_runtime；**两张皮差异清零，--strict 退出码 0 入发版门**
+> （release-checklist §A 新增）。**M4 MCP 正式化**（ca9360b）：agent/mcp_server.py 四门槛——
+> 角色过滤（aiQueryTools.domain×角色矩阵）+本体 sensitiveFieldRules 脱敏、冻结区机制化+零写工具
+> （裁2 保守）、审计入库（llm_calls 加 call_type='mcp_tool'，查询连接 mode=ro 物理只读+审计连接
+> 仅 INSERT）、schema 本体驱动；llm_agent 新 provider claude_cli_mcp+回退链；**UI 询问按钮
+> provider 感知切换**（评审判执行层"UI 暂缓"为实质缺口发回补做——config/llm.yaml 一处开关控制
+> 全部入口，新通道模型真查库带审计、简报明示"本次回答未以其为依据"，旧单发档保留一行可回退）。
+> **M5 FastAPI 骨架**（7360f3c）：apps/api/ 五路由全本体驱动（/ontology 自描述、objects 读+过滤、
+> traverse、actions 仅 exposed 6 动作走 app.actions 原函数留审计），16 用例+真 uvicorn 冒烟绿——
+> React 驾驶舱与透视镜 v3 的底座。
+> **全程红线**：每单全量回归链（含 seed_demo_ops 步，勘误#2）+288 注入对抗+真值 md5 全绿；
+> EXPECTED_* 基线零改动。
+> **待 Daniel 三裁决（最保守先行，不阻塞）**：裁1 risk_affects_sku 删/补（现 declared_only 豁免
+> 挂账，lint 每次报告可见）；裁2 MCP 写提案工具是否开放（现零写工具）；裁3 AI 问答新通道速度
+> （实测 44-105 秒 vs 旧朗读档秒级——UI 已默认新通道，嫌慢改 config/llm.yaml agent.provider 回
+> claude_cli 一行即退）。**遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
+> 分叉、COST_FIELDS 等硬编码脱敏集全量声明化。
+> **Daniel 验收走查（5 分钟）**：完整重启 streamlit → 任意风险工作台点「询问」问一个问题
+> （预期 40-105 秒，回答头标"真实查库作答"，简报折叠区明示未被用作依据）→ 控制室审计视图查
+> llm_calls 出现 call_type='mcp_tool' 行。**合流**：worktree 分支领先 codex 主干 8 commit
+> （d1ad559..7360f3c+收尾），在主仓库跑 `git merge --ff-only claude/project-handoff-api-layer-cd4f51`
+> 即快进（纯 ff 无冲突；先关闭运行中的 streamlit）。**下一步：前台驾驶舱 → 透视镜 v3（V4/V5 序）**。
 
 > **FDE × Ontology 系列研究手册（2026-07-12）**：已用 Record & Replay 确认“纳米巨人”抖音主页第 1—11 集系列边界，逐集取得真实媒体（约 75 分钟）并用本地 Whisper small 离线转写；结合 Palantir/OpenAI/Blackstone 官方资料完成事实核验与方法内化。新增 `docs/fde-ontology-delivery-playbook.md`：把系列观点转成 1—5 天 Bootcamp、最小本体、动作/权限、自主权、评估与 FDE 产品化的可执行手册，并明确未证实实现细节与本仓库真实缺口。未修改 ontology、规则、代码、KPI 或决策日志。
 

@@ -35,6 +35,9 @@ streamlit run app/streamlit_app.py          # 改代码后【完整重启】，�
 
 ### A. 检测精度 · R1–R18 全 P/R = 1.000
 - [x] **可复现性**：同种子逐字节一致（`datagen.verify` PASS）、管道评估 PASS（`pipeline.evaluate`）
+- [x] **本体一致性闸门（桥1，V5 起新增发版门）**：`python3 -m pipeline.ontology_lint --strict`
+      退出码 0——本体↔表结构↔权限字典↔AI 工具四类断言零差异才放行（declared_only 显式豁免
+      不阻断但每次报告可见；2026-07-14 M3 后达成 strict-clean 并入此门）
 - [x] **检测覆盖**：`engine.detect` → 152 事件 / 152 created / 0 merged，`by_rule` 覆盖全部 R1–R18
       （R1:25 R2:10 R3:16 · R4:5 R5:2 R6:18 · R7:8 R8:8 R9:7 R10:8 R11:7 R12:7 R13:5 · R14:4 R15:4 · R16:6 R17:6 R18:6）
 - [x] **延误 R1–R3** `engine.evaluate` P/R=1.000
