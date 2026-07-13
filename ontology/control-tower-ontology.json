@@ -1,5 +1,5 @@
 {
-  "version": "0.9.0",
+  "version": "0.10.0",
   "name": "cross_border_unified_ontology",
   "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账 + 仓储库存，五场景共享）",
   "scope": "Five scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice); (5) warehouse inventory accuracy (Warehouse / InventoryPosition / InventoryReservation / CycleCount) — all REUSING the RiskEvent/Task closed loop (F1/P1/W1). Shared objects zero duplication.",
@@ -15,7 +15,7 @@
       "Synthetic keys must be generated in the data preparation layer and persisted before application usage."
     ]
   },
-  "roles": ["ops", "cs", "manager", "system", "sales", "compliance", "finance"],
+  "roles": ["ops", "cs", "manager", "system", "sales", "compliance", "finance", "procurement"],
   "sensitiveFieldRules": [
     {"object": "Customer", "field": "tier", "visibleTo": ["cs", "manager"]},
     {"object": "Task", "field": "proposal_params.est_cost_usd", "visibleTo": ["ops", "manager"]},
@@ -52,6 +52,7 @@
       "properties": [
         {"name": "sku_id", "type": "string", "required": true},
         {"name": "sku_name", "type": "string", "required": true},
+        {"name": "supplier_id", "type": "string", "required": false, "description": "Denormalized FK, 承载 supplier_provides 关系"},
         {"name": "category", "type": "enum", "required": true, "values": ["charger", "cable", "earbuds", "phone_case"]},
         {"name": "unit_price_usd", "type": "number", "required": true, "description": "Used for affected_value_usd."},
         {"name": "sku_status", "type": "enum", "required": true, "values": ["candidate", "active"], "description": "E1 lifecycle: admission targets candidates; approval promotes to active."},
@@ -166,6 +167,9 @@
         {"name": "missing_docs", "type": "list", "required": true, "itemValues": ["commercial_invoice", "packing_list", "bill_of_lading", "isf"], "description": "Empty list = complete."},
         {"name": "expedite_flag", "type": "boolean", "required": true, "description": "Set true by approved expedite (D9/C2 simplification)."},
         {"name": "delay_days", "type": "number", "derived": true, "description": "eta_current - eta_initial."},
+        {"name": "last_event_time", "type": "string", "derived": true, "description": "Derived 事件戳（最新里程碑 event_time）"},
+        {"name": "po_ids", "type": "string", "required": false, "description": "一票多 PO 反向 json 列，承载 po_shipped_by（D2）"},
+        {"name": "status_source", "type": "string", "required": false, "description": "状态来源标记"},
         {"name": "status", "type": "enum", "required": true, "values": ["planned", "in_transit", "arrived", "customs", "delivered"]}
       ],
       "dataQualityRules": ["eta_initial >= etd", "eta_current writable only via A1", "delay_days derived-only"]
@@ -175,6 +179,7 @@
       "primaryKey": "milestone_id",
       "ownerRole": "system",
       "immutable": true,
+      "description": "A#10：原始报文 payload 已下沉至 source_events.payload_json（M3 血缘/事件信封改造），对象层不再承载；本对象仅保留结构化里程碑字段。",
       "properties": [
         {"name": "milestone_id", "type": "string", "required": true},
         {"name": "shipment_id", "type": "string", "required": true},
@@ -184,7 +189,6 @@
         {"name": "event_locode", "type": "string", "required": true, "description": "UN/LOCODE where the event occurred (D11); transshipment at hub e.g. SGSIN."},
         {"name": "new_eta", "type": "date", "required": false, "description": "Required iff event_type=eta_change."},
         {"name": "source_system", "type": "enum", "required": true, "values": ["carrier_edi", "forwarder_portal", "manual"]},
-        {"name": "payload", "type": "json", "required": false},
         {"name": "ingested_at", "type": "datetime", "required": true},
         {"name": "is_duplicate", "type": "boolean", "derived": true, "description": "Set by pipeline; duplicates are kept but trigger no side effects."}
       ],
@@ -694,7 +698,7 @@
     {"linkType": "line_for_sku", "source": "SalesOrderLine", "target": "Sku", "cardinality": "N:1"},
     {"linkType": "supplier_provides", "source": "Supplier", "target": "Sku", "cardinality": "1:N", "rule": "single supplier per sku in v0.2"},
     {"linkType": "po_from_supplier", "source": "PurchaseOrder", "target": "Supplier", "cardinality": "N:1"},
-    {"linkType": "po_shipped_by", "source": "PurchaseOrder", "target": "Shipment", "cardinality": "N:1", "rule": "one shipment carries multiple POs (D2)"},
+    {"linkType": "po_shipped_by", "source": "PurchaseOrder", "target": "Shipment", "cardinality": "N:1", "rule": "one shipment carries multiple POs (D2)", "storage": {"kind": "reverse_json", "table": "shipments", "column": "po_ids"}},
     {"linkType": "shipment_has_milestone", "source": "Shipment", "target": "ShipmentMilestone", "cardinality": "1:N", "rule": "append-only"},
     {"linkType": "allocation_to_shipment", "source": "ShipmentAllocation", "target": "Shipment", "cardinality": "N:1"},
     {"linkType": "allocation_to_line", "source": "ShipmentAllocation", "target": "SalesOrderLine", "cardinality": "N:1"},
@@ -734,14 +738,14 @@
     {"linkType": "reservation_for_line", "source": "InventoryReservation", "target": "SalesOrderLine", "cardinality": "N:1", "rule": "W1: reservation ties demand (SalesOrderLine) to on-hand stock; drives R17"},
     {"linkType": "cycle_count_on_position", "source": "CycleCount", "target": "InventoryPosition", "cardinality": "N:1"},
     {"linkType": "cycle_count_in_warehouse", "source": "CycleCount", "target": "Warehouse", "cardinality": "N:1"},
-    {"linkType": "shipment_to_warehouse", "source": "Shipment", "target": "Warehouse", "cardinality": "N:1", "rule": "W1 connect point: shipment.destination_warehouse resolves to a Warehouse (goods land in a warehouse)"},
+    {"linkType": "shipment_to_warehouse", "source": "Shipment", "target": "Warehouse", "cardinality": "N:1", "rule": "W1 connect point: shipment.destination_warehouse resolves to a Warehouse (goods land in a warehouse)", "storage": {"kind": "column", "table": "shipments", "column": "destination_warehouse"}},
     {"linkType": "risk_on_warehouse", "source": "RiskEvent", "target": "Warehouse", "cardinality": "N:1", "rule": "W1: nullable anchor for warehouse anomalies (R16-R18)"},
     {"linkType": "rfq_for_sku", "source": "RFQ", "target": "Sku", "cardinality": "N:1", "rule": "P3: RFQ sources a single SKU"},
     {"linkType": "rfq_has_line", "source": "RFQ", "target": "RFQLine", "cardinality": "1:N"},
     {"linkType": "rfq_has_quote", "source": "RFQ", "target": "Quote", "cardinality": "1:N"},
     {"linkType": "rfq_line_for_sku", "source": "RFQLine", "target": "Sku", "cardinality": "N:1"},
     {"linkType": "quote_from_supplier", "source": "Quote", "target": "Supplier", "cardinality": "N:1", "rule": "P3: awarded quote certifies the supplier as an approved source for the SKU (AVL); drives R14/R15"},
-    {"linkType": "risk_affects_sku", "source": "RiskEvent", "target": "Sku", "cardinality": "N:M", "via": "affected_po_line_ids reused as [sku_id] carrier for R14 single-source (P3)"}
+    {"linkType": "risk_affects_sku", "source": "RiskEvent", "target": "Sku", "cardinality": "N:M", "via": "affected_po_line_ids reused as [sku_id] carrier for R14 single-source (P3)", "status": "declared_only"}
   ],
   "stateMachines": {
     "Shipment": {
@@ -880,6 +884,9 @@
     {
       "id": "A1",
       "name": "IngestMilestone",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "ingest_milestone(shipment_id, event_type, event_time, source_system, new_eta=None, payload=None, as_of_date=...) -> Result",
       "executors": ["system"],
       "preconditions": ["shipment exists", "eta_change requires new_eta", "exact duplicate -> store with is_duplicate=true and skip ALL side effects"],
@@ -890,6 +897,9 @@
     {
       "id": "A2",
       "name": "CreateRiskEvent",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "create_risk_event(shipment_id, rule_id, type, severity, affected_so_line_ids, root_cause, as_of_date, actor='system') -> Result",
       "executors": ["system", "ops"],
       "preconditions": ["affected lines non-empty for delay_breach", "existing non-terminal (shipment,type) event -> merge (max severity, union lines), return existing id"],
@@ -900,6 +910,9 @@
     {
       "id": "A3",
       "name": "AssignTask",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
       "signature": "assign_task(risk_event_id, assignee_role, priority, due_at, actor) -> Result",
       "executors": ["system", "ops"],
       "preconditions": ["RiskEvent in {open}", "no non-terminal task for this risk"],
@@ -910,8 +923,11 @@
     {
       "id": "A4",
       "name": "ProposeMitigation",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
       "signature": "propose_mitigation(task_id, proposed_action, proposal_params, actor, role) -> Result",
-      "executors": ["ops", "cs", "finance"],
+      "executors": ["ops", "cs", "finance", "procurement"],
       "paramsSchema": {
         "expedite": {"new_mode": "air", "est_cost_usd": "number", "expected_new_eta": "date"},
         "reschedule": {"new_promise_date": "date", "notify_customer": true},
@@ -933,6 +949,9 @@
     {
       "id": "A5",
       "name": "ApproveMitigation",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "approve_mitigation(task_id, decision, comment, actor, role='manager') -> Result",
       "executors": ["manager"],
       "preconditions": ["approval_status=pending", "M1 maker-checker: if proposer actor is known, approver actor_id must differ from proposal_actor_id"],
@@ -949,6 +968,9 @@
     {
       "id": "A6",
       "name": "CloseRiskEvent",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "close_risk_event(risk_event_id, outcome, resolution_summary, actor_role) -> Result",
       "executors": ["ops"],
       "preconditions": ["all tasks terminal", "outcome=mitigated requires an approved proposal", "outcome=false_alarm cancels non-terminal tasks then closes"],
@@ -958,6 +980,9 @@
     },
     {
       "id": "B1", "name": "CreateAdmissionCase",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
       "signature": "create_admission_case(customer_id, sku_id, request_type, incoterm_candidate, target_launch_date, monthly_order_estimate, actor, role) -> Result",
       "executors": ["sales"],
       "preconditions": ["customer and sku exist", "sku_status=candidate"],
@@ -967,6 +992,9 @@
     },
     {
       "id": "B2", "name": "RunCompliancePrecheck",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
       "signature": "run_compliance_precheck(admission_case_id, findings, actor, role) -> Result",
       "executors": ["compliance"],
       "preconditions": ["case in {draft,in_precheck,needs_more_info}", "each finding passes schema", "finding_type=hts requires hts_candidate"],
@@ -976,6 +1004,9 @@
     },
     {
       "id": "B3", "name": "BuildLogisticsPlan",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
       "signature": "build_logistics_plan(admission_case_id, plan, actor, role) -> Result",
       "executors": ["ops"],
       "preconditions": ["case in {in_precheck,plan_ready}", "DDP gate: customer.ior_capability=has_ior AND exists finding with hts_candidate"],
@@ -985,6 +1016,9 @@
     },
     {
       "id": "B4", "name": "CalculateCostScenario",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
       "signature": "calculate_cost_scenario(logistics_plan_id, scenario, actor, role) -> Result",
       "executors": ["finance"],
       "preconditions": ["plan exists", "case in {plan_ready,priced}", "DDP scenario: duty_tax>0 AND customs_brokerage>0 AND risk_buffer>0"],
@@ -994,6 +1028,9 @@
     },
     {
       "id": "B5", "name": "ApproveQuoteDecision",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "approve_quote_decision(admission_case_id, approved_logistics_plan_id, approved_cost_scenario_id, decision, decision_reason, conditions, actor, role) -> Result",
       "executors": ["manager"],
       "preconditions": [
@@ -1007,6 +1044,9 @@
     },
     {
       "id": "B6", "name": "RejectOrRequestMoreInfo",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "reject_or_request_more_info(admission_case_id, decision, missing_documents, rejection_reason, actor, role) -> Result",
       "executors": ["compliance (more_info)", "manager (reject)"],
       "preconditions": ["case non-terminal", "reject requires rejection_reason", "more_info requires missing_documents"],
@@ -1016,6 +1056,9 @@
     },
     {
       "id": "A7", "name": "RecordGoodsReceipt",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "record_goods_receipt(po_id, received_date, lines, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "P1 Build 1 defines the shape only; ingest + R7/R8/R9 detection lands in Build 2.",
@@ -1026,6 +1069,9 @@
     },
     {
       "id": "A8", "name": "MatchSupplierInvoice",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "match_supplier_invoice(supplier_invoice_id, actor, role, as_of_date=...) -> Result",
       "executors": ["finance", "system"],
       "placeholder": "P1 Build 1 defines the shape only; three-way match + R10 detection lands in Build 2.",
@@ -1036,6 +1082,9 @@
     },
     {
       "id": "A9", "name": "RecordPurchasePayment",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "record_purchase_payment(po_id, payment_type, amount_usd, paid_date, actor, role, as_of_date=...) -> Result",
       "executors": ["finance", "system"],
       "placeholder": "P2 Build A defines the object + R12 detection only. This ingest action (and R12 disposition, e.g. escalate/release prepayment hold) lands in Build B; not implemented in Build A.",
@@ -1044,6 +1093,9 @@
     },
     {
       "id": "A10", "name": "RecordSupplierQualification",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "record_supplier_qualification(supplier_id, cert_type, valid_from, valid_to, evidence_status, actor, role, as_of_date=...) -> Result",
       "executors": ["compliance", "system"],
       "placeholder": "P2 Build A defines the object + R13 detection only. This ingest action (and R13 disposition, e.g. request qualification renewal) lands in Build B; not implemented in Build A.",
@@ -1052,6 +1104,9 @@
     },
     {
       "id": "A11", "name": "Putaway",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "putaway(grn_line_id, warehouse_id, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; ingest (GoodsReceiptLine.accepted_qty -> InventoryPosition.available_qty) lands in Build 2/3. Connect point: procurement receipt feeds warehouse stock.",
@@ -1060,6 +1115,9 @@
     },
     {
       "id": "A12", "name": "ReserveInventory",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "reserve_inventory(so_line_id, inventory_position_id, qty, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; ATP check + reservation state land in Build 2/3. ATP available -> allocated; ATP short -> backordered (R17).",
@@ -1068,6 +1126,9 @@
     },
     {
       "id": "A13", "name": "ReleaseReservation",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "release_reservation(reservation_id, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; wiring lands in Build 2/3.",
@@ -1076,6 +1137,9 @@
     },
     {
       "id": "A14", "name": "SuggestSubstitution",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "suggest_substitution(risk_event_id, split_ship_qty, reschedule_qty, actor, role) -> Result",
       "executors": ["ops"],
       "placeholder": "W1 Build 1 defines the shape only; the business connect point (delay R1-R3 -> check destination-warehouse stock -> split-ship on-hand now + reschedule remainder, via A5 approval) lands in Build 2/3.",
@@ -1084,6 +1148,9 @@
     },
     {
       "id": "A15", "name": "RecordCycleCount",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "record_cycle_count(inventory_position_id, counted_qty, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; ingest + R18 detection land in Build 2/3.",
@@ -1093,6 +1160,9 @@
     },
     {
       "id": "A16", "name": "AdjustInventory",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "adjust_inventory(cycle_count_id, actor, role) -> Result",
       "executors": ["ops"],
       "placeholder": "W1 Build 1 defines the shape only; approved adjustment (A5 gate) writes InventoryPosition.available_qty and reconciles the count in Build 2/3.",
@@ -1101,6 +1171,9 @@
     },
     {
       "id": "A17", "name": "InitiateSecondSource",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "initiate_second_source(sku_id, actor, role, as_of_date=...) -> Result",
       "executors": ["ops"],
       "placeholder": "P3 Build A defines the shape only; the remediation for R14 (create a draft RFQ to source a second approved supplier) lands in Build B as an approve_mitigation proposed_action.",
@@ -1110,6 +1183,9 @@
     },
     {
       "id": "A18", "name": "BlockNonPoPayment",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "block_non_po_payment(supplier_invoice_id, actor, role) -> Result",
       "executors": ["finance"],
       "placeholder": "P3 Build A defines the shape only; the R15 remediation (hold the off-process invoice pending PO backfill) lands in Build B as an approve_mitigation proposed_action.",
@@ -1118,6 +1194,9 @@
     },
     {
       "id": "A19", "name": "BackfillPo",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "backfill_po(supplier_invoice_id, po_id, actor, role) -> Result",
       "executors": ["ops"],
       "placeholder": "P3 Build A defines the shape only; the R15 remediation (retroactively attach the spend to an approved PO) lands in Build B as an approve_mitigation proposed_action.",
@@ -1126,6 +1205,10 @@
     },
     {
       "id": "A20", "name": "OpenCoordination",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "open_coordination(task_id, counterparty_type, counterparty_ref, ask, owner, next_action_due, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination (independent of maker-checker)", "task_id in tasks (anchor integrity)", "counterparty_type in enum"],
@@ -1135,6 +1218,10 @@
     },
     {
       "id": "A21", "name": "RecordOutreach",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "record_outreach(coordination_id, next_action_due, note, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state == awaiting"],
@@ -1144,6 +1231,10 @@
     },
     {
       "id": "A22", "name": "RecordResponse",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "record_response(coordination_id, last_response, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, escalated}"],
@@ -1153,6 +1244,10 @@
     },
     {
       "id": "A23", "name": "EscalateCoordination",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "escalate_coordination(coordination_id, next_action_due, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded}"],
@@ -1162,6 +1257,10 @@
     },
     {
       "id": "A24", "name": "ResolveCoordination",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "resolve_coordination(coordination_id, outcome, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded, escalated} (active)"],
@@ -1171,6 +1270,10 @@
     },
     {
       "id": "A25", "name": "MarkDeadEnded",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "mark_dead_ended(coordination_id, outcome, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded, escalated} (active)"],

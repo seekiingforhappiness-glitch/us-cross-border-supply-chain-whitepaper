@@ -33,9 +33,12 @@ React+FastAPI 双应用。**本 plan 不改 KPI、不改评估判定、不碰真
 4. 每个 Milestone 收尾跑全量回归：
    `python3 -m datagen.generate && python3 -m datagen.verify && python3 -m pipeline.build_ontology
    && python3 -m pipeline.evaluate && python3 -m engine.detect && python3 -m engine.evaluate
-   && python3 -m app.test_closed_loop && python3 -m app.test_admission_loop
+   && python3 -m datagen.seed_demo_ops && python3 -m app.test_closed_loop && python3 -m app.test_admission_loop
    && python3 -m app.test_cost_loop && python3 -m app.test_agent_security && python3 -m agent.evaluate`
    全绿 + `python3 -m pipeline.ontology_lint` 差异数 ≤ 上一 Milestone。
+   ［勘误#2 2026-07-14，M1 执行发现：原链缺 `datagen.seed_demo_ops`——build_ontology 重建清空
+   demo 种子后 test_agent_security 依赖的种子锚点（TSK-51BEB35072 等）查空即崩；seed 须在
+   engine.evaluate 之后（evaluate 先于 seed，避开运营字段偏移）、app.test_* 之前。已修正上链。］
 5. 真值文件 md5 全程 byte-identical（datagen 固定种子产物）。
 6. 子代理不 commit；主会话复核以重跑为准（不信报告只信输出）。
 
@@ -110,10 +113,15 @@ M3 + M4 → M5 FastAPI 服务层骨架（Sonnet 5）
 
 **验收（全部满足才算过）：**
 ```bash
-python3 -m pipeline.ontology_lint          # 期望：差异 15 → 0，另有 1 行【待裁决豁免】risk_affects_sku
-python3 -m pipeline.ontology_lint --strict # 期望：退出码 0（豁免不阻断）
+python3 -m pipeline.ontology_lint          # 期望：差异 15 → 5（恰为 A#2-6 类型漂移，规则 8 留 M3 修）
+                                           # + 1 行【待裁决豁免】risk_affects_sku
+python3 -m pipeline.ontology_lint --strict # 期望：退出码 1（5 条漂移仍在，M3 清零后才 strict-clean）
 # 全局红线第 4 条全量回归全绿；本体 JSON 仅上述规则内的键新增/修正，git diff 可逐条对读本节
 ```
+［勘误#1 2026-07-14，M1 执行发现原验收数字"15→0 / strict 退出码 0"与规则 8 及 M3 节自相矛盾
+（M3 明写"A 类 5 处漂移清零→累计差异 0"与影子模式"预期差异恰好 5 处"）——按规则一致态修正为
+5+1/退出码 1。M1 实际验收结果即 5+1，与修正后期望一致。评审裁决：主会话（属工程一致性笔误，
+非业务语义，无需 Daniel）。］
 
 ---
 
