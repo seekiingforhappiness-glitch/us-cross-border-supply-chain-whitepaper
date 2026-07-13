@@ -1,6 +1,6 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-13（V5 桥1+MCP PoC 交付）
+更新时间：2026-07-13（V5 MCP PoC 终验 3/3 收口，API 层=桥2+桥3+MCP 正式化启动）
 
 ## 当前位置
 
@@ -15,12 +15,20 @@
 > 后本体滞后，**桥 2 补本体，勿删代码授权**。B 类另有 3 动作无权限登记（CreateRiskEvent/A9/A10），桥 2 厘清。
 > **MCP PoC 部分通**（poc/mcp-ontology/，新顶层目录=V5-② 工作区，此处登记）：零依赖 stdio MCP server
 > 3 只读工具，独立客户端 8/8 断言过、答案与库真值逐字一致、call_log.jsonl 留证、mode=ro 物理只读；
-> 工具 schema 的对象/关系枚举已从本体 JSON 生成（桥 2 预演）。**唯一未验环节=claude CLI 端到端**，
-> 卡"Not logged in"（非交互环境无法 OAuth）——**待 Daniel 交互式 /login 后按 PoC 报告 §4 一条命令验完**
-> （docs/research/2026-07-13-mcp-poc-report.md）。独立 Sonnet 验收 7 项 6 过；唯一不符项（engine.evaluate
-> 50/51）经裁决为**评估基线状态前提**：seed_demo_ops 会改运营字段（设计内），跑过后个别匹配项偏移，
-> 从 build_ontology 重建起步则全绿（已实测两轮，test_closed_loop/agent.evaluate 用临时副本不污染工作库）。
-> **下一步：Daniel 补验 MCP 一条命令 → 开新会话（读本文件接管）做 API 层=桥2+桥3+MCP 正式化 → 驾驶舱 → 透视镜 v3**。
+> 工具 schema 的对象/关系枚举已从本体 JSON 生成（桥 2 预演）。独立 Sonnet 验收 7 项 6 过；唯一不符项
+> （engine.evaluate 50/51）经裁决为**评估基线状态前提**：seed_demo_ops 会改运营字段（设计内），跑过后
+> 个别匹配项偏移，从 build_ontology 重建起步则全绿（已实测两轮，test_closed_loop/agent.evaluate 用临时副本
+> 不污染工作库）。
+> **MCP PoC 终验 3/3 全过，PoC 收口（2026-07-13）**：Daniel /login 后第 1 次亲跑 + 接管会话补跑 2 次，
+> 三轮全部满足三条判定（call_log 17→32 行真调用留痕 / 答案与真值逐字一致 in_transit+RSK-0038/0039/0040 /
+> stream-json 可见 mcp__ontology__* tool_use 事件），每轮 num_turns=7、44-48s、订阅通道零 API 费——
+> 模型自主规划调用序列（查货件→沿关系走风险→逐个深查详情），"朗读简报"时代结束。
+> 回填见 PoC 报告 §4（docs/research/2026-07-13-mcp-poc-report.md）。
+> **API 层接管会话已启动（worktree 分支 claude/project-handoff-api-layer-cd4f51，自 7f30659 快进）**：
+> 接管自检全过——worktree 重建起步十评估器全绿（datagen.verify/pipeline.evaluate/engine.evaluate/
+> 三个 loop 测试/agent.evaluate）+ 桥1 闸门 15 处基线逐条复现（A10/B2/C0/D3）+ MCP server 自测 8/8。
+> **进行中：API 层=桥2（声明驱动）+桥3（结构生成）+MCP 正式化**（V5 决议①②授权范围），plan 见
+> docs/superpowers/plans/。之后 → 前台驾驶舱 → 透视镜 v3。
 
 > **FDE × Ontology 系列研究手册（2026-07-12）**：已用 Record & Replay 确认“纳米巨人”抖音主页第 1—11 集系列边界，逐集取得真实媒体（约 75 分钟）并用本地 Whisper small 离线转写；结合 Palantir/OpenAI/Blackstone 官方资料完成事实核验与方法内化。新增 `docs/fde-ontology-delivery-playbook.md`：把系列观点转成 1—5 天 Bootcamp、最小本体、动作/权限、自主权、评估与 FDE 产品化的可执行手册，并明确未证实实现细节与本仓库真实缺口。未修改 ontology、规则、代码、KPI 或决策日志。
 
