@@ -13,14 +13,21 @@ except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上�
     from action_context import transaction
     from actions import _log, _res, can_approve_actor
 
-ADM_PERMS = {
-    "CreateAdmissionCase": {"sales"},
-    "RunCompliancePrecheck": {"compliance"},
-    "BuildLogisticsPlan": {"ops"},
-    "CalculateCostScenario": {"finance"},
-    "ApproveQuoteDecision": {"manager"},
-    "RejectOrRequestMoreInfo": {"compliance", "manager"},
-}
+# 桥2 运行时侧（M2，V5 决议①）：准入权限矩阵从本体解释生成，硬编码字面量退役（与 actions.py 同源）。
+from pipeline.ontology_runtime import build_role_perms, load_ontology
+
+_ONTOLOGY_PERMS = build_role_perms(load_ontology())
+
+
+def _perm_slice(*keys):
+    """从本体生成的全域权限映射取本模块负责的键（桥2 M2「同构分片取用」）。"""
+    return {k: _ONTOLOGY_PERMS[k] for k in keys}
+
+
+# admission-manual-v0.3 §5 权限矩阵——生成结果须等于人批基线（守护见 test_agent_security
+# EXPECTED_ADM_PERMS，ApproveQuoteDecision/RejectOrRequestMoreInfo 为冻结区 B5/B6，永不暴露 AI）。
+ADM_PERMS = _perm_slice("CreateAdmissionCase", "RunCompliancePrecheck", "BuildLogisticsPlan",
+                        "CalculateCostScenario", "ApproveQuoteDecision", "RejectOrRequestMoreInfo")
 CASE_TERMINAL = ("approved", "quote_with_conditions", "rejected")
 SEV_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 SEVERITIES = set(SEV_RANK)

@@ -16,18 +16,27 @@ except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上�
     from work_queue import Owner, assign_owner, sla_state
 
 from pipeline.outbox import enqueue_writeback
+# 桥2 运行时侧（M2，V5 决议①）：权限矩阵改为从本体解释生成，硬编码字面量退役。
+from pipeline.ontology_runtime import build_role_perms, load_ontology
 # C1 处置记忆：写入只在动作层 approve/close 成功路径挂钩（AI 无写工具，检索另走只读工具）
 from engine.resolution_memory import (QUALITY_LABELS, backfill_outcome,
                                       ensure_resolution_memory_table, write_decision_memory)
 
-ROLE_PERMS = {  # manual §6 权限矩阵（cost-manual §5：ProposeMitigation +finance，P3；P4：+procurement）
-    "AssignTask": {"ops", "system"},
-    # P4：采购 procurement 可就采购三方对账风险提交处置提案（收货差异/供应商索赔/发票争议/资质预警）。
-    # 审批仍仅 manager、关闭仍仅 ops（maker-checker 不变）——采购提案→经理审批→运营关闭，三方职责分离。
-    "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
-    "ApproveMitigation": {"manager"},
-    "CloseRiskEvent": {"ops"},
-}
+# manual §6 权限矩阵——桥2 M2 起从本体解释生成（不再硬编码字面量）：build_role_perms 读
+# enforcement=role_dict 动作的 executors，按 permission_key 归组成全域映射，本模块按自己的键分片。
+# 本体成为唯一权威源；人批口径守护见 app/test_agent_security.py EXPECTED_ROLE_PERMS（一行不改而
+# 自动通过 = 迁移零行为漂移）+ app/test_ontology_runtime.py（生成 == 迁移前基线）。P4：
+# ProposeMitigation 含 procurement（采购处置提案）；审批仍仅 manager、关闭仍仅 ops（冻结区由
+# ai_executable=frozen 声明保证，maker-checker 三方分离不变）。
+_ONTOLOGY_PERMS = build_role_perms(load_ontology())
+
+
+def _perm_slice(*keys):
+    """从本体生成的全域权限映射里取本模块负责的键（桥2 M2「同构分片取用」）。"""
+    return {k: _ONTOLOGY_PERMS[k] for k in keys}
+
+
+ROLE_PERMS = _perm_slice("AssignTask", "ProposeMitigation", "ApproveMitigation", "CloseRiskEvent")
 PARAM_SCHEMAS = {
     "expedite": {"new_mode", "est_cost_usd", "expected_new_eta"},
     "reschedule": {"new_promise_date", "notify_customer"},

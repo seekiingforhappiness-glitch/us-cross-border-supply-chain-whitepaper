@@ -18,8 +18,20 @@ try:
 except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上下文
     from actions import _log, _res
 
-# 独立新权限组（不碰既有 ROLE_PERMS 四键）：六个协调动作同一 gate。
-COORD_PERMS = {"ManageCoordination": {"ops", "cs", "procurement", "finance"}}
+# 桥2 运行时侧（M2，V5 决议①）：协调权限组从本体解释生成，硬编码字面量退役（与 actions.py 同源）。
+from pipeline.ontology_runtime import build_role_perms, load_ontology
+
+_ONTOLOGY_PERMS = build_role_perms(load_ontology())
+
+
+def _perm_slice(*keys):
+    """从本体生成的全域权限映射取本模块负责的键（桥2 M2「同构分片取用」）。"""
+    return {k: _ONTOLOGY_PERMS[k] for k in keys}
+
+
+# 独立新权限组（不碰既有 ROLE_PERMS 四键）：六个协调动作 A20-A25 共享组键 ManageCoordination
+# （本体 permission_key=ManageCoordination），本体生成后仍为单键 → {ops,cs,procurement,finance}。
+COORD_PERMS = _perm_slice("ManageCoordination")
 COUNTERPARTY_TYPES = {"supplier", "forwarder", "customs_broker", "bank", "customer"}
 COORD_ACTIVE = ("awaiting", "responded", "escalated")     # 活跃（非终态）
 COORD_TERMINAL = ("resolved", "dead_ended")               # 终态

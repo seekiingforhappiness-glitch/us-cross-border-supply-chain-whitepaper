@@ -18,12 +18,17 @@ from app.admission_actions import (ADM_PERMS, create_admission_case, run_complia
 from engine.graph import explain_path
 # C1 只读检索处置记忆（写入函数不 import——AI 永远拿不到写工具）
 from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
+# 桥2 运行时侧（M2，V5 决议①）：FORBIDDEN_TOOLS / TOOL_DEFS / 读工具域分组从本体解释生成，
+# 硬编码字面量退役（本体成为唯一权威源；生成 == 迁移前基线守护见 app/test_ontology_runtime.py）。
+from pipeline.ontology_runtime import build_forbidden_tools, build_tool_defs, load_ontology
+
+_ONTO = load_ontology()
 
 AI_ACTOR = "ai-agent"
 AI_ROLE = "ops"  # 默认角色（不传 role 时的向后兼容值）
-# 审批/关闭/拒接类动作永不向任何 role 的 AI 会话开放（v0.2 E5 + v0.3 AD2 红线，原则2）
-FORBIDDEN_TOOLS = {"approve_mitigation", "close_risk_event",
-                   "approve_quote_decision", "reject_or_request_more_info"}
+# 审批/关闭/拒接类动作永不向任何 role 的 AI 会话开放（v0.2 E5 + v0.3 AD2 红线，原则2）——
+# 桥2 M2 起从本体 ai_executable=frozen 声明生成（恰四个审批/关闭类动作的 snake，全局红线3）。
+FORBIDDEN_TOOLS = build_forbidden_tools(_ONTO)
 COST_FIELDS = {"quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
                "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
                "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
@@ -37,11 +42,17 @@ MASK = "🔒无权查看"
 # 读工具按域分组：风险/物流域对所有 role 开放（RiskEvent 对象工作台核心）；成本、准入域按
 # role 相关性 scoping。ops 保留全域（历史基线，不回归 agent.evaluate）；cs 无成本域（"无 cost 相关"）；
 # finance 可成本域；manager 全域只读。写工具白名单完全由 app.actions.ROLE_PERMS 决定（不复制权限）。
-RISK_READ_TOOLS = {"list_open_risks", "get_risk", "get_shipment_context",
-                   "get_impact_chain", "get_audit_trail", "explain_relationship_path",
-                   "get_similar_resolutions"}  # C1 先例检索：只读，随风险域对全角色开放
-COST_READ_TOOLS = {"list_invoices", "get_invoice_context"}
-ADMISSION_READ_TOOLS = {"list_admission_cases", "get_admission_context"}
+# 读工具域分组——桥2 M2 起从本体 aiQueryTools[].domain 字段派生（不再硬编码枚举），domain 值
+# 使角色域 scoping 行为与迁移前逐字相等（守护见 app/test_ontology_runtime.py ⑥）；C1 先例检索
+# get_similar_resolutions 在本体归 risk 域（只读，随风险域对全角色开放）。域→角色的访问矩阵
+# （COST_READ_ROLES / ADMISSION_READ_ROLES）仍是角色集常量、非工具集，本阶段不入本体（保守读法）。
+def _read_tools_in_domain(domain):
+    return {q["name"] for q in _ONTO.get("aiQueryTools", []) if q.get("domain") == domain}
+
+
+RISK_READ_TOOLS = _read_tools_in_domain("risk")
+COST_READ_TOOLS = _read_tools_in_domain("cost")
+ADMISSION_READ_TOOLS = _read_tools_in_domain("admission")
 COST_READ_ROLES = {"ops", "finance", "manager"}
 ADMISSION_READ_ROLES = {"ops", "finance", "manager", "sales", "compliance"}
 WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation"}
@@ -81,100 +92,12 @@ def _can_see_cost(role):
     """成本字段脱敏规则（与 UI mask_cost 同规）：finance/manager 可见，其余脱敏。"""
     return role in ("finance", "manager")
 
-# Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）
-TOOL_DEFS = [
-    {"name": "list_open_risks",
-     "description": "列出未关闭的风险事件，可按 severity 过滤（critical/high/medium）",
-     "input_schema": {"type": "object", "properties": {
-         "severity": {"type": "string", "enum": ["critical", "high", "medium"]}}}},
-    {"name": "get_risk",
-     "description": "查单个风险事件详情（类型/规则/级别/根因/受影响行/金额/状态）",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
-    {"name": "get_shipment_context",
-     "description": "查货运完整上下文：基础信息、判重后事件流、所载订单行与客户（按角色脱敏）",
-     "input_schema": {"type": "object", "properties": {
-         "shipment_id": {"type": "string"}}, "required": ["shipment_id"]}},
-    {"name": "get_impact_chain",
-     "description": "查风险的影响链：受影响订单行→销售订单→客户，含分配数量与金额",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
-    {"name": "get_audit_trail",
-     "description": "查对象（风险/任务）的审计历史，含被拒绝的调用",
-     "input_schema": {"type": "object", "properties": {
-         "object_id": {"type": "string"}}, "required": ["object_id"]}},
-    {"name": "list_admission_cases",
-     "description": "列出准入案件（v0.3），可按 status 过滤（draft/in_precheck/plan_ready/priced/approved/quote_with_conditions/rejected/needs_more_info）",
-     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
-    {"name": "get_admission_context",
-     "description": "查准入案件完整上下文：案件、合规发现、物流方案、成本情景（成本字段按角色脱敏）、客户能力",
-     "input_schema": {"type": "object", "properties": {
-         "admission_case_id": {"type": "string"}}, "required": ["admission_case_id"]}},
-    {"name": "list_invoices",
-     "description": "列出发票（v0.4），可按 status 过滤（received/under_review/approved/disputed）。"
-                    "返回 invoice_id/vendor/type/shipment/total/status/issue_date",
-     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
-    {"name": "get_invoice_context",
-     "description": "查发票完整对账上下文：发票 + 行明细（join expected_costs 给出基准与差异列）"
-                    "+ 所属 shipment 摘要（incoterm/delay_days/status）。发票金额字段按角色脱敏"
-                    "（与 UI 费用工作台 mask_cost 同规：finance/manager 可见，其余掩码）",
-     "input_schema": {"type": "object", "properties": {
-         "invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
-    {"name": "get_similar_resolutions",
-     "description": "C1 只读检索处置记忆：按规则类型精确匹配+同航线（origin→destination LOCODE）"
-                    "查同类风险的历史处置——同类 N 次、按方案/决定的统计、最相似 1 案详情"
-                    "（当时提案/人的决定/实际结果/质量标签）。所有数字运行时从 resolution_memory "
-                    "现算可回查；无先例如实返回首例；被屏蔽（voided）的记忆不返回",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
-    {"name": "explain_relationship_path",
-     "description": "只读查询 object_relationships：解释两个对象之间的有向关系路径",
-         "input_schema": {"type": "object", "properties": {
-             "source_type": {"type": "string"},
-             "source_id": {"type": "string"},
-             "target_type": {"type": "string"},
-             "target_id": {"type": "string"},
-             "max_depth": {"type": "integer", "minimum": 1, "maximum": 6}},
-             "required": ["source_type", "source_id", "target_type", "target_id", "max_depth"]}},
-    {"name": "assign_task",
-     "description": "为 open 状态的风险派发处置任务（A3）。这是允许 AI 执行的写动作之一",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}, "assignee_role": {"type": "string", "enum": ["ops", "cs"]},
-         "priority": {"type": "string", "enum": ["P1", "P2", "P3"]}, "due_at": {"type": "string"}},
-         "required": ["risk_event_id", "assignee_role", "priority", "due_at"]}},
-    {"name": "propose_mitigation",
-     "description": "对 assigned 状态的任务提交处置提案（A4），最终须人工审批。proposal-only 的体现",
-     "input_schema": {"type": "object", "properties": {
-         "task_id": {"type": "string"},
-         "proposed_action": {"type": "string", "enum": ["reschedule", "expedite", "accept_delay"]},
-         "proposal_params": {"type": "object"}},
-         "required": ["task_id", "proposed_action", "proposal_params"]}},
-    # ---- 准入准备动作 B1-B4（AdmissionCase 切片；按会话 role 经 ADM_PERMS gate，B5/B6 永不注册）----
-    {"name": "create_admission_case",
-     "description": "B1 建案（仅销售）：为 candidate SKU 建准入案。AI 准备动作之一，不做审批",
-     "input_schema": {"type": "object", "properties": {
-         "customer_id": {"type": "string"}, "sku_id": {"type": "string"},
-         "request_type": {"type": "string"}, "incoterm_candidate": {"type": "string"},
-         "target_launch_date": {"type": "string"}, "monthly_order_estimate": {"type": "integer"}},
-         "required": ["customer_id", "sku_id", "request_type", "incoterm_candidate",
-                      "target_launch_date", "monthly_order_estimate"]}},
-    {"name": "run_compliance_precheck",
-     "description": "B2 合规预审（仅合规）：提交 findings 列表，风险等级重算。AI 准备动作，不做审批",
-     "input_schema": {"type": "object", "properties": {
-         "admission_case_id": {"type": "string"},
-         "findings": {"type": "array", "items": {"type": "object"}}},
-         "required": ["admission_case_id", "findings"]}},
-    {"name": "build_logistics_plan",
-     "description": "B3 物流方案（仅运营）：建方案，DDP 门禁自动校验。AI 准备动作，不做审批",
-     "input_schema": {"type": "object", "properties": {
-         "admission_case_id": {"type": "string"}, "plan": {"type": "object"}},
-         "required": ["admission_case_id", "plan"]}},
-    {"name": "calculate_cost_scenario",
-     "description": "B4 成本情景（仅财务）：算成本与毛利。AI 准备动作，不做审批/拒接决策",
-     "input_schema": {"type": "object", "properties": {
-         "logistics_plan_id": {"type": "string"}, "scenario": {"type": "object"}},
-         "required": ["logistics_plan_id", "scenario"]}},
-]
+# Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）——桥2 M2 起
+# 从本体解释生成：aiQueryTools 节的 11 读工具 + exposed_as_tool=true 的 6 写动作（原样搬家、
+# 11 读在前 6 写在后、顺序逐一对应迁移前）。迁移前的 17 条硬编码字面量已下沉本体（顶层
+# aiQueryTools 节 + 6 动作的 tool_description/tool_input_schema）；本体成为唯一权威源，
+# 生成 == 迁移前基线的守护见 app/test_ontology_runtime.py（逐工具 name/description/input_schema 深度相等）。
+TOOL_DEFS = build_tool_defs(_ONTO)
 
 
 class AgentSession:

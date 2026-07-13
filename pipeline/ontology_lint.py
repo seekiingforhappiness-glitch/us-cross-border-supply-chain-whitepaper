@@ -56,9 +56,14 @@
        约束（核对深度=**列名存在性**，非引用完整性），标准列名缺失时二次尽力扫描反向 json_list / 软命名列，
        找到即报【漂移】、彻底找不到才报【缺失】。
 
-读写边界（红线）：数据库一律以 `mode=ro` 只读 URI 打开；app/agent 的 Python 常量一律用
-`ast.literal_eval` 静态解析源码提取，**从不 import/执行**任何 app 或 agent 模块——保证本工具
+读写边界（红线）：数据库一律以 `mode=ro` 只读 URI 打开；**从不 import/执行任何 app 或 agent 模块**，
 对运行时零副作用、绝不修改 ROLE_PERMS / FORBIDDEN_TOOLS / 任何现有代码。
+  · 桥2 M2 前：app/agent 的权限/工具常量用 `ast.literal_eval` 静态解析源码字面量提取。
+  · 桥2 M2 后：这些常量已从本体解释生成（app/*.py 权限字典、tools.py 的 TOOL_DEFS/FORBIDDEN_TOOLS
+    不再是可静态解析的字面量），B/C 断言的运行时侧改为消费同一个生成器 `pipeline.ontology_runtime`
+    （pipeline 模块、非 app/agent——红线不破）读『生成后的运行时』，与『生成前的声明』（本体
+    executors / exposed_as_tool / ai_executable）比对。两张皮焊死后，这条比对从「抓 drift」
+    转为「证单一源」；A/D 断言仍直接读只读库，与生成无关。
 ═══════════════════════════════════════════════════════════════════════════════
 """
 from __future__ import annotations
@@ -71,6 +76,12 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+# 桥2 M2：B/C 断言的运行时侧改为消费本体运行时生成器（app/agent 的权限/工具已从本体生成、
+# 不再有可 ast 静态解析的字面量）。ontology_runtime 是 pipeline 模块、非 app/agent——只读红线不破。
+from pipeline.ontology_runtime import (build_forbidden_tools as _rt_forbidden_tools,
+                                       build_role_perms as _rt_role_perms,
+                                       build_tool_defs as _rt_tool_defs)
 
 # ---------------------------------------------------------------------------
 # 路径（相对仓库根，脚本可从任意目录运行）
@@ -259,18 +270,19 @@ PERM_DICTS_SPEC = [
     ("WH_PERMS", WAREHOUSE_PATH, "app/warehouse_actions.py"),
     ("COORD_PERMS", COORDINATION_PATH, "app/coordination_actions.py"),
 ]
-def load_perm_dicts() -> tuple[dict, dict]:
-    """返回 (perm_key→(role_set, dict_name, file) 的映射, {dict_name: 原始字典})。
-    perm_key = 权限字典里的原始键（含协调域组权限键 ManageCoordination）。动作按其本体
-    `permission_key` 字段（缺省=name，M1 规则3）在此查表——组权限不再靠内置动作名清单展开，
-    「内置豁免清单」被本体声明字段替代（M1 规则9）。"""
-    raw = {}
-    by_key = {}
-    for dict_name, path, rel in PERM_DICTS_SPEC:
-        d = extract_module_literal(path, dict_name)
-        raw[dict_name] = d
-        for key, roles in d.items():
-            by_key[key] = ({strip_role_annotation(r) for r in roles}, dict_name, rel)
+def load_perm_dicts(onto: dict) -> tuple[dict, dict]:
+    """返回 (perm_key→(role_set, source, file) 的映射, {source: 权限映射})。
+    perm_key = 权限键（含协调域组权限键 ManageCoordination）。
+
+    桥2 M2 前：AST 静态解析 5 个 app/*.py 权限字典的字面量（见 PERM_DICTS_SPEC 记录其provenance）。
+    桥2 M2 后：这 5 个字典已从本体解释生成、app/*.py 无字面量可静态解析，故改为消费同一个生成器
+    `pipeline.ontology_runtime.build_role_perms`（读 enforcement=role_dict 动作的 executors、按
+    permission_key 归组）——即 assert_b 比对的『生成后的运行时』侧。红线仍守（ontology_runtime 是
+    pipeline 模块、非 app/agent）。"""
+    generated = _rt_role_perms(onto)   # {perm_key: {role,...}}，与运行时 5 字典并集同构
+    src, rel = "生成 · ontology_runtime.build_role_perms", "pipeline/ontology_runtime.py"
+    by_key = {key: (set(roles), src, rel) for key, roles in generated.items()}
+    raw = {src: generated}
     return by_key, raw
 
 
@@ -280,7 +292,7 @@ def assert_b_actions_perms(onto: dict) -> tuple[list[Diff], list[str]]:
     engine_internal/proposal_flow 由声明豁免（旧的 3 处「登记盲区」从此消解，不再靠内置动作名清单）。"""
     diffs: list[Diff] = []
     notes: list[str] = []
-    by_key, raw = load_perm_dicts()
+    by_key, raw = load_perm_dicts(onto)
 
     role_dict_covered, engine_internal, proposal, missing_key = [], [], [], []
     for act in onto["actions"]:
@@ -347,8 +359,11 @@ def assert_c_actions_tools(onto: dict) -> tuple[list[Diff], list[str]]:
     M1 时 tools.py 仍硬编码，断言两侧此刻皆成立即证声明↔运行时一致。"""
     diffs: list[Diff] = []
     notes: list[str] = []
-    tool_names = set(extract_tool_names(TOOLS_PATH))
-    forbidden = set(extract_module_literal(TOOLS_PATH, "FORBIDDEN_TOOLS"))
+    # 桥2 M2：tools.py 的 TOOL_DEFS/FORBIDDEN_TOOLS 已从本体解释生成（不再是可 ast 静态解析的
+    # 字面量），故读『生成后的运行时』改为消费同一生成器——与『生成前的声明』（exposed_as_tool /
+    # ai_executable 字段）比对。红线仍守（ontology_runtime 是 pipeline 模块、非 app/agent）。
+    tool_names = {t["name"] for t in _rt_tool_defs(onto)}
+    forbidden = _rt_forbidden_tools(onto)
 
     action_by_snake = {camel_to_snake(a["name"]): a["name"] for a in onto["actions"]}
     exposed_snakes = {camel_to_snake(a["name"]) for a in onto["actions"]
