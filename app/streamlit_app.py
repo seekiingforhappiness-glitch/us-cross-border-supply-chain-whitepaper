@@ -49,8 +49,8 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
                                       resolve_coordination, mark_dead_ended)
 
 try:
-    from app.rbac_nav import (CONTROL_GROUP_LABELS, ROLE_WORKSPACE_META,
-                              SURFACE_LABELS, SURFACES, TAB_LABELS,
+    from app.rbac_nav import (CONTROL_GROUP_LABELS, CONTROL_GROUP_OF, ROLE_WORKSPACE_META,
+                              SURFACE_LABELS, SURFACE_TABS, SURFACES, TAB_LABELS,
                               visible_control_groups, visible_tabs)
     from app.data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                                 risk_in_region_scope, scope_for_role,
@@ -59,10 +59,11 @@ try:
     from app import standard_object_view as sov
     from app import knowledge_graph as kg
     from app.executive_view import build_executive_summary
-    from app.my_today import build_my_today
+    from app.my_today import build_health_line, build_my_today, CARD_TARGET_TAB
+    from app import ux_copy
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
-    from rbac_nav import (CONTROL_GROUP_LABELS, ROLE_WORKSPACE_META,
-                          SURFACE_LABELS, SURFACES, TAB_LABELS,
+    from rbac_nav import (CONTROL_GROUP_LABELS, CONTROL_GROUP_OF, ROLE_WORKSPACE_META,
+                          SURFACE_LABELS, SURFACE_TABS, SURFACES, TAB_LABELS,
                           visible_control_groups, visible_tabs)
     from data_scope import (MODES, MODE_LABELS, default_mode, resolve_actor,
                             risk_in_region_scope, scope_for_role,
@@ -71,7 +72,8 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
     import standard_object_view as sov
     import knowledge_graph as kg
     from executive_view import build_executive_summary
-    from my_today import build_my_today
+    from my_today import build_health_line, build_my_today, CARD_TARGET_TAB
+    import ux_copy
 
 # C1 处置记忆：先例检索/渲染是引擎层只读函数（顶部已补项目根进 sys.path，同 pipeline 导入方式）
 from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
@@ -80,6 +82,45 @@ st.set_page_config(page_title="跨境供应链控制塔", layout="wide", initial
 CFG = yaml.safe_load(open("config/datagen.yaml", encoding="utf-8"))
 AS_OF = CFG["window"]["as_of"]
 SEV_ICON = {"critical": "CRIT ", "high": "HIGH ", "medium": "MED "}
+# P1-1 人话回执模板用：角色短名 + 风险关闭结论中文（覆盖核心闭环的 bespoke 文案，见 show_result）
+ROLE_SHORT_CN = {"ops": "运营", "cs": "客户成功", "manager": "经理", "finance": "财务",
+                 "procurement": "采购", "sales": "销售", "compliance": "合规"}
+CLOSE_OUTCOME_CN = {"mitigated": "已妥善处置", "accepted_delay": "已接受延误",
+                    "false_alarm": "判定为误报", "escalated": "已升级处理"}
+# 审批（A5）按处置类型给出的人话回执模板——覆盖 PARAM_SCHEMAS 全部 19 种处置动作（app/actions.py），
+# 不是每种都值得单独造句，但至少不出现内部码；未覆盖的动作走末尾通用兜底。
+_APPROVE_HUMAN_TEMPLATES = {
+    "expedite": lambda t, p: f"已批准：{t['shipment_id']} 加急空运，预计费用 ${p.get('est_cost_usd')}，交期风险解除",
+    "reschedule": lambda t, p: f"已批准：{t['shipment_id']} 改期至 {p.get('new_promise_date')}",
+    "accept_delay": lambda t, p: f"已批准：{t['shipment_id']} 接受延误，不做加急处置",
+    "dispute": lambda t, p: f"已批准：发起费用争议 ${p.get('disputed_amount_usd')}",
+    "accept_charge": lambda t, p: "已批准：接受该笔费用，不发起争议",
+    "rebill_customer": lambda t, p: f"已批准：转嫁客户 ${p.get('rebill_amount_usd')}",
+    "expedite_po": lambda t, p: f"已批准：{t['risk_event_id']} 关联采购单催单加急",
+    "accept_receipt_variance": lambda t, p: "已批准：接受收货差异，不再追究",
+    "raise_supplier_claim": lambda t, p: f"已批准：发起供应商索赔 ${p.get('claim_amount_usd')}",
+    "dispute_supplier_invoice": lambda t, p: f"已批准：争议供应商发票 ${p.get('disputed_amount_usd')}",
+    "escalate_prepayment": lambda t, p: "已批准：升级跟进预付款敞口",
+    "hold_balance_payment": lambda t, p: "已批准：暂缓尾款支付",
+    "request_supplier_docs": lambda t, p: "已批准：要求供应商补交资质文件",
+    "suspend_supplier": lambda t, p: "已批准：冻结该供应商",
+    "suggest_substitution": lambda t, p: "已批准：现货拆单先发，余量转补货",
+    "adjust_inventory": lambda t, p: "已批准：按实盘调整库存",
+    "escalate_replenishment": lambda t, p: "已批准：升级补货",
+    "initiate_second_source": lambda t, p: "已批准：启动第二供应来源",
+    "block_non_po_payment": lambda t, p: "已批准：拦截无 PO 发票付款",
+    "backfill_po": lambda t, p: "已批准：补建追溯采购单",
+}
+
+
+def _approve_human(t, act, params, decision):
+    """P1-1：审批回执人话化。t 为任务台联表行（含 shipment_id/risk_event_id），params 为该提案参数。"""
+    if decision != "approved":
+        return f"已驳回：{t['task_id']} 的处置提案（{act}），已退回待重新提交"
+    fn = _APPROVE_HUMAN_TEMPLATES.get(act)
+    if fn:
+        return fn(t, params)
+    return f"已批准：{t['task_id']} 的处置提案（{act}）已生效"
 
 
 def inject_design_system():
@@ -531,13 +572,24 @@ def detail_rows(raw_detail):
     return [{"字段": "detail_json", "值": json.dumps(detail, ensure_ascii=False)}]
 
 
-def show_result(r):
+def show_result(r, human=None, action_label=None):
+    """P1-1 动作回执人话化：成功文案优先用调用方现算的 human（覆盖不到内部码——bespoke 模板，
+    覆盖核心闭环 assign/propose/approve/close 的主要分支）；无 human 时兜底走 ux_copy 通用清洗
+    （side_effects 逐条去掉 D9/C4、MEM- 决策血缘、expedite_flag 等内部码，长尾动作也不漏码）；
+    side_effects 与 human 都空 → 通用兜底「操作完成：<动作名> 已生效」。失败一律走 humanize_error
+    （只清洗展示文案，action_log/actions.py 返回值一字不改，审计与日志内容不变）。"""
     if r["ok"]:
         # 成功消息存入会话状态，rerun 后仍可见（否则被刷新冲掉，用户会误以为没成功而重复点击）
-        st.session_state["flash"] = "✅ " + ("；".join(r["side_effects"]) or "完成")
+        if human:
+            msg = human
+        else:
+            msg = ux_copy.humanize_side_effects(r["side_effects"])
+            if not msg:
+                msg = f"操作完成：{action_label} 已生效" if action_label else "完成"
+        st.session_state["flash"] = "✅ " + msg
         st.rerun()
     else:
-        st.error(r["error"])
+        st.error(ux_copy.humanize_error(r["error"]))
 
 
 def render_command_header(role, n_open):
@@ -743,6 +795,18 @@ def render_risk_tab():
         st.caption(f"本台焦点：{'、'.join(sorted(focus))}（已置顶标注 ◆，其余风险仍完整可见）")
         risks = sorted(risks, key=lambda r: 0 if r["type"] in focus else 1)
 
+    # P1-6①：搜索（风险 ID/货运号/类型模糊）+ 排序（默认级别→金额，可选延误天数/影响金额）——
+    # 纯呈现层过滤排序，不动上面已算好的数据范围/焦点置顶口径；"默认"选项刻意不重排，保留原顺序。
+    _rc1, _rc2 = st.columns([2, 1])
+    with _rc1:
+        risk_q = st.text_input("搜索（风险 ID / 货运号 / 类型，模糊匹配）", key="risk_search_q")
+    with _rc2:
+        risk_sort = st.selectbox("排序", ux_copy.RISK_SORT_CHOICES, key="risk_sort_choice")
+    risks = ux_copy.filter_risks_by_search(risks, risk_q)
+    risks = ux_copy.sort_risks(risks, risk_sort)
+    if risk_q:
+        st.caption(f"搜索「{risk_q}」：{len(risks)} 条命中")
+
     def risk_row(r):
         row = {"风险": r["risk_event_id"], "级别": f"{SEV_ICON[r['severity']]}{r['severity']}",
                "类型": r["type"], "规则": r["rule_id"], "货运": r["shipment_id"],
@@ -752,6 +816,8 @@ def render_risk_tab():
             row["焦点"] = "◆ 本台" if r["type"] in focus else ""
         return row
     render_table([risk_row(r) for r in risks], height=260)
+    with st.expander("规则代码对照（R几 = 什么风险）", expanded=False):
+        st.caption(ux_copy.RULE_LEGEND)
     if risks:
         # P0-4 默认选中 = 当前排序/筛选后的列表首行（最急那条，index=0），随数据范围/筛选变化跟随；
         # 用户手动选择后 session 内尊重其选择（keyed selectbox）；选中项因改范围/筛选而不在列表时
@@ -761,7 +827,9 @@ def render_risk_tab():
             st.session_state.pop("risk_sel", None)
         sel = st.selectbox("查看风险", opts, index=0, key="risk_sel")
         r = next(x for x in risks if x["risk_event_id"] == sel)
-        st.markdown(f"**根因**：{r['root_cause']}　|　ETA {r['eta_initial']} → **{r['eta_current']}**")
+        # P1-4③：根因人话化（按规则类型翻译技术表述，如 R1 的 "eta_current+5d..." → 中文一句话）
+        st.markdown(f"**根因**：{ux_copy.humanize_root_cause(r['rule_id'], r['root_cause'])}　|　"
+                    f"ETA {r['eta_initial']} → **{r['eta_current']}**")
         lids = json.loads(r["affected_so_line_ids"])
         if lids:
             ph = ",".join("?" * len(lids))
@@ -783,11 +851,13 @@ def render_risk_tab():
                               FROM invoice_lines il JOIN invoices iv ON iv.invoice_id=il.invoice_id
                               WHERE il.invoice_line_id IN ({ph}) ORDER BY il.invoice_line_id""", *ilids)
             st.markdown("**受影响账单行**")
-            render_table([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+            render_table([{"账单行": x["invoice_line_id"], "费种": ux_copy.charge_code_label(x["charge_code"]),
                            "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
                            "所属发票": x["invoice_id"], "vendor": x["vendor_name"],
                            "发票状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"}
                           for x in ilines])
+            with st.expander("费种代码对照（缩写 = 中文）", expanded=False):
+                st.caption(ux_copy.CHARGE_CODE_LEGEND)
         # P0-3① 事前状态检查：选中风险已有非终态任务时，禁掉派单 + 常规关闭（点了必被动作层拒——
         # 「看着能点、提交才被拒」是陌生人测试撞的坑），改摆人话提示卡 + 仅保留 false_alarm 强制关闭
         # （动作层本就只放行 false_alarm 带活跃任务关闭）。动作层运行时校验一行未改，仅加 UI 事前层。
@@ -803,8 +873,9 @@ def render_risk_tab():
                 st.markdown("**误报强制关闭（A6，运营 · false_alarm）**")
                 fa_summary = st.text_input("处理小结（说明为何判定误报）")
                 if st.form_submit_button("误报强制关闭"):
-                    show_result(close_risk_event(db(), sel, "false_alarm", fa_summary,
-                                                 actor=actor, role=role, as_of=AS_OF))
+                    _r = close_risk_event(db(), sel, "false_alarm", fa_summary,
+                                          actor=actor, role=role, as_of=AS_OF)
+                    show_result(_r, human=(f"已关闭：{sel}（判定为误报）" if _r["ok"] else None))
         else:
             c1, c2 = st.columns(2)
             with c1, st.form(f"assign_{sel}"):
@@ -815,8 +886,11 @@ def render_risk_tab():
                                     help="要求处理人完成处置的期限（默认 48 小时），"
                                          "不是货物交付日期，也不是客户承诺日")
                 if st.form_submit_button("派单"):
-                    show_result(assign_task(db(), sel, a_role, prio, due.isoformat(),
-                                            actor=actor, role=role, as_of=AS_OF))
+                    _r = assign_task(db(), sel, a_role, prio, due.isoformat(),
+                                     actor=actor, role=role, as_of=AS_OF)
+                    _human = (f"已派单：{sel} 交给「{ROLE_SHORT_CN.get(a_role, a_role)}」处理，"
+                              f"任务 {_r['object_id']}，截止 {due.isoformat()}") if _r["ok"] else None
+                    show_result(_r, human=_human)
             with c2, st.form(f"close_{sel}"):
                 st.markdown("**关闭风险（A6，运营）**")
                 outcome = st.selectbox("结论",
@@ -827,10 +901,13 @@ def render_risk_tab():
                                   ["（不打标）", "有效", "部分有效", "无效"],
                                   help="对本案已批提案的实际效果打标（3 秒）——一致率成绩单与评估集的原料")
                 if st.form_submit_button("关闭"):
-                    show_result(close_risk_event(
+                    _r = close_risk_event(
                         db(), sel, outcome, summary, actor=actor, role=role, as_of=AS_OF,
                         quality_label={"有效": "effective", "部分有效": "partial",
-                                       "无效": "ineffective"}.get(_q)))
+                                       "无效": "ineffective"}.get(_q))
+                    _human = (f"已关闭：{sel}（{CLOSE_OUTCOME_CN.get(outcome, outcome)}）"
+                              if _r["ok"] else None)
+                    show_result(_r, human=_human)
         # 对象工作台入口：点选的 risk → 进入 RiskEvent 富工作台（session_state 存 focus）
         st.divider()
         st.session_state["focus_risk_event_id"] = sel
@@ -906,8 +983,12 @@ def render_task_tab():
                                "accept_charge": {"reason": creason},
                                "rebill_customer": {"rebill_amount_usd": rebill_amt,
                                                    "incoterm_basis": incoterm}}[cact]
-                    show_result(propose_mitigation(db(), tsel, cact, cparams,
-                                                   actor=actor, role=role, as_of=AS_OF))
+                    _r = propose_mitigation(db(), tsel, cact, cparams,
+                                            actor=actor, role=role, as_of=AS_OF)
+                    _label = {"dispute": f"发起费用争议 ${disputed}", "accept_charge": "接受该笔费用",
+                             "rebill_customer": f"转嫁客户 ${rebill_amt}"}[cact]
+                    show_result(_r, human=(f"提案已提交：{tsel} {_label}，等待经理审批"
+                                           if _r["ok"] else None))
         elif t["status"] == "assigned" and t["risk_type"] in PROCUREMENT_TYPES:
             # 采购三方对账处置（R7-R10）：方案改为 expedite_po/accept_receipt_variance/
             # raise_supplier_claim/dispute_supplier_invoice（ProposeMitigation 权限，走既有闭环）。
@@ -925,8 +1006,13 @@ def render_task_tab():
                                "raise_supplier_claim": {"claim_amount_usd": pamt, "reason": preason},
                                "dispute_supplier_invoice": {"reason": preason,
                                                             "disputed_amount_usd": pamt}}[pact]
-                    show_result(propose_mitigation(db(), tsel, pact, pparams,
-                                                   actor=actor, role=role, as_of=AS_OF))
+                    _r = propose_mitigation(db(), tsel, pact, pparams,
+                                            actor=actor, role=role, as_of=AS_OF)
+                    _label = {"expedite_po": "催单加急", "accept_receipt_variance": "接受收货差异",
+                             "raise_supplier_claim": f"发起供应商索赔 ${pamt}",
+                             "dispute_supplier_invoice": f"争议供应商发票 ${pamt}"}[pact]
+                    show_result(_r, human=(f"提案已提交：{tsel} {_label}，等待经理审批"
+                                           if _r["ok"] else None))
         elif t["status"] == "assigned":
             with st.form(f"prop_{tsel}"):
                 st.markdown("**提交处置方案（A4，运营/客户成功）**")
@@ -945,8 +1031,13 @@ def render_task_tab():
                               "expedite": {"new_mode": "air", "est_cost_usd": cost,
                                            "expected_new_eta": new_eta.isoformat()},
                               "accept_delay": {"reason": reason}}[act]
-                    show_result(propose_mitigation(db(), tsel, act, params,
-                                                   actor=actor, role=role, as_of=AS_OF))
+                    _r = propose_mitigation(db(), tsel, act, params,
+                                            actor=actor, role=role, as_of=AS_OF)
+                    _label = {"reschedule": f"改期至 {new_date.isoformat()}",
+                             "expedite": f"加急空运，预计费用 ${cost}",
+                             "accept_delay": "接受延误"}[act]
+                    show_result(_r, human=(f"提案已提交：{tsel} {_label}，等待经理审批"
+                                           if _r["ok"] else None))
         # P0-3② 审批块只对有审批权的角色（ROLE_PERMS.ApproveMitigation=仅 manager）整块渲染——
         # 非 manager 根本不显示（原先显示但点了才拒=陌生人测试撞的坑）。对齐权限真源，ROLE_PERMS 未改。
         if t["approval_status"] == "pending" and role in ROLE_PERMS["ApproveMitigation"]:
@@ -959,9 +1050,13 @@ def render_task_tab():
                                         help="系统外的决策依据（客户电话、工厂群聊、口头承诺等），"
                                              "随本次决定归档进处置记忆（C1）")
                 if st.form_submit_button("提交审批"):
-                    show_result(approve_mitigation(db(), tsel, decision, comment,
-                                                   actor=actor, role=role, as_of=AS_OF,
-                                                   offsite_basis=offsite.strip() or None))
+                    _act = t["proposed_action"]
+                    _params = json.loads(t["proposal_params"] or "{}")
+                    _r = approve_mitigation(db(), tsel, decision, comment,
+                                            actor=actor, role=role, as_of=AS_OF,
+                                            offsite_basis=offsite.strip() or None)
+                    show_result(_r, human=(_approve_human(t, _act, _params, decision)
+                                           if _r["ok"] else None))
         # 对象工作台入口：点选的 task → 进入 Task 富工作台（同 RiskEvent 的 focus 机制）
         st.divider()
         st.session_state["focus_task_id"] = tsel
@@ -980,10 +1075,36 @@ def render_cost_tab():
     invs = rows(f"""SELECT iv.invoice_id, iv.vendor_name, iv.vendor_type, iv.shipment_id,
                     iv.total_usd, iv.status, iv.issue_date
                     FROM invoices iv {where_inv} ORDER BY iv.invoice_id""")
+    # P1-6②：搜索（发票号/vendor/货运号模糊）+「只看异常」（命中 R4-R6 费用风险的发票）——
+    # 纯呈现层过滤，不动查询口径；异常集合与详情区「异常」列同一来源（risk_events.
+    # affected_invoice_line_ids → invoice_lines.invoice_id），保证列表与明细口径一致。
+    _sc1, _sc2 = st.columns([2, 1])
+    with _sc1:
+        inv_q = st.text_input("搜索（发票号 / vendor / 货运号，模糊匹配）", key="inv_search_q")
+    with _sc2:
+        only_anom = st.checkbox("只看异常发票", key="inv_only_anom",
+                                help="只显示有费用风险标记（R4/R5/R6）的发票")
+    _anom_line_ids = set()
+    for rr in rows("""SELECT affected_invoice_line_ids FROM risk_events
+                      WHERE affected_invoice_line_ids IS NOT NULL
+                        AND affected_invoice_line_ids != '[]'"""):
+        _anom_line_ids |= set(json.loads(rr["affected_invoice_line_ids"]))
+    _line_to_inv = {}
+    if _anom_line_ids:
+        _ph = ",".join("?" * len(_anom_line_ids))
+        _line_to_inv = {x["invoice_line_id"]: x["invoice_id"] for x in rows(
+            f"SELECT invoice_line_id, invoice_id FROM invoice_lines WHERE invoice_line_id IN ({_ph})",
+            *_anom_line_ids)}
+    anom_invoice_ids = ux_copy.anomaly_invoice_ids([list(_anom_line_ids)], _line_to_inv)
+    invs = ux_copy.filter_invoices(invs, inv_q, anom_invoice_ids, only_anom)
+    st.caption(f"{len(invs)} 张发票" + ("（含异常筛选/搜索）" if (inv_q or only_anom) else ""))
     render_table([{"发票": x["invoice_id"], "vendor": x["vendor_name"], "类型": x["vendor_type"],
                    "货运": x["shipment_id"], "金额$": x["total_usd"], "开票日": x["issue_date"],
-                   "状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"} for x in invs],
+                   "状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}",
+                   "异常": "!" if x["invoice_id"] in anom_invoice_ids else ""} for x in invs],
                  height=300)
+    with st.expander("费种代码对照（缩写 = 中文）", expanded=False):
+        st.caption(ux_copy.CHARGE_CODE_LEGEND)
     if invs:
         isel = st.selectbox("查看发票明细", [x["invoice_id"] for x in invs])
         iv = next(x for x in invs if x["invoice_id"] == isel)
@@ -1006,7 +1127,7 @@ def render_cost_tab():
                 anom_ils |= set(json.loads(rr["affected_invoice_line_ids"]))
         def diff(a, b):
             return round(a - b, 2) if b is not None else None
-        render_table([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+        render_table([{"账单行": x["invoice_line_id"], "费种": ux_copy.charge_code_label(x["charge_code"]),
                        "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
                        "基准$": x["baseline_usd"] if x["baseline_usd"] is not None else "无基准",
                        "差异$": diff(x["amount_usd"], x["baseline_usd"]),
@@ -1452,32 +1573,75 @@ TAB_RENDERERS = {
 }
 
 
+def _goto_tab(target_surface, target_tab):
+    """P1-3 按钮回调：必须走 on_click（而非 `if st.button(...): st.session_state[...]=...`）——
+    nav_surface 是 st.radio(key="nav_surface") 的绑定 key，本次脚本运行里该 radio 早已在上方
+    （主区导航开关）实例化过，运行到这里再直接赋值会被 Streamlit 拒绝（"cannot be modified after
+    the widget...is instantiated"，实测抛 StreamlitAPIException）。回调在下一次脚本重跑之前执行，
+    赋值时 radio 尚未实例化，故合法；点击本就会触发 rerun，不需要也不应该再手动 st.rerun()。"""
+    import streamlit as st
+    st.session_state["nav_surface"] = target_surface
+    st.session_state["nav_target_tab"] = target_tab
+
+
 def render_my_today():
     """工作台首屏「我的今天」：按当前角色 + data_scope 现算的待办计数卡（app/my_today 纯函数，
-    口径与各 tab 一致）；卡下一行 <em> 即「去 XX 标签处理」引导。复用 signal-card 既有样式。"""
+    口径与各 tab 一致）+ P1-5 一句话健康度（同一次查询算出，数字与卡逐字一致）。
+
+    P1-3「去 XX」引导可点：st.tabs 实测无法程序化切换选中项（小实验见报告，Streamlit 1.53.1 新增
+    的 default= 参数只影响首次挂载，不响应之后的 rerun）——方案 B：按钮通过 on_click 回调把目标写进
+    session_state（nav_surface + nav_target_tab），下方 tabs 渲染时目标标签名加粗高亮 + 顶部文字
+    提示"点这个标签"，用户完成最后一次点击即可（比原来的死文字提示已前进一大步：跨面时连导航面
+    单选都替用户点好了，只剩 tab 本身那一下）。"""
     st.markdown("#### 我的今天")
     _rm = st.session_state.get("risk_scope_mode")  # 跟随风险队列当前数据范围（未选则用角色默认）
     with db() as _con:
         cards = build_my_today(_con, role, AS_OF, risk_mode=_rm)
+        health = build_health_line(_con, role, AS_OF, cards)
+    st.info(health)
     if not cards:
         st.caption("当前角色今日无聚合待办计数——直接进入下方工作台标签处理（如准入案件）。")
         return
+    # 数字行沿用既有 _signal_strip（一次性渲染全部卡的 HTML，保留原有渲染真值/测试口径不变）；
+    # 引导按钮另起一行（P1-3 方案 B：st.tabs 无法程序化选中，按钮只负责通过 on_click 设 session_state
+    # 目标，具体高亮/提示见下方 tabs 渲染处的 _tab_label_with_hint）。
     _signal_strip([(c["label"], c["count"], c["go"]) for c in cards])
+    cols = st.columns(len(cards))
+    for col, c in zip(cols, cards):
+        with col:
+            target_tab = CARD_TARGET_TAB.get(c["key"])
+            target_surface = "control" if target_tab in SURFACE_TABS["control"] else "work"
+            st.button(f"→ {c['go']}", key=f"goto_{c['key']}",
+                     on_click=_goto_tab, args=(target_surface, target_tab))
+
+
+def _tab_label_with_hint(key, base_label, target_tab):
+    """目标 tab 加粗高亮（P1-3 方案 B）；st.tabs 标签串支持有限 Markdown（加粗），故直接嵌 **。"""
+    return f"👉 **{base_label}**" if key == target_tab else base_label
 
 
 _surface = surface if surface in SURFACES else "work"
+_nav_target = st.session_state.get("nav_target_tab")
 if _surface == "control":
     st.markdown('<div class="surface-banner"><strong>控制室</strong> · 理解与监督视图 · '
                 '三个问题：生意整体怎么样 / 一件事的来龙去脉 / 谁做了什么与哪些数据待核对'
                 '（只读为主，处置请回工作台）</div>', unsafe_allow_html=True)
     _groups = visible_control_groups(role)
+    _group_keys = [g for g, _m in _groups]
+    _target_group = CONTROL_GROUP_OF.get(_nav_target)
+    if _target_group in _group_keys:
+        st.info(f"→ 请点击上方「{CONTROL_GROUP_LABELS[_target_group]}」标签")
     for (_gkey, _members), _tab in zip(
-            _groups, st.tabs([CONTROL_GROUP_LABELS[g] for g, _m in _groups])):
+            _groups, st.tabs([_tab_label_with_hint(g, CONTROL_GROUP_LABELS[g], _target_group)
+                              for g, _m in _groups])):
         with _tab:
             CONTROL_GROUP_RENDERERS[_gkey](_members)
 else:
     render_my_today()
     _keys = visible_tabs(role, _surface)
-    for _key, _tab in zip(_keys, st.tabs([TAB_LABELS[k] for k in _keys])):
+    if _nav_target in _keys:
+        st.info(f"→ 请点击上方「{TAB_LABELS[_nav_target]}」标签")
+    for _key, _tab in zip(
+            _keys, st.tabs([_tab_label_with_hint(k, TAB_LABELS[k], _nav_target) for k in _keys])):
         with _tab:
             TAB_RENDERERS[_key]()

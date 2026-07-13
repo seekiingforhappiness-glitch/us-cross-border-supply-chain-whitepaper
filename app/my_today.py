@@ -75,3 +75,47 @@ def build_my_today(con, role, as_of, risk_mode=None):
                       "count": count_overdue_coordinations(con, as_of),
                       "go": "去「协调收件箱」催办"})
     return cards
+
+
+# ---------- P1-3「去 XX」引导可点：卡 key → 目标 tab（st.tabs 不可编程选中，方案 B——
+# 见 docs 报告：按钮设 session_state 目标 + 提示用户点哪个标签 + 目标标签名高亮加粗）----------
+# 与 test_layout_split.py 里独立复算的 card_tab 字典同值（该测试按本仓「双路对账」哲学故意不从
+# 本模块导入、自己重写一份核对）——两处若不一致，测试会先炸。
+CARD_TARGET_TAB = {"risk": "risk", "dq": "dq", "approve": "task", "coord": "coord"}
+
+# 卡 key → 紧急度权重（数字越小越急）：业务风险/待批提案 > 协调超期 > 数据核对——不是「数字最大的
+# 卡最急」，而是按业务重要性人工排的固定序（数据质量问题通常不如一个未处理的延误风险紧急）。
+_CARD_URGENCY_RANK = {"risk": 0, "approve": 0, "coord": 1, "dq": 2}
+
+
+def _most_urgent_card(cards):
+    candidates = [c for c in cards if c["count"] > 0]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: (_CARD_URGENCY_RANK.get(c["key"], 9), -c["count"]))
+
+
+def build_health_line(con, role, as_of, cards):
+    """P1-5 首屏一句话人话结论：数字与 build_my_today 的卡逐字同源（同一次调用产出的 cards
+    直接传入，不重新查询——保证「卡上数字」与「这句话里的数字」不会因两次查询时间差而对不上）。
+
+    manager 版：生意整体健康度（未解决 critical 风险数 + 合计敞口 + 待批提案数）；
+    其余角色版：个人待办总数 + 最急的一项（按 _CARD_URGENCY_RANK，不是「数字最大」）。
+    """
+    if role == "manager":
+        crit = con.execute(
+            """SELECT count(*) c, COALESCE(sum(affected_value_usd), 0) v FROM risk_events
+               WHERE severity='critical' AND status NOT IN ('resolved','escalated')""").fetchone()
+        n_crit, exposure = crit[0], crit[1]
+        approvals = next((c["count"] for c in cards if c["key"] == "approve"), 0)
+        if n_crit == 0 and approvals == 0:
+            return "今天：无 critical 风险未解决，暂无待批提案——保持关注即可。"
+        wan = round(exposure / 10000, 1)
+        return (f"今天：{n_crit} 笔 critical 风险未解决，合计敞口 ${wan} 万；"
+                f"{approvals} 件提案等你批")
+    total = sum(c["count"] for c in cards)
+    if not cards or total == 0:
+        return "今天：暂无待办——可主动看看当前工作台有无新情况。"
+    top = _most_urgent_card(cards)
+    urgent = f"{top['label']}（{top['count']} 项）" if top else "-"
+    return f"你有 {total} 件待办，最急的是 {urgent}"

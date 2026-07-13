@@ -12,9 +12,11 @@ import json
 try:  # 包上下文（python3 -m app.*）
     from .actions import ROLE_PERMS
     from .admission_actions import ADM_PERMS, CASE_TERMINAL
+    from . import ux_copy
 except ImportError:  # streamlit run app/streamlit_app.py：脚本目录在 sys.path
     from actions import ROLE_PERMS
     from admission_actions import ADM_PERMS, CASE_TERMINAL
+    import ux_copy
 
 from agent.explain import (build_risk_briefing, render_briefing_text,
                            build_invoice_briefing, render_invoice_briefing_text)
@@ -800,13 +802,22 @@ def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, rende
     st.caption("以 RiskEvent 为中心的富视图：属性 + 关联对象 + 该角色可用动作 + 对象级 AI"
                "（预 scope 到本对象 + 当前角色，permission-aware）")
 
+    # P1-2：确定性简报移到对象详情区顶部并默认展开（陌生人测试两位测试者都点名这是全场最有用的
+    # 东西，原先在页面底部默认折叠会被忽略）。生成逻辑不变（同一个 sess/briefing_text，只是提前算、
+    # 挪到最上面渲染 + expanded 改 True），下方 ④ 对象级 AI 面板复用同一份 briefing_text 不重算。
+    sess = make_agent_session(role, risk_event_id)
+    _briefing = focus_briefing_text(sess)
+    with st.expander("查看确定性风险简报（无需 API key，每条事实带对象 ID 出处）", expanded=True):
+        st.text(_briefing)
+
     # ① 风险属性
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("级别", r["severity"])
     c2.metric("状态", r["status"])
     c3.metric("规则", r["rule_id"])
     c4.metric("影响金额$", r["affected_value_usd"])
-    st.markdown(f"**类型** `{r['type']}`　**货运** `{r['shipment_id']}`　**根因**：{r['root_cause']}")
+    st.markdown(f"**类型** `{r['type']}`　**货运** `{r['shipment_id']}`　"
+                f"**根因**：{ux_copy.humanize_root_cause(r['rule_id'], r['root_cause'])}")
 
     # ② 关联对象
     st.markdown("**关联 · 受影响订单行**")
@@ -835,15 +846,12 @@ def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, rende
     st.caption("动作权限由 app.actions.ROLE_PERMS + maker-checker 硬 gate；审批 / 关闭永远人来点，"
                "AI 只提案不审批（原则2）。执行入口在风险台「派发/关闭」与任务台「提案/审批」表单。")
 
-    # ④ 对象级 agent 面板（预 scope 到本 risk + 当前 role）
+    # ④ 对象级 agent 面板（预 scope 到本 risk + 当前 role；简报已在页首展开，此处只放提问区）
     st.markdown("**对象级 AI 助手**")
-    sess = make_agent_session(role, risk_event_id)
     st.caption(f"本会话工具集（role={role}，focus={risk_event_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只提案不审批）。")
-    with st.expander("查看确定性风险简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
-        st.text(focus_briefing_text(sess))
-    _render_object_ai_qa(focus_briefing_text(sess), role, key=f"wb_{risk_event_id}")
+    _render_object_ai_qa(_briefing, role, key=f"wb_{risk_event_id}")
 
 
 def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_factory, render_table):
@@ -863,6 +871,12 @@ def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_
     st.markdown(f"### 🔬 对象工作台 · {c['admission_case_id']}")
     st.caption("以 AdmissionCase 为中心的富视图：属性 + 关联对象 + 该角色可用动作 + 对象级 AI"
                "（预 scope 到本案 + 当前角色，permission-aware）")
+
+    # P1-2：确定性简报移到顶部默认展开（同一份 sess/briefing_text，下方④面板复用不重算）
+    sess = make_admission_agent_session(role, admission_case_id)
+    _briefing = focus_admission_briefing_text(sess)
+    with st.expander("查看确定性准入简报（无需 API key，每条事实带对象 ID 出处）", expanded=True):
+        st.text(_briefing)
 
     # ① 案件属性
     c1, c2, c3, c4 = st.columns(4)
@@ -903,15 +917,12 @@ def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_
                "审批（B5）/ 拒接（B6）永远人来点，AI 只做准备动作不做决策（原则2）。"
                "执行入口在准入工作台上方各角色表单。")
 
-    # ④ 对象级 agent 面板（预 scope 到本案 + 当前 role）
+    # ④ 对象级 agent 面板（预 scope 到本案 + 当前 role；简报已在页首展开，此处只放提问区）
     st.markdown("**对象级 AI 助手**")
-    sess = make_admission_agent_session(role, admission_case_id)
     st.caption(f"本会话工具集（role={role}，focus={admission_case_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— 审批/拒接（B5/B6）永不在内（agent 只准备不决策）。")
-    with st.expander("查看确定性准入简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
-        st.text(focus_admission_briefing_text(sess))
-    _render_object_ai_qa(focus_admission_briefing_text(sess), role, key=f"awb_{admission_case_id}")
+    _render_object_ai_qa(_briefing, role, key=f"awb_{admission_case_id}")
 
 
 def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render_table):
@@ -931,6 +942,12 @@ def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render
     st.caption("以 Task 为中心的富视图：属性 + 关联对象（父风险/受影响行/提案）+ 该角色可用动作 + "
                "对象级 AI（预 scope 到本 task + 父风险，permission-aware）")
 
+    # P1-2：确定性简报移到顶部默认展开（同一份 sess/briefing_text，下方④面板复用不重算）
+    sess = make_task_agent_session(role, task_id)
+    _briefing = focus_task_briefing_text(sess)
+    with st.expander("查看确定性任务简报（无需 API key，每条事实带对象 ID 出处）", expanded=True):
+        st.text(_briefing)
+
     # ① 任务属性
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("任务状态", t["status"])
@@ -945,7 +962,7 @@ def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render
     if r:
         st.markdown(f"**关联 · 父风险** `{r['risk_event_id']}`（{r['severity']} 级 {r['type']}，"
                     f"规则 {r['rule_id']}，货运 {r['shipment_id']}，影响 ${r['affected_value_usd']}）"
-                    f"　根因：{r['root_cause']}")
+                    f"　根因：{ux_copy.humanize_root_cause(r['rule_id'], r['root_cause'])}")
     st.markdown("**关联 · 受影响订单行**")
     render_table([{"订单行": x["so_line_id"], "订单": x["so_id"], "数量": x["qty"],
                    "承诺日": x["promised_delivery_date"], "行状态": x["line_status"],
@@ -963,15 +980,12 @@ def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render
     st.caption("动作权限由 app.actions.ROLE_PERMS + maker-checker 硬 gate；审批（A5）永远人来点，"
                "AI 只提案不审批（原则2）。执行入口在任务台「提案/审批」表单。")
 
-    # ④ 对象级 agent 面板（预 scope 到本 task + 父风险）
+    # ④ 对象级 agent 面板（预 scope 到本 task + 父风险；简报已在页首展开，此处只放提问区）
     st.markdown("**对象级 AI 助手**")
-    sess = make_task_agent_session(role, task_id)
     st.caption(f"本会话工具集（role={role}，focus={task_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只提案不审批）。")
-    with st.expander("查看确定性任务简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
-        st.text(focus_task_briefing_text(sess))
-    _render_object_ai_qa(focus_task_briefing_text(sess), role, key=f"twb_{task_id}")
+    _render_object_ai_qa(_briefing, role, key=f"twb_{task_id}")
 
 
 def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, render_table):
@@ -992,6 +1006,12 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
     st.caption("以 Invoice 为中心的富视图：属性 + 关联对象（账单行/货运/费用风险）+ 该角色可用动作 + "
                "对象级 AI（预 scope 到本发票 + 关联风险，permission-aware）")
 
+    # P1-2：确定性简报移到顶部默认展开（同一份 sess/briefing_text，下方④面板复用不重算）
+    sess = make_invoice_agent_session(role, invoice_id)
+    _briefing = focus_invoice_briefing_text(sess)
+    with st.expander("查看确定性发票对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=True):
+        st.text(_briefing)
+
     # ① 发票属性（金额随 role 脱敏）
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("状态", iv["status"])
@@ -1008,17 +1028,21 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
 
     # ② 关联对象
     st.markdown("**关联 · 账单行（join 基准与差异，异常来自费用风险标记）**")
-    render_table([{"账单行": x["invoice_line_id"], "费种": x["charge_code"],
+    render_table([{"账单行": x["invoice_line_id"], "费种": ux_copy.charge_code_label(x["charge_code"]),
                    "柜": x["container_no"] or "-", "金额$": x["amount_usd"],
                    "基准$": x["baseline_usd"] if x["baseline_usd"] is not None else "无基准",
                    "差异$": x["diff_usd"], "异常": "!" if x["is_anomaly"] else ""}
                   for x in wb["lines"]])
+    with st.expander("费种代码对照（缩写 = 中文）", expanded=False):
+        st.caption(ux_copy.CHARGE_CODE_LEGEND)
     if wb["flagging_risks"]:
         st.markdown("**关联 · flag 本发票的费用风险（R4/R5/R6）**")
         render_table([{"风险": r["risk_event_id"], "规则": r["rule_id"], "类型": r["type"],
                        "级别": r["severity"], "状态": r["status"],
                        "命中本票账单行": "、".join(r["affected_lines_on_this_invoice"])}
                       for r in wb["flagging_risks"]])
+        with st.expander("规则代码对照（R几 = 什么风险）", expanded=False):
+            st.caption(ux_copy.RULE_LEGEND)
     if wb["cost_tasks"]:
         st.markdown("**关联 · 费用处置任务**")
         render_table([{"任务": t["task_id"], "风险": t["risk_event_id"],
@@ -1034,15 +1058,12 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
                "权限）；rebill 的 G4 incoterm 门禁在审批时判定；审批（A5）永远人来点，AI 只提案不审批"
                "（原则2）。执行入口在任务台费用处置表单。")
 
-    # ④ 对象级 agent 面板（预 scope 到本发票 + 关联风险）
+    # ④ 对象级 agent 面板（预 scope 到本发票 + 关联风险；简报已在页首展开，此处只放提问区）
     st.markdown("**对象级 AI 助手**")
-    sess = make_invoice_agent_session(role, invoice_id)
     st.caption(f"本会话工具集（role={role}，focus={invoice_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只分析/起草提案，不审批）。")
-    with st.expander("查看确定性发票对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
-        st.text(focus_invoice_briefing_text(sess))
-    _render_object_ai_qa(focus_invoice_briefing_text(sess), role, key=f"iwb_{invoice_id}")
+    _render_object_ai_qa(_briefing, role, key=f"iwb_{invoice_id}")
 
 
 def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_table):
@@ -1062,6 +1083,12 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
     st.markdown(f"### 🔬 对象工作台 · {po['po_id']}")
     st.caption("以 PurchaseOrder 为中心的富视图：属性 + 采购行 + 三方对账 + 锚定采购风险 + "
                "该角色可用动作 + 对象级 AI（预 scope 到本 PO + 当前角色，permission-aware）")
+
+    # P1-2：确定性简报移到顶部默认展开（同一份 sess/briefing_text，下方④面板复用不重算）
+    sess = make_po_agent_session(role, po_id)
+    _briefing = focus_po_briefing_text(sess)
+    with st.expander("查看确定性三方对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=True):
+        st.text(_briefing)
 
     # ① PO 属性
     c1, c2, c3, c4 = st.columns(4)
@@ -1103,6 +1130,8 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
                       for r in wb["anchored_risks"]])
     else:
         st.caption("（本 PO 三方对账未检出 R7-R10 异常）")
+    with st.expander("规则代码对照（R几 = 什么风险）", expanded=False):
+        st.caption(ux_copy.RULE_LEGEND)
     acts = wb["available_actions"]
     st.markdown(f"**该角色（{role}）在本 PO 锚定风险上可发起的动作**："
                 + _actions_or_hint(acts, role, "（无——该角色对本 PO 风险状态无可发起动作）"))
@@ -1111,15 +1140,12 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
                "（A5，仅经理，maker-checker）；审批/关闭永远人来点，AI 只提案不审批（原则2）。"
                "执行入口在任务台「提案/审批」表单。")
 
-    # ④ 对象级 agent 面板（预 scope 到本 PO）
+    # ④ 对象级 agent 面板（预 scope 到本 PO；简报已在页首展开，此处只放提问区）
     st.markdown("**对象级 AI 助手**")
-    sess = make_po_agent_session(role, po_id)
     st.caption(f"本会话工具集（role={role}，focus={po_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只分析三方差异/起草提案，不审批）。")
-    with st.expander("查看确定性三方对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
-        st.text(focus_po_briefing_text(sess))
-    _render_object_ai_qa(focus_po_briefing_text(sess), role, key=f"pwb_{po_id}")
+    _render_object_ai_qa(_briefing, role, key=f"pwb_{po_id}")
 
 
 def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_factory, render_table):
@@ -1140,6 +1166,12 @@ def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_facto
     st.markdown(f"### 🔬 对象工作台 · {wh['warehouse_id']}")
     st.caption("以 Warehouse 为中心的富视图：属性 + 库存头寸/预留/盘点 + 锚定仓储风险(R16-R18) + "
                "该角色可用动作 + 对象级 AI（预 scope 到本仓 + 当前角色，permission-aware）")
+
+    # P1-2：确定性简报移到顶部默认展开（同一份 sess/briefing_text，下方④面板复用不重算）
+    sess = make_warehouse_agent_session(role, warehouse_id)
+    _briefing = focus_warehouse_briefing_text(sess)
+    with st.expander("查看确定性仓储库存简报（无需 API key，每条带对象 ID 出处）", expanded=True):
+        st.text(_briefing)
 
     # ① 仓库属性
     low_n = sum(1 for p in wb["positions"] if p["below_safety"])
@@ -1179,6 +1211,8 @@ def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_facto
                       for r in wb["anchored_risks"]])
     else:
         st.caption("（本仓未检出 R16-R18 异常）")
+    with st.expander("规则代码对照（R几 = 什么风险）", expanded=False):
+        st.caption(ux_copy.RULE_LEGEND)
     acts = wb["available_actions"]
     st.markdown(f"**该角色（{role}）在本仓锚定风险上可发起的动作**："
                 + ("、".join(acts) if acts else "（无——该角色对本仓风险状态无可发起动作）"))
@@ -1187,12 +1221,9 @@ def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_facto
                "（A4，ProposeMitigation 权限）→审批（A5，仅经理，maker-checker）；审批/关闭永远人来点，"
                "AI 只提案不审批（原则2）。执行入口在风险台派发 + 任务台「提案/审批」表单。")
 
-    # ④ 对象级 agent 面板（预 scope 到本仓）
+    # ④ 对象级 agent 面板（预 scope 到本仓；简报已在页首展开，此处只放提问区）
     st.markdown("**对象级 AI 助手**")
-    sess = make_warehouse_agent_session(role, warehouse_id)
     st.caption(f"本会话工具集（role={role}，focus={warehouse_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只分析库存/断货/现货可用性、起草提案，不审批）。")
-    with st.expander("查看确定性仓储库存简报（无需 API key，每条带对象 ID 出处）", expanded=False):
-        st.text(focus_warehouse_briefing_text(sess))
-    _render_object_ai_qa(focus_warehouse_briefing_text(sess), role, key=f"wwb_{warehouse_id}")
+    _render_object_ai_qa(_briefing, role, key=f"wwb_{warehouse_id}")
