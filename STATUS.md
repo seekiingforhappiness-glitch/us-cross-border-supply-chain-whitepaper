@@ -48,9 +48,18 @@
 > React 驾驶舱与透视镜 v3 的底座。
 > **全程红线**：每单全量回归链（含 seed_demo_ops 步，勘误#2）+288 注入对抗+真值 md5 全绿；
 > EXPECTED_* 基线零改动。
-> **三裁决已定（决策日志 V6，2026-07-14 Daniel 亲批"1.补；2.可以；3.了解"）**：
-> 裁1=补 affected_sku_ids 承载列（豁免退场）；裁2=MCP 开放 6 个写提案工具（走既有 dispatch，
-> maker-checker 不变）；裁3=新通道维持（config 一行可回退，结案）。**裁1/裁2 落地执行中。****遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
+> **V6 三裁决已全部落地（2026-07-14，Daniel 亲批"1.补；2.可以；3.了解"）**：
+> **裁1=补（328129f）**：本体 0.10.1 增 RiskEvent.affected_sku_ids 正式承载列，declared_only
+> 豁免退场——**闸门首次 0 差异 + 0 豁免完全干净**；R14 历史 hack（affected_po_line_ids 装 sku_id）
+> 经证据链核查为评估器匹配键所消费，按 V6 约束保留为兼容载体、新列并行写入（双列逐字节相等）。
+> **裁2=可以（ecefb94）**：MCP server 开放 6 写提案工具，调用走 agent/tools.py 既有 dispatch
+> （ROLE_PERMS+FORBIDDEN+action_log 同一套，无第二写路径），冻结区协议层拦截（永不到达 dispatch）；
+> 端到端实弹：模型查 RSK-0001→真实 assign_task→TSK 落库+审计尾行 ai-agent/ok+llm_calls +2，
+> 模型自述 maker-checker 边界。执行层于验收阶段 watchdog 停滞，主会话接手验收收口（改动无缺陷）。
+> **裁3=了解**：新通道维持默认，结案。
+> **驾驶舱已启动**：画面复述候 Daniel 对齐（docs/superpowers/specs/2026-07-14-cockpit-screen-
+> narrative.md，六段画面+有意不做清单——回"对"即开工画面级实现）；地基单（apps/cockpit React
+> 骨架 + apps/api 双世界数据源参数化 ONTOLOGY_DB）执行中，不依赖画面确认。**遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
 > 分叉、COST_FIELDS 等硬编码脱敏集全量声明化。
 > **Daniel 验收走查（5 分钟）**：完整重启 streamlit → 任意风险工作台点「询问」问一个问题
 > （预期 40-105 秒，回答头标"真实查库作答"，简报折叠区明示未被用作依据）→ 控制室审计视图查
