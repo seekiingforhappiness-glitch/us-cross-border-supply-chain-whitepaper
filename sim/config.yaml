@@ -127,6 +127,84 @@ inventory:
   init_cover_days: [20, 45]      # 初始库存 = 安全库存 + 覆盖天数×日销
   region_share: {US-West: 0.55, US-East: 0.25, US-Nat: 0.20}  # 日销按仓库区域分摊
   consume_factor: 0.45           # 日消耗 = 日销 × 区域分摊 × 此因子（恒钳 ≥ 0）
+  reorder_cover_days: 12         # 例行补货（正常仓储行为）：可用跌破安全库存则补到 安全+此天数×日销；
+                                 # 连锁被延误标记的 position 在断货窗内豁免补货 → 断货只由连锁产生（非自然枯竭噪声）
+
+# ============================ S2：异常谱系 + 连锁 + AI 运转 ============================
+# 一切异常/AI 随机只用 backfill.STREAMS 里 seed 派生的 anomalies/ai 子流（复现性铁律）。
+# 密度真实档（裁决点 Q2：月 15-25 起）；关 anomalies.enabled 即退回 S1 正常世界（子流不占用→逐字节还原）。
+anomalies:
+  enabled: true
+  density_profile: "real"         # mild(月8-12) | real(月15-25，默认) | stress(月40+)
+  profiles:
+    mild:   {monthly_min: 8,  monthly_max: 12}
+    real:   {monthly_min: 15, monthly_max: 25}
+    stress: {monthly_min: 40, monthly_max: 60}
+  # 各族每事件注入概率（校准到真实档月 15-25；旺季自然涌现更多——密度不硬凑）
+  delay:                          # 延误族（作用于里程碑计划挂点）
+    per_shipment_rate: 0.30       # 每票延误基线概率
+    peak_amplify: 1.4             # 旺季拥堵窗内放大（季节曲线；控制在使旺季高于均值但不爆表）
+    type_weights: {congestion: 0.44, port_omission: 0.16, roll: 0.22, transship_miss: 0.18}
+    extra_days:                   # 各子型 ETA 顺延天数
+      congestion:      [3, 10]
+      port_omission:   [4, 9]
+      roll:            [7, 15]
+      transship_miss:  [5, 12]
+  inspection:                     # 查验族（作用于报关挂点）
+    per_shipment_rate: 0.17
+    hold_days: [2, 7]
+    inspection_fee_usd: [180, 650]
+    contradiction_rate: 0.55      # credibility<0.92 货代查验时口径与船司矛盾的概率（成对里程碑）
+  fee:                            # 费用族（按货代性格；作用于账单挂点）
+    billing_error_multiplier: 8.0 # p_fee ≈ forwarder.billing_error_rate × 此值（低报价货代错率高）
+    overbill_pct: [0.12, 0.35]    # 费率超收比例（→R4）
+    volumetric_extra_pct: [0.10, 0.30]  # 泡重虚加（THC 按泡重比例上浮，→R4）
+    duplicate_share: 0.35         # 命中费用异常里判为"重复计费"的占比（→R5）
+    peak_surcharge_usd: [200, 900]# 旺季计划外附加费（→R6，charge_code=PSS）
+  document:                       # 单证族（作用于里程碑计划/供应商挂点）
+    per_shipment_rate: 0.09
+    missing_docs_pool: ["commercial_invoice", "packing_list", "certificate_of_origin", "ISF_filing"]
+    qual_expiring_flare_rate: 0.5 # 资质将过期供应商(qual_expiring)在其 PO 上发难的概率
+  warehouse:                      # 仓储族（作用于库存挂点）
+    shrink_per_tick_positions: 3  # 每 tick 抽查的 position 数（盘点差异候选）
+    shrink_rate: 0.03             # 抽中后计入盘点差异的概率
+    shrink_ratio: [0.03, 0.12]    # 盘点差异幅度（|实盘−账面|/账面）
+    putaway_delay_rate: 0.10      # 到港上架延迟概率
+    putaway_delay_days: [2, 6]
+  chain:                          # 连锁引擎（延误→滞箱→库存倒计时→断货冲突升级）
+    detention_free_days: 7        # 免用箱期（超出计滞箱费）
+    detention_daily_usd: 150      # 滞箱费日费率（对齐 engine cost.detention_daily_usd）
+    stockout_promo_months: ["2025-07", "2025-08", "2025-11", "2026-01", "2026-06"]  # 大促窗（断货升级）
+    stockout_target_frac: [0.15, 0.40]  # 断货冲突升级：把靶 position 可用压到 安全库存×此比例（明确断货，R16 high）
+  detectors:                      # AI 检测阈值（镜像 config/datagen.yaml 引擎口径，单一来源在此复述）
+    buffers: {customs_days: 3, lastmile_days: 2}     # R1 缓冲（= datagen buffers）
+    stall_days: 5                 # R3（= datagen risk.stall_days）
+    docs_window_days: 7           # R2（= datagen risk.docs_window_days）
+    rate_tolerance: 0.05          # R4（= datagen cost.rate_tolerance）
+    unplanned_high_usd: 500       # R6 high 门槛（= datagen cost.unplanned_high_threshold_usd）
+    stockout_high_frac: 0.5       # R16（= datagen warehouse.stockout_high_frac）
+  tail_events:                    # 尾部脚本事件：只留手动触发接口，回填不自动发生（演示时手动注入）
+    forwarder_liquidity_rumor: {auto: false, forwarder_id: "FWD-05"}
+    overseas_wh_incident:        {auto: false, warehouse_id: "USWC-DC1"}
+
+ai_loop:                          # AI 同事在世界中运转：检测→分诊→提案(经济账)→模拟审批→处置生效→先例沉淀
+  enabled: true
+  cadence_days: 7                 # 每 7 天跑一次检测回路（回填时间线内交织运转）
+  propose_severities: ["critical", "high"]  # 达此定级即生成提案（medium 只建风险不提案，除非连锁升级）
+  approver:                       # 模拟审批人（显式标注，绝不冒充真人）
+    name: "sim-approver-01"
+    approve_rate: 0.82            # 批准倾向
+    decide_delay_days: [0, 6]     # 审批延迟分布（提案后 N 天才决定）
+  economics:                      # 提案经济账（加急成本 vs 断货损失，现算）
+    expedite_cost_per_container_usd: 3800   # 加急（优先舱位/空派）单柜成本
+    expedite_pull_in_days: [4, 9]           # 加急后 ETA 提前天数
+    stockout_penalty_per_unit_usd: 6.5      # 断货缺口单件损失（缺货销售损失+客户罚则近似）
+    detention_avoided_per_day_usd: 150      # 加急避免的滞箱费/天
+    margin_at_risk_frac: 0.20               # 迟交/断货边际损失 ≈ 涉险货值 × 此比例
+  quality_label_bias:             # 关闭时专员质量标签分布（模拟人打标；显式 sim）
+    effective: 0.62
+    partial: 0.28
+    ineffective: 0.10
 
 output:
   sqlite_path: "data/simworld.sqlite"   # 与 data/ontology.sqlite 物理隔离

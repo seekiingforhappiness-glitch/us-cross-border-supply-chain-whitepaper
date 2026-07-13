@@ -76,8 +76,37 @@ SIM_DDL = {
         etd TEXT, eta TEXT, booked INTEGER)""",
     "sim_shipment_meta": """(shipment_id TEXT PRIMARY KEY, forwarder_id TEXT, route_id TEXT,
         sailing_id TEXT)""",
+    # S2：event_kind 增 anomaly:/chain:/texture:/tail: 前缀；caused_by 承载连锁链（可追溯）；severity/family 分诊
     "sim_event_log": """(sim_event_id TEXT PRIMARY KEY, sim_date TEXT, event_kind TEXT,
-        object_type TEXT, object_id TEXT, params_json TEXT, rng_stream TEXT)""",
+        object_type TEXT, object_id TEXT, params_json TEXT, rng_stream TEXT,
+        caused_by TEXT, severity TEXT, family TEXT)""",
+    # S2：盘点差异快照（仓储族纹理；无 engine cycle_counts 表，落 sim 专属）
+    "sim_cycle_counts": """(cycle_count_id TEXT PRIMARY KEY, inventory_position_id TEXT,
+        warehouse_id TEXT, sku_id TEXT, system_qty INTEGER, counted_qty INTEGER, as_of_date TEXT)""",
+}
+
+# S2：AI 回路产物——对齐本体 risk_events/tasks/resolution_memory 列集（驾驶舱可直接读）+ source 列。
+# 铁律：一切行 source='sim'，id 带 -SIM- 后缀，永不混入 data/ontology.sqlite 真实先例库（物理隔离）。
+S2_DDL = {
+    "risk_events": """(risk_event_id TEXT PRIMARY KEY, type TEXT, rule_id TEXT, severity TEXT,
+        shipment_id TEXT, affected_so_line_ids TEXT, affected_value_usd REAL, detected_at TEXT,
+        root_cause TEXT, status TEXT, resolved_at TEXT, outcome TEXT, resolution_summary TEXT,
+        affected_invoice_line_ids TEXT, po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT,
+        warehouse_id TEXT, source TEXT)""",
+    "tasks": """(task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT, assignee_role TEXT,
+        priority TEXT, proposed_action TEXT, proposal_params TEXT, approval_status TEXT,
+        approved_by_role TEXT, action_taken TEXT, status TEXT, proposal_actor_id TEXT,
+        decided_at TEXT, decision_day TEXT, economics_json TEXT, precedent_block TEXT, source TEXT)""",
+    # 对齐 engine.resolution_memory.COLUMNS（21 列，四件套血缘）+ source
+    "resolution_memory": """(memory_id TEXT PRIMARY KEY, risk_event_id TEXT, rule_id TEXT,
+        lane TEXT, severity TEXT, impact_usd REAL, as_of TEXT, proposal_summary TEXT,
+        proposal_version TEXT, cited_precedent_ids TEXT, decision TEXT, decision_note TEXT,
+        offsite_basis TEXT, decided_by TEXT, decided_at TEXT, outcome_resolved TEXT,
+        outcome_days INTEGER, quality_label TEXT, closed_by TEXT, closed_at TEXT, status TEXT,
+        source TEXT)""",
+    # AI 活动流（检测/提案/审批/关闭；actor=sim-ai/sim-approver-01；source=sim）
+    "sim_ai_activity": """(ai_event_id TEXT PRIMARY KEY, sim_date TEXT, actor TEXT, activity TEXT,
+        risk_event_id TEXT, task_id TEXT, detail TEXT, source TEXT)""",
 }
 
 
@@ -237,6 +266,18 @@ def _sim_rows(world, cfg):
             "route_id": s["route_id"], "sailing_id": s["sailing_id"],
         } for s in (world["shipments"][k] for k in sorted(world["shipments"]))],
         "sim_event_log": sorted(world["event_log"], key=lambda e: e["sim_event_id"]),
+        "sim_cycle_counts": sorted(world.get("_cycle_counts", []),
+                                   key=lambda c: c["cycle_count_id"]),
+    }
+
+
+def _s2_rows(world):
+    """AI 回路产物 → risk_events/tasks/resolution_memory/sim_ai_activity 行（确定性排序，全 source='sim'）。"""
+    return {
+        "risk_events": [world["risk_events"][k] for k in sorted(world.get("risk_events", {}))],
+        "tasks": [world["tasks"][k] for k in sorted(world.get("tasks", {}))],
+        "resolution_memory": sorted(world.get("memory", []), key=lambda m: m["memory_id"]),
+        "sim_ai_activity": sorted(world.get("ai_activity", []), key=lambda a: a["ai_event_id"]),
     }
 
 
@@ -276,12 +317,12 @@ def write_simworld(world, cfg, path=None):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).unlink(missing_ok=True)
     con = sqlite3.connect(path)
-    obj, sim = _rows(world), _sim_rows(world, cfg)
+    obj, sim, s2 = _rows(world), _sim_rows(world, cfg), _s2_rows(world)
     counts = {}
-    for name, ddl in list(OBJECT_DDL.items()) + list(SIM_DDL.items()):
+    for name, ddl in list(OBJECT_DDL.items()) + list(SIM_DDL.items()) + list(S2_DDL.items()):
         con.execute(f"CREATE TABLE {name} {ddl}")
         cols = _colnames(ddl)
-        rows = obj.get(name, sim.get(name, []))
+        rows = obj.get(name, sim.get(name, s2.get(name, [])))
         con.executemany(
             f"INSERT INTO {name} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
             [[_cell(r.get(c, "")) for c in cols] for r in rows])

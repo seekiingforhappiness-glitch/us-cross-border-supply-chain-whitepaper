@@ -63,17 +63,27 @@ def init_dynamic(world):
 
 
 def _nid(world, key, prefix, width=5):
-    world["counters"][key] += 1
+    world["counters"][key] = world["counters"].get(key, 0) + 1  # 容 S2 新计数键（cc/rsk/task/mem/ai）
     return f"{prefix}-{world['counters'][key]:0{width}d}"
 
 
-def _log(world, day, kind, otype, oid, params, stream):
-    """sim_event_log：世界知道自己做了什么（类型/参数/种子路径）。"""
+def log_event(world, day, kind, otype, oid, params, stream,
+              caused_by=None, severity=None, family=None):
+    """sim_event_log：世界知道自己做了什么（类型/参数/种子路径 + S2 异常谱系字段）。
+    caused_by/severity/family 供 S2 异常与连锁链使用（正常业务事件留空）；返回事件 id 供 caused_by 引用。"""
+    eid = _nid(world, "evt", "SEV", 7)
     world["event_log"].append({
-        "sim_event_id": _nid(world, "evt", "SEV", 7), "sim_date": day.isoformat(),
+        "sim_event_id": eid, "sim_date": day.isoformat(),
         "event_kind": kind, "object_type": otype, "object_id": oid,
         "params_json": params, "rng_stream": stream,
+        "caused_by": caused_by or "", "severity": severity or "", "family": family or "",
     })
+    return eid
+
+
+def _log(world, day, kind, otype, oid, params, stream):
+    """正常业务事件（S1 口径不变）：转调 log_event，异常字段留空。"""
+    return log_event(world, day, kind, otype, oid, params, stream)
 
 
 # ---------- 1. 新订单（客户节奏 × 季节曲线 × SKU 日销）----------
@@ -152,7 +162,9 @@ def _emit_pos_for_so(world, day, so_id, line_ids, streams):
         po_id = _nid(world, "po", "PO-SIM", 5)
         s = world["suppliers"][sup]
         ready = push_past_cny(cfg, day + timedelta(days=s["lead_time_days"]))
-        # ANOMALY-HOOK(S2)：chronic_delay 供应商在此把 ready 往后推（R7 供应商交期延误）。S1 不推。
+        # ANOMALY-HOOK(S2)：chronic_delay/低 reliability 供应商在此把 ready 往后推（交期延误，向下游传导）。
+        from . import anomalies as AN
+        ready = AN.supplier_delay(world, po_id, s, ready, day, streams)
         total_qty = sum(world["lines"][lid]["qty"] for lid in by_sup[sup])
         world["pos"][po_id] = {"po_id": po_id, "supplier_id": sup, "so_id": so_id,
                                "line_ids": by_sup[sup], "qty": total_qty, "po_date": day,
@@ -271,6 +283,7 @@ def _create_shipment(world, book_day, sail, line_ids, units, streams):
         world["lines"][lid]["line_status"] = "allocated"
         world["lines"][lid]["_shipped"] = True
     # 计划里程碑（时钟到点逐日 emit；ANOMALY-HOOK(S2)：延误/甩柜/查验在此改计划）
+    ship["_book_day"] = book_day       # 异常注入决定发生在订舱当日（≤ as_of，供异常日志用，防未来泄漏）
     _plan_milestones(world, ship, streams)
     world["shipments"][sid] = ship
     _log(world, book_day, "shipment_booked", "Shipment", sid,
@@ -305,6 +318,9 @@ def _plan_milestones(world, ship, streams):
     plan.append((delivered, "delivered", ""))
     ship["plan"] = sorted(plan, key=lambda x: x[0])
     ship["_delivered_date"] = delivered
+    # ANOMALY-HOOK(S2)：延误族（顺延 arrived+）/查验 hold/单证缺失在此改计划，并起连锁（滞箱/库存倒计时）。
+    from . import anomalies as AN
+    AN.reshape_plan(world, ship, streams)
 
 
 # ---------- 4. 里程碑 emit（时钟到点逐日发；到港 putaway；妥投标记开票）----------
@@ -323,6 +339,9 @@ def emit_milestones(world, day, streams):
                 _apply_status(world, ship, etype, ev_date)
                 if etype == "arrived":
                     _putaway(world, ship, ev_date)
+                    # ANOMALY-HOOK(S2)：低 credibility 货代到港口径与船司矛盾 → 成对里程碑（reshape 已标记）
+                    from . import anomalies as AN
+                    AN.maybe_contradiction(world, ship, ev_date, streams)
             else:
                 ship["_report_stalled"] = True  # 该事件未上报 → 该船后续里程碑全部冻结（链保持合法前缀）
 
@@ -400,14 +419,23 @@ def emit_inventory(world, day, streams):
     cfg = world["_cfg"]
     f = cfg["inventory"]["consume_factor"]
     region_share = cfg["inventory"]["region_share"]
-    # ANOMALY-HOOK(S2)：断货(R16)/不可履约(R17)/盘点差异(R18) 在此按库存派生。S1 只做正常流动。
+    from . import anomalies as AN
+    reorder_cover = cfg["inventory"].get("reorder_cover_days", 0)
+    disrupted = AN.disrupted_keys(world, day)          # 连锁断货窗内的 position 豁免例行补货
     for key in world["inventory"]:
         kid, wid = key
         pos = world["inventory"][key]
         region = world["warehouses"][wid]["region"]
         vel = world["skus"][kid]["daily_velocity"]
-        consume = int(round(vel * region_share.get(region, 0.2) * f))
+        share = region_share.get(region, 0.2)
+        consume = int(round(vel * share * f))
         pos["available_qty"] = max(0, pos["available_qty"] - consume)
+        # 例行补货（正常仓储行为）：触及安全库存(≤)即补到 安全+覆盖天数×日销；连锁窗内 position 豁免。
+        # 用 ≤（非 <）：否则逐日 -1 的 position 会在某 tick 恰好停在 =safety（不补），被 R16(≤safety) 误报为断货噪声。
+        if reorder_cover and key not in disrupted and pos["available_qty"] <= pos["safety_stock"]:
+            pos["available_qty"] = pos["safety_stock"] + int(round(vel * share * reorder_cover)) + 1
+    # ANOMALY-HOOK(S2)：连锁断货（大促窗被延误标记的 position 压至安全库存下 → R16）+ 盘点差异（仓储族）
+    AN.inject_inventory(world, day, streams)
 
 
 # ---------- 6. 开票与对账周期（妥投后货代出账；每行挂柜）----------
@@ -423,11 +451,11 @@ def emit_invoicing(world, day, streams):
         issue = ship["_delivered_date"] + timedelta(days=rng.randint(lo, hi))
         if issue != day or issue > as_of:
             continue
-        _issue_invoice(world, ship, issue, rng)
+        _issue_invoice(world, ship, issue, streams)
         ship["_invoiced"] = True
 
 
-def _issue_invoice(world, ship, issue_day, rng):
+def _issue_invoice(world, ship, issue_day, streams):
     cfg = world["_cfg"]
     fwd = world["forwarders"][ship["forwarder_id"]]
     rc = cfg["rate_card"]
@@ -456,6 +484,9 @@ def _issue_invoice(world, ship, issue_day, rng):
     # 票级费种（DOC/ISF/CUS）挂 primary 柜（保证每行有对应柜）
     for code in ("DOC", "ISF", "CUS"):
         add_line(code, primary, 1, rc[code]["base"] * mult)
+    # ANOMALY-HOOK(S2)：费用族（泡重/费率超收/重复计费/旺季计划外附加）+ 查验费 + 滞箱连锁，按货代性格注入
+    from . import anomalies as AN
+    AN.inject_billing(world, ship, lines, add_line, primary, issue_day, streams, mult)
     total = round(sum(l["amount_usd"] for l in lines), 2)
     world["invoices"].append({
         "invoice_id": inv_id, "vendor_type": "forwarder", "vendor_name": fwd["name"],
