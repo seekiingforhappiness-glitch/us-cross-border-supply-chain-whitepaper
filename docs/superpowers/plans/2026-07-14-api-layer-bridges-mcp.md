@@ -190,8 +190,11 @@ grep -rn "ROLE_PERMS = {" app/actions.py   # 期望：无硬编码字面量（�
 - Create: `pipeline/generate_ddl.py`（DDL 生成 + `--shadow` 影子对比模式)
 - Modify: `pipeline/build_ontology.py`（34 处硬编码 `table(...)` 改为消费生成 DDL；插入前
   `model_validate` 校验，分 warn→enforce 两档）
-- Modify: `ontology/control-tower-ontology.json`（若 M1 后仍有派生列缺声明，此处补齐；
-  `llm_calls` 表的 `call_type` CHECK 扩值 `'mcp_tool'`——为 M4 审计预留，DDL 同源改）
+- Modify: `ontology/control-tower-ontology.json`（若 M1 后仍有派生列缺声明，此处补齐）
+  ［勘误#3 2026-07-14：原文将 `llm_calls.call_type` CHECK 扩值划入 M3——错误。`llm_calls` 的
+  DDL 家在 `agent/egress_gate.py`（审计基础设施表），不在本体 34 对象表生成范围，M3 影子 diff
+  不会也不该看它。CHECK 扩值移交 M4（其 Files 增 `agent/egress_gate.py`），M3 影子模式预期差异
+  修正为**纯 5 处（A#2-6）**。］
 
 **类型映射（唯一权威表）：**
 | 本体 type | Pydantic | SQLite DDL |
@@ -206,7 +209,7 @@ grep -rn "ROLE_PERMS = {" app/actions.py   # 期望：无硬编码字面量（�
 **执行顺序（影子模式是安全带，不得跳过）：**
 1. 生成器 + 模型产出，`python3 -m pipeline.generate_ddl --shadow`：逐表 diff 生成 DDL vs 实库
    schema，**预期差异恰好 5 处**（A#2-6：`skus` 的 declared_value_usd / package_l_cm / package_w_cm /
-   package_h_cm / package_weight_kg，TEXT→REAL）+ `llm_calls.call_type` CHECK 扩值。多一处少一处都停下报告。
+   package_h_cm / package_weight_kg，TEXT→REAL；勘误#3 后不含 llm_calls）。多一处少一处都停下报告。
 2. 影子报告确认后切换 build_ontology 建表路径；`model_validate` 先 warn-only 全量跑一遍
    （期望 0 违例——datagen 产的就是合法数据），随后切 enforce。
 3. 重建库全量回归。**特别验证**：engine 数值规则在 REAL 列上的 R/P 仍 1.000、真值 md5 不变；
@@ -239,6 +242,8 @@ EOF
 - Create: `agent/mcp-config.json`（正式 config，`--role` 参数化）
 - Modify: `agent/llm_agent.py`（新增 provider `claude_cli_mcp`：`claude -p --mcp-config ...` 多轮
   真调用；原 `claude_cli` 单发合成保留为回退档）
+- Modify: `agent/egress_gate.py`（勘误#3 移入：`llm_calls.call_type` CHECK 扩值 `'mcp_tool'`，
+  该表 DDL 的家在此文件；SQLite 改 CHECK 需重建表，注意存量行迁移）
 - Modify: `config/agent.yaml`（或现有 agent 配置文件，执行者核对实际路径）：
   `provider: claude_cli_mcp` + `fallback_provider: claude_cli`——裁3 的一键回退开关
 - Modify: `app/` 各对象工作台「询问」按钮的 provider 读取处（沿 config，代码应零改动或仅传参）
