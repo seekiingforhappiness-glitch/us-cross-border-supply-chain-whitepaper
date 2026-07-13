@@ -1,8 +1,26 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-12（企业 AI 实施手册）
+更新时间：2026-07-13（V5 桥1+MCP PoC 交付）
 
 ## 当前位置
+
+> **V5 本体运行时化·第一批交付（2026-07-13，Daniel 三项全批后执行）**：缘起 Daniel 照透视镜 v2 后
+> "感觉不托底"——诊断证实本体 JSON 只被展示层引用（引擎/动作/AI 层零引用，两张皮），主通道 claude_cli
+> 为单发合成（模型朗读预取简报非真工具调用）。决议见决策日志 V5；调研存档 docs/research/
+> 2026-07-13-ontology-runtime-best-practices.md。**桥 1 一致性闸门已交付**：pipeline/ontology_lint.py
+> （四类断言 A 对象↔表/B 动作↔权限/C 动作↔AI 工具/D 关系↔外键，报告/--strict 双模式），首跑基线
+> **15 处差异**（A10/B2/C0/D3，docs/research/2026-07-13-ontology-runtime-gap-baseline.md）——
+> 其中 **C 类冻结区零差异**（审批/关闭类动作既不在 TOOL_DEFS 又被 FORBIDDEN 显式拉黑）；
+> 疑似真问题 #1：ROLE_PERMS 含 procurement→ProposeMitigation 而本体未声明——核对为 P4 裁决（人批）
+> 后本体滞后，**桥 2 补本体，勿删代码授权**。B 类另有 3 动作无权限登记（CreateRiskEvent/A9/A10），桥 2 厘清。
+> **MCP PoC 部分通**（poc/mcp-ontology/，新顶层目录=V5-② 工作区，此处登记）：零依赖 stdio MCP server
+> 3 只读工具，独立客户端 8/8 断言过、答案与库真值逐字一致、call_log.jsonl 留证、mode=ro 物理只读；
+> 工具 schema 的对象/关系枚举已从本体 JSON 生成（桥 2 预演）。**唯一未验环节=claude CLI 端到端**，
+> 卡"Not logged in"（非交互环境无法 OAuth）——**待 Daniel 交互式 /login 后按 PoC 报告 §4 一条命令验完**
+> （docs/research/2026-07-13-mcp-poc-report.md）。独立 Sonnet 验收 7 项 6 过；唯一不符项（engine.evaluate
+> 50/51）经裁决为**评估基线状态前提**：seed_demo_ops 会改运营字段（设计内），跑过后个别匹配项偏移，
+> 从 build_ontology 重建起步则全绿（已实测两轮，test_closed_loop/agent.evaluate 用临时副本不污染工作库）。
+> **下一步：Daniel 补验 MCP 一条命令 → 开新会话（读本文件接管）做 API 层=桥2+桥3+MCP 正式化 → 驾驶舱 → 透视镜 v3**。
 
 > **FDE × Ontology 系列研究手册（2026-07-12）**：已用 Record & Replay 确认“纳米巨人”抖音主页第 1—11 集系列边界，逐集取得真实媒体（约 75 分钟）并用本地 Whisper small 离线转写；结合 Palantir/OpenAI/Blackstone 官方资料完成事实核验与方法内化。新增 `docs/fde-ontology-delivery-playbook.md`：把系列观点转成 1—5 天 Bootcamp、最小本体、动作/权限、自主权、评估与 FDE 产品化的可执行手册，并明确未证实实现细节与本仓库真实缺口。未修改 ontology、规则、代码、KPI 或决策日志。
 
@@ -132,6 +150,7 @@
 - **复现（完整链）**：`python3 -m datagen.generate && python3 -m pipeline.build_ontology && python3 -m engine.detect &&
   python3 -m datagen.seed_demo_ops && streamlit run app/streamlit_app.py`（改代码后**完整重启** streamlit，别热重载）。
   评估器 engine.evaluate/evaluate_cost/evaluate_procurement/evaluate_warehouse 全 R/P=1.000；真值只在 `data/truth/`、引擎禁读。
+  **评估前提**：evaluate 逐项全绿以 build_ontology+detect 的规范态为基线；跑过 seed_demo_ops（演示增强，会改运营字段）后个别匹配项偏移属预期，重建即恢复。一致性闸门：`python3 -m pipeline.ontology_lint`（--strict 供发布阻断）。
 - **面客走查台本**：`docs/demo-walkthrough.md`（5 分钟故事：切角色→点对象→对象级 agent→现货救延误→越权被挡）。
 - **M1 Task 1 已完成并通过 controller review**：Daniel 已批准 demo named actor + maker-checker 的动作边界升级；
   已按批准范围实现 `app/action_context.py`、动作层 proposer/approver 校验、稳定任务 ID、事务 helper 与 schema 文档；四项动作回归测试全绿。
