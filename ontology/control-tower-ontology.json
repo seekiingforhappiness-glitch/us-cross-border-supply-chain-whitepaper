@@ -1,5 +1,5 @@
 {
-  "version": "0.10.0",
+  "version": "0.10.1",
   "name": "cross_border_unified_ontology",
   "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账 + 仓储库存，五场景共享）",
   "scope": "Five scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice); (5) warehouse inventory accuracy (Warehouse / InventoryPosition / InventoryReservation / CycleCount) — all REUSING the RiskEvent/Task closed loop (F1/P1/W1). Shared objects zero duplication.",
@@ -227,6 +227,7 @@
         {"name": "warehouse_id", "type": "string", "required": false, "description": "v0.7 (W1): anchor for warehouse anomalies (R16-R18); null for other scenarios. Mimics the po_id anchor (add-field-not-join-table); the only new RiskEvent column W1 adds."},
         {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3). Empty for cost/procurement anomalies. v0.7 (W1): for warehouse anomalies this generic list carries the primary affected business-object id — R16=[inventory_position_id], R17=[so_line_id], R18=[cycle_count_id] — same pattern as procurement's affected_po_line_ids, so W1 adds only warehouse_id."},
         {"name": "affected_invoice_line_ids", "type": "json_list", "required": false, "description": "v0.4: affected cost invoice lines; null for logistics/procurement risks."},
+        {"name": "affected_sku_ids", "type": "string", "required": false, "description": "N:M 承载列，json 数组存受影响 SKU 主键；risk_affects_sku 的正式承载（V6-裁1）。R14 单一来源断供锚定 SKU 时写入；affected_po_line_ids 仍并行装 [sku_id] 供既有采购评估器匹配（evaluate_procurement._anchor_det 消费 [0]），两列并存——退役需评估器改口，违『评估器全绿+真值不动』约束故保留。"},
         {"name": "affected_value_usd", "type": "number", "derived": true},
         {"name": "detected_at", "type": "date", "required": true, "description": "as_of_date at detection."},
         {"name": "root_cause", "type": "string", "required": true},
@@ -745,7 +746,7 @@
     {"linkType": "rfq_has_quote", "source": "RFQ", "target": "Quote", "cardinality": "1:N"},
     {"linkType": "rfq_line_for_sku", "source": "RFQLine", "target": "Sku", "cardinality": "N:1"},
     {"linkType": "quote_from_supplier", "source": "Quote", "target": "Supplier", "cardinality": "N:1", "rule": "P3: awarded quote certifies the supplier as an approved source for the SKU (AVL); drives R14/R15"},
-    {"linkType": "risk_affects_sku", "source": "RiskEvent", "target": "Sku", "cardinality": "N:M", "via": "affected_po_line_ids reused as [sku_id] carrier for R14 single-source (P3)", "status": "declared_only"}
+    {"linkType": "risk_affects_sku", "source": "RiskEvent", "target": "Sku", "cardinality": "N:M", "via": "affected_sku_ids"}
   ],
   "stateMachines": {
     "Shipment": {

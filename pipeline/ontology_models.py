@@ -1,4 +1,4 @@
-# GENERATED FROM ontology v0.10.0 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
+# GENERATED FROM ontology v0.10.1 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
 # -*- coding: utf-8 -*-
 """桥3 结构生成产物：本体 34 对象的 Pydantic 模型（数据契约校验用）。
 
@@ -185,6 +185,7 @@ class RiskEvent(_Base):
     warehouse_id: Optional[str] = None
     affected_so_line_ids: str
     affected_invoice_line_ids: Optional[str] = None
+    affected_sku_ids: Optional[str] = None
     affected_value_usd: Optional[float] = None
     detected_at: str
     root_cause: str

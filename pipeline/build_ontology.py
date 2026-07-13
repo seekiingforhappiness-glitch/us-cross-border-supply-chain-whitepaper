@@ -666,12 +666,17 @@ def main():
     # W1（仓储）：RiskEvent 锚点再泛化——增可空 warehouse_id（仿 po_id 锚点，既有列不动，追加尾部）。
     #   R16-R18 用 warehouse_id + affected_so_line_ids（承载受影响业务对象 id：R16=InventoryPosition、
     #   R17=SalesOrderLine、R18=CycleCount，与采购 affected_po_line_ids 同构，决策 W1 仅批 warehouse_id）。
+    # V6-裁1（补）：增可空 affected_sku_ids（risk_affects_sku 的正式 N:M 承载列，json 数组存 sku_id；
+    #   R14 单一来源写入）。注意：risk_events 是运行期空表、DDL 在此**硬编码**（不走 object_ddls 生成
+    #   路径，因无 build 期行数据可插），故新列须在此手动追加尾部、与本体 RiskEvent.properties 同步；
+    #   affected_po_line_ids 仍并行装 [sku_id] 供既有采购评估器匹配（evaluate_procurement._anchor_det）。
     cur.execute("""CREATE TABLE risk_events (risk_event_id TEXT PRIMARY KEY, type TEXT,
         rule_id TEXT, severity TEXT, shipment_id TEXT, affected_so_line_ids TEXT,
         affected_value_usd REAL, detected_at TEXT, root_cause TEXT, status TEXT,
         resolved_at TEXT, outcome TEXT, resolution_summary TEXT,
         affected_invoice_line_ids TEXT,
-        po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT, warehouse_id TEXT)""")
+        po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT, warehouse_id TEXT,
+        affected_sku_ids TEXT)""")
     cur.execute("""CREATE TABLE tasks (task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT,
         assignee_role TEXT, priority TEXT, due_at TEXT, proposed_action TEXT,
         proposal_params TEXT, approval_status TEXT, approved_by_role TEXT,

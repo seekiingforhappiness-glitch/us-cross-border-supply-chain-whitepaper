@@ -239,7 +239,14 @@ def apply_sourcing_candidates(con, cands, as_of):
     """P3 采购富化2 RiskEvent 写库（R14/R15）。与采购/仓储写库同构：不合并、不牵动订单行
     （每锚点唯一 → 恒 create）。R14 锚 supplier_id + affected_po_line_ids=[sku_id]；R15 锚 po_id +
     supplier_id + affected_invoice_line_ids。RSK 序号续既有事件之后（append，不扰动 R1-R18 序号）。
-    审计时间戳用 as_of（D8）。返回 created。"""
+    审计时间戳用 as_of（D8）。返回 created。
+
+    V6-裁1（补）：R14 是唯一锚定 SKU 的规则，检测时把受影响 sku_id 并行写入正式承载列
+    affected_sku_ids（risk_affects_sku 的正式 N:M 载体）。核实到的证据链：既有采购评估器
+    engine/evaluate_procurement.py 的 _anchor_det() 对 R14 消费 affected_po_line_ids[0]=sku_id
+    与真值 sku_id 列匹配——退役旧 hack 需改评估器读法，违 V6『评估器全绿+真值不动』唯一约束，
+    故 hack 保留、新列并行写入（两列并存，语义：affected_po_line_ids 为兼容载体、affected_sku_ids
+    为正式承载）。R15 非 SKU 锚 → affected_sku_ids=None。"""
     cur = con.cursor()
     ts = f"{as_of.isoformat()}T00:00:00Z"
     seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
@@ -253,15 +260,20 @@ def apply_sourcing_candidates(con, cands, as_of):
     for c in sorted(cands, key=_order):
         seq += 1
         rid = f"RSK-{seq:04d}"
+        # V6-裁1：affected_sku_ids 正式承载 risk_affects_sku。R14 锚定 SKU（sku_id 载于
+        # affected_po_line_ids），并行写入正式列；R15 非 SKU 锚 → None。见函数 docstring 证据链。
+        sku_ids = c["affected_po_line_ids"] if c["rule_id"] == "R14" else None
         cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
                        shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
                        root_cause, status, resolved_at, outcome, resolution_summary,
-                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
+                       affected_sku_ids)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
                      c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
                      None, None, None, c.get("affected_invoice_line_ids"),
-                     c["po_id"], c["supplier_id"], c["affected_po_line_ids"]))
+                     c["po_id"], c["supplier_id"], c["affected_po_line_ids"],
+                     sku_ids))
         cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
                        params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
                     ("engine", "system", "CreateRiskEvent", rid,

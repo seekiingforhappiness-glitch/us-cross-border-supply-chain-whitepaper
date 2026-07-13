@@ -184,7 +184,8 @@ def _seed_memory_db(onto):
         "INSERT INTO shipments (shipment_id, po_ids, destination_warehouse) VALUES ('SHP-2','PO-3','WH-1');"
         "INSERT INTO purchase_orders (po_id) VALUES ('PO-1');"
         "INSERT INTO warehouses (warehouse_id) VALUES ('WH-1');"
-        "INSERT INTO risk_events (risk_event_id, affected_so_line_ids) VALUES ('RSK-1','[\"L1\", \"L2\"]');")
+        "INSERT INTO risk_events (risk_event_id, affected_so_line_ids, affected_sku_ids) "
+        "VALUES ('RSK-1','[\"L1\", \"L2\"]','[\"SKU-1\"]');")
     con.commit()
     return con
 
@@ -223,12 +224,13 @@ def _traverse_tests(onto):
         check("⑨ N:M 反向(line→risks)",
               traverse(con, "SalesOrderLine", "L1", "risk_affects_line") == ["RSK-1"],
               str(traverse(con, "SalesOrderLine", "L1", "risk_affects_line")))
-        # declared_only 拒绝
-        try:
-            traverse(con, "RiskEvent", "RSK-1", "risk_affects_sku")
-            check("⑨ declared_only risk_affects_sku 拒绝(raise)", False, "未 raise")
-        except ValueError as e:
-            check("⑨ declared_only risk_affects_sku 拒绝(raise)", "declared_only" in str(e), str(e)[:70])
+        # V6-裁1：risk_affects_sku 补正式承载列 affected_sku_ids、declared_only 退场，现真实可走（双向）
+        check("⑨ N:M risk_affects_sku(RiskEvent→Sku)（V6-裁1 正式承载）",
+              traverse(con, "RiskEvent", "RSK-1", "risk_affects_sku") == ["SKU-1"],
+              str(traverse(con, "RiskEvent", "RSK-1", "risk_affects_sku")))
+        check("⑨ N:M risk_affects_sku 反向(Sku→risks)",
+              traverse(con, "Sku", "SKU-1", "risk_affects_sku") == ["RSK-1"],
+              str(traverse(con, "Sku", "SKU-1", "risk_affects_sku")))
         # 未知 link 拒绝
         try:
             traverse(con, "Shipment", "SHP-1", "not_a_real_link")

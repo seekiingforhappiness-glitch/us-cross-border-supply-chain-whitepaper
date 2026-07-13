@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 
@@ -201,15 +202,23 @@ def test_traverse_link_positive(client, seed_anchors):
     assert body["neighbor_ids"] == [sid]
 
 
-def test_declared_only_link_422(client):
+def test_risk_affects_sku_traversable(client, con):
+    """V6-裁1（补）：risk_affects_sku 补正式承载列 affected_sku_ids、declared_only 豁免退场——
+    本体不再有 declared_only 关系，R14 单一来源事件的 risk_affects_sku 现真实可走（200 正向遍历，
+    语义跟随裁决，非削弱）。锚点 id 现查现算不硬编码。"""
     onto = load_ontology()
-    declared_only = [l["linkType"] for l in onto["links"] if l.get("status") == "declared_only"]
-    assert declared_only, "本体应至少声明一个 declared_only 关系（M1 裁1：risk_affects_sku）"
-    link = declared_only[0]
-    # declared_only 校验先于对象存在性校验（traverse 内部顺序），任意 id 皆可触发，无需真实种子
-    resp = client.get(f"/objects/RiskEvent/ANY-ID-WORKS-HERE/links/{link}")
-    assert resp.status_code == 422
-    assert "declared_only" in resp.json()["detail"]
+    assert not [l["linkType"] for l in onto["links"] if l.get("status") == "declared_only"], \
+        "V6-裁1 后本体不应再有 declared_only 关系（risk_affects_sku 已补正式承载列 affected_sku_ids）"
+    row = _first_row(
+        con, "SELECT risk_event_id, affected_sku_ids FROM risk_events "
+             "WHERE rule_id='R14' AND affected_sku_ids IS NOT NULL AND affected_sku_ids != '' "
+             "AND affected_sku_ids != '[]' ORDER BY risk_event_id LIMIT 1")
+    rid, expected_skus = row["risk_event_id"], json.loads(row["affected_sku_ids"])
+    resp = client.get(f"/objects/RiskEvent/{rid}/links/risk_affects_sku")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["neighbor_ids"] == expected_skus, (body, expected_skus)
+    assert body["count"] == len(expected_skus)
 
 
 def test_unknown_link_type_422(client, seed_anchors):
