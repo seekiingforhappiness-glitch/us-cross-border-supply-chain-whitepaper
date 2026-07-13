@@ -22,6 +22,11 @@ from . import object_workbench as owb
 from agent import llm_agent
 from agent.egress_gate import log_llm_call
 
+# M4 起询问路径 provider 感知分派（config 默认 claude_cli_mcp=真实查库多轮）。本文件的 P0-2 断言
+# 针对旧单发档语义（monkeypatch answer_over_context），故全程钉住旧档——env 优先于 config，
+# 分派行为本身由下方 P0-2b 用两种 provider 值显式覆盖（不削弱任何既有断言）。
+os.environ["AGENT_PROVIDER"] = "claude_cli"
+
 DB = "data/ontology.sqlite"
 FAILS = []
 
@@ -150,6 +155,58 @@ def main():
             sys.modules.pop("streamlit", None)
     check("P0-2 成功路径正常出答案、不误报「暂时不可用」",
           "建议改期" in fake2.blob and "AI 助手暂时不可用" not in fake2.blob, fake2.blob[:100])
+
+    # ===== P0-2b 询问路径 provider 感知分派（M4：claude_cli_mcp→真实查库新通道，否则旧单发档）=====
+    print("== P0-2b provider 分派：claude_cli_mcp→新通道（带锚点/role 透传）/ 旧值→旧档 / 新通道失败→回落 ==")
+    calls = []
+    real_mcp = llm_agent.answer_via_mcp
+    real_answer2 = llm_agent.answer_over_context
+
+    def _fake_mcp(q, **k):
+        calls.append(("mcp", q, k.get("role")))
+        return "MCP答案（真实查库）"
+
+    def _fake_old(q, ctx, **k):
+        calls.append(("briefing", q, k.get("role")))
+        return "旧档答案（简报 grounding）"
+
+    def _mcp_down(q, **k):
+        calls.append(("mcp_fail", q, k.get("role")))
+        raise RuntimeError("simulated: MCP 通道不可用")
+
+    llm_agent.answer_via_mcp = _fake_mcp
+    llm_agent.answer_over_context = _fake_old
+    try:
+        os.environ["AGENT_PROVIDER"] = "claude_cli_mcp"
+        ans, ch = owb._ask_llm("这票为什么延误？", "简报Y", "ops", DB,
+                               anchor=("RiskEvent", "RSK-0001"))
+        check("P0-2b provider=claude_cli_mcp → 走新通道（channel=mcp，不动简报）",
+              ch == "mcp" and ans == "MCP答案（真实查库）", str((ans, ch)))
+        check("P0-2b 新通道问题带工作台锚点（对象类型+ID，模型才知道问的是谁）",
+              calls and calls[0][0] == "mcp" and "RiskEvent" in calls[0][1]
+              and "RSK-0001" in calls[0][1] and "这票为什么延误" in calls[0][1], str(calls[:1])[:160])
+        check("P0-2b 新通道 role 透传（server 侧按角色过滤/脱敏）",
+              calls and calls[0][2] == "ops", str(calls[:1])[:120])
+
+        calls.clear()
+        os.environ["AGENT_PROVIDER"] = "claude_cli"
+        ans, ch = owb._ask_llm("这票为什么延误？", "简报Y", "ops", DB,
+                               anchor=("RiskEvent", "RSK-0001"))
+        check("P0-2b provider=claude_cli → 维持旧单发档（answer_over_context，调用逐字不变）",
+              ch == "briefing" and ans == "旧档答案（简报 grounding）"
+              and calls == [("briefing", "这票为什么延误？", "ops")], str((ans, ch, calls))[:160])
+
+        calls.clear()
+        llm_agent.answer_via_mcp = _mcp_down
+        os.environ["AGENT_PROVIDER"] = "claude_cli_mcp"
+        ans, ch = owb._ask_llm("怎么办？", "简报Y", "ops", DB, anchor=("Task", "TSK-X"))
+        check("P0-2b 新通道失败 → 回落旧档（裁3 降级链第一跳：MCP→answer_over_context）",
+              ch == "briefing" and ans == "旧档答案（简报 grounding）"
+              and calls[0][0] == "mcp_fail" and calls[1][0] == "briefing", str((ans, ch, calls))[:200])
+    finally:
+        llm_agent.answer_via_mcp = real_mcp
+        llm_agent.answer_over_context = real_answer2
+        os.environ["AGENT_PROVIDER"] = "claude_cli"  # 复位：本文件其余部分继续钉旧档
 
     # ===== 动态锚点（AppTest 读真库）=====
     first_risk = con.execute(

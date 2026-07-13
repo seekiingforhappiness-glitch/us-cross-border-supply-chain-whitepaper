@@ -13,15 +13,19 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import time
 
 from .egress_gate import (FailureTracker, apply_context_budget, budget_for, empty_report,
-                          log_llm_call, merge_reports, sanitize_for_egress)
+                          load_llm_config, log_llm_call, merge_reports, sanitize_for_egress)
 from .tools import AgentSession, TOOL_DEFS
 
 DEFAULT_DB = "data/ontology.sqlite"  # llm_calls 落库位置（与对象库同库，spec §9）
 CLAUDE_CLI_TRACKER = FailureTracker("claude_cli")  # claude_cli 连续失败降级（进程内单例）
+CLAUDE_CLI_MCP_TRACKER = FailureTracker("claude_cli_mcp")  # M4 主通道 MCP 多轮，独立降级计数
+# M4 正式 MCP config（绝对路径，脱 cwd 依赖）：claude -p --mcp-config 用它起本体只读 server
+_MCP_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp-config.json")
 
 
 def _last_cli_status(db=DEFAULT_DB):
@@ -317,17 +321,137 @@ def _run_claude_cli(question, session, max_turns, verbose):
                                verbose=verbose, db=session.con)
 
 
-def run_agent(question, session=None, max_turns=8, verbose=True):
-    session = session or AgentSession()
-    # 默认走本账号 Claude 订阅（claude CLI）+ Opus 4.8；可用 AGENT_PROVIDER 切 openai/anthropic。
-    provider = os.environ.get("AGENT_PROVIDER", "claude_cli").lower()
+# —— M4 主通道 claude_cli_mcp provider：走本账号 Claude 订阅 + 本体只读 MCP server 多轮真调用 ——
+# 与旧 claude_cli（单发合成，Python 先取好上下文让模型朗读）本质不同：这里模型经 MCP 协议
+# **自己开口要数据**（查货件→沿关系走到风险→逐个深查），系统当场只读查库返给它。裁3 决议：新旧
+# 双通道并存，config 一键回退（provider 改回 claude_cli 即退旧档）；MCP 失败→回退 provider→确定性简报。
+def _mcp_allowed_tool_args():
+    """允许 claude 调用的 MCP 工具全名 mcp__ontology__*（读工具 11 + traverse，单一来源自 mcp_server）。
+    列全集即可——server 侧按 --role/env 再过滤 tools/list，模型实际只见角色可见子集。"""
+    from .mcp_server import build_readonly_tool_defs, SERVER_NAME
+    from pipeline.ontology_runtime import load_ontology
+    names = [t["name"] for t in build_readonly_tool_defs(load_ontology())]
+    return ",".join(f"mcp__{SERVER_NAME}__{n}" for n in names)
+
+
+def _invoke_cli_mcp(prompt, role, model, max_turns, timeout, verbose):
+    """真实出境点（MCP 多轮，测试可替换本函数模拟）：claude -p 经 --mcp-config 起本体只读 MCP server，
+    模型多轮自调只读工具后作答。失败一律抛 RuntimeError 族（可被 run_agent 回退链 + 降级计数接住）。
+    role 经环境变量 ONTOLOGY_MCP_ROLE 传给 server 决定 tools/list 过滤（claude 把父环境透传给 stdio 子进程）。"""
+    import shutil
+    if not shutil.which("claude"):
+        raise RuntimeError("未找到 claude CLI（本账号订阅渠道）。安装并登录 Claude Code 后重试，"
+                           "或改用确定性简报：python3 -m agent.evaluate")
+    cmd = ["claude", "-p", prompt, "--model", model,
+           "--mcp-config", _MCP_CONFIG_PATH, "--strict-mcp-config",
+           "--allowedTools", _mcp_allowed_tool_args(), "--output-format", "json",
+           "--max-turns", str(max(int(max_turns), 12)),  # 多轮工具往返留足余量（PoC 实测 num_turns≈7）
+           "--permission-mode", "bypassPermissions"]     # 工具均只读，可安全放行（PoC 报告 §4 备注）
+    env = {**os.environ, "ONTOLOGY_MCP_ROLE": role or "ops"}
+    if verbose:
+        print(f"  [claude_cli_mcp] role={role} model={model} 经 MCP 只读工具多轮真调用…", file=sys.stderr)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(f"claude CLI(MCP) 退出码 {proc.returncode}：{(proc.stderr or '')[:200]}")
+    try:
+        envelope = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(f"claude CLI(MCP) 输出非 JSON（前 200 字）：{(proc.stdout or '')[:200]}")
+    if envelope.get("is_error"):
+        raise RuntimeError(f"claude CLI(MCP) 报错：{str(envelope.get('result'))[:200]}")
+    return envelope.get("result", "")
+
+
+def answer_via_mcp(question, role="ops", db=DEFAULT_DB, max_turns=8, verbose=False, timeout=180):
+    """M4 新通道公共入口（UI 询问按钮与 run_agent 共用同一实现）——claude_cli_mcp 出境统一闸口
+    （与 _claude_cli_call 同规）：①白名单摘除 ②降级 fail-fast（连续失败冷却后放行探测）③真实多轮
+    MCP 工具调用 ④llm_calls 落 briefing 行（provider=claude_cli_mcp，ok/error/degraded 全写）。
+    逐次工具调用另由 MCP server 审计写连接落 call_type='mcp_tool' 行——双层审计（整体一行+逐工具多行）。
+    role 决定 server 侧 tools/list 过滤与脱敏（经 ONTOLOGY_MCP_ROLE 透传）；db 收 llm_calls（路径或连接）。"""
+    model = os.environ.get("AGENT_MODEL", "claude-opus-4-8")
+    clean, report = sanitize_for_egress(question)
+    if not CLAUDE_CLI_MCP_TRACKER.should_attempt():
+        msg = (f"claude_cli_mcp 降级模式生效（连续失败 {CLAUDE_CLI_MCP_TRACKER.failures} 次 ≥ 阈值 "
+               f"{CLAUDE_CLI_MCP_TRACKER.threshold}，冷却未满）：本次未出境，回退 provider")
+        _safe_log(db, call_type="briefing", provider="claude_cli_mcp", model=model, status="degraded",
+                  input_chars=len(clean), error=msg, redactions=report)
+        raise LLMDegradedError(msg)
+    t0 = time.time()
+    try:
+        out = _invoke_cli_mcp(clean, role, model, max_turns, timeout, verbose)
+    except Exception as exc:
+        CLAUDE_CLI_MCP_TRACKER.record_failure()
+        _safe_log(db, call_type="briefing", provider="claude_cli_mcp", model=model, status="error",
+                  input_chars=len(clean), duration_ms=int((time.time() - t0) * 1000),
+                  error=str(exc)[:300], redactions=report)
+        raise
+    CLAUDE_CLI_MCP_TRACKER.record_success()
+    _safe_log(db, call_type="briefing", provider="claude_cli_mcp", model=model, status="ok",
+              input_chars=len(clean), output_chars=len(out),
+              duration_ms=int((time.time() - t0) * 1000), redactions=report)
+    return out.strip()
+
+
+def _run_claude_cli_mcp(question, session, max_turns=8, verbose=True, timeout=180):
+    """run_agent 的 MCP 通道适配层：从 session 取 role（server 侧过滤/脱敏）与库（llm_calls 落点），
+    委托 answer_via_mcp（单一实现，UI 与 CLI 入口共用）。"""
+    return answer_via_mcp(question, role=getattr(session, "role", "ops") or "ops",
+                          db=getattr(session, "con", None) or DEFAULT_DB,
+                          max_turns=max_turns, verbose=verbose, timeout=timeout)
+
+
+def _resolve_provider():
+    """主通道 provider 解析（裁3 可回退）：环境变量 AGENT_PROVIDER（最高，向后兼容）> config/llm.yaml
+    agent.provider（默认新通道 claude_cli_mcp）> 兜底 claude_cli（配置缺失时安全回落旧档）。"""
+    env = os.environ.get("AGENT_PROVIDER")
+    if env:
+        return env.strip().lower()
+    try:
+        p = load_llm_config().get("agent", {}).get("provider")
+        return str(p).strip().lower() if p else "claude_cli"
+    except Exception:  # noqa: BLE001 —— 配置读失败绝不成为业务故障点
+        return "claude_cli"
+
+
+def _resolve_fallback_provider():
+    """回退档 provider：config/llm.yaml agent.fallback_provider（缺省 claude_cli）。用于 MCP 主通道
+    失败时优雅降级（MCP 失败→回退 provider→确定性简报，整条链语义保持现状）。"""
+    try:
+        fb = load_llm_config().get("agent", {}).get("fallback_provider")
+        return str(fb).strip().lower() if fb else "claude_cli"
+    except Exception:  # noqa: BLE001
+        return "claude_cli"
+
+
+def _dispatch_provider(provider, question, session, max_turns, verbose):
+    if provider in ("claude_cli_mcp", "mcp"):
+        return _run_claude_cli_mcp(question, session, max_turns, verbose)
     if provider in ("claude_cli", "claude", "cli"):
         return _run_claude_cli(question, session, max_turns, verbose)
     if provider == "openai":
         return _run_openai(question, session, max_turns, verbose)
     if provider == "anthropic":
         return _run_anthropic(question, session, max_turns, verbose)
-    raise SystemExit(f"不支持的 AGENT_PROVIDER={provider}（可选：claude_cli / openai / anthropic）")
+    raise SystemExit(f"不支持的 provider={provider}"
+                     "（可选：claude_cli_mcp / claude_cli / openai / anthropic）")
+
+
+def run_agent(question, session=None, max_turns=8, verbose=True):
+    """默认走 config 的主通道 provider（M4 起 = claude_cli_mcp：本账号订阅 + 本体只读 MCP 多轮真调用）。
+    主通道失败（RuntimeError/降级/超时）→ 回退 fallback_provider（默认 claude_cli 单发合成）；
+    再失败由 UI/调用方 except 兜确定性简报——裁3 优雅降级链路语义保持现状。"""
+    session = session or AgentSession()
+    provider = _resolve_provider()
+    try:
+        return _dispatch_provider(provider, question, session, max_turns, verbose)
+    except (RuntimeError, LLMDegradedError, subprocess.TimeoutExpired) as exc:
+        fallback = _resolve_fallback_provider()
+        if fallback and fallback != provider:
+            if verbose:
+                print(f"  [provider] 主通道 {provider} 失败（{str(exc)[:80]}）→ 回退 {fallback}",
+                      file=sys.stderr)
+            return _dispatch_provider(fallback, question, session, max_turns, verbose)
+        raise
 
 
 if __name__ == "__main__":

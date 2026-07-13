@@ -154,10 +154,13 @@ def sanitize_for_egress(payload_text, enabled=None):
 # est_*_tokens = chars // 3：粗估非计费口径（无 tokenizer 依赖，够预算/成本监控用），字段名带 est 自明。
 # error 列在任务列清单之外——"必写一行（含失败）"需要失败原因可复盘，最小加列（交付说明列明）。
 # created_at/duration_ms 用真实 UTC 时钟（运行态遥测的诚实值，非业务 as_of；D8 例外，可显式传入注入测试）。
+# call_type 允许值（CHECK 单一事实源）：'mcp_tool' 于 API 层 plan M4（勘误#3）加入——MCP server
+# 每次只读工具调用经审计写连接落一行 call_type='mcp_tool'（订阅通道真工具调用可追溯，与主通道审计统一）。
+LLM_CALL_TYPES = ("briefing", "parse", "proposal", "mcp_tool")
 LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS llm_calls (
     call_id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT NOT NULL,
-    call_type TEXT NOT NULL CHECK (call_type IN ('briefing','parse','proposal')),
+    call_type TEXT NOT NULL CHECK (call_type IN ('briefing','parse','proposal','mcp_tool')),
     provider TEXT NOT NULL,
     model TEXT,
     input_chars INTEGER NOT NULL DEFAULT 0,
@@ -175,6 +178,36 @@ LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS llm_calls (
 def ensure_llm_calls_table(conn: sqlite3.Connection) -> None:
     """建表兜底（幂等）：pipeline.build_ontology 建正表；旧库副本首写运行期补建（仿 M2 兼容模式）。"""
     conn.execute(LLM_CALLS_DDL)
+
+
+def migrate_llm_calls_call_type_check(conn: sqlite3.Connection) -> str:
+    """把 llm_calls.call_type 的 CHECK 扩到含 'mcp_tool'（API 层 plan M4，勘误#3）。
+
+    SQLite 无法 ALTER 既有 CHECK 约束——须**重建表**：存量行整表拷贝到新约束表。本函数**幂等可重跑**：
+      · 表不存在 → 按最新 DDL 建表（含 mcp_tool），返回 'created'；
+      · CHECK 已含 'mcp_tool'（新库/build_ontology 重建后即如此）→ 直接返回 'current'，不动表；
+      · 旧 CHECK（仅 briefing/parse/proposal）→ 12 步重建：改名旧表→建新表→整表 INSERT SELECT→丢旧表。
+    列名/列序与旧表逐一相同（本次仅改 CHECK，不加减列），故 `INSERT INTO llm_calls SELECT * FROM …`
+    列对齐安全。崩溃遗留的中间表 llm_calls__mig_old 每次入口先丢弃，保证重跑不残留。
+
+    调用方：MCP server（agent.mcp_server）审计写连接启动时跑一次——保证 INSERT call_type='mcp_tool'
+    不被旧 CHECK 拒。稳态下（build_ontology 已用新 DDL 重建）本函数即 'current' 空转，审计连接实际
+    只执行 INSERT（不破"审计连接仅 INSERT"的红线语义）。"""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='llm_calls'").fetchone()
+    if row is None:
+        ensure_llm_calls_table(conn)
+        conn.commit()
+        return "created"
+    if "'mcp_tool'" in (row[0] or ""):
+        return "current"
+    conn.execute("DROP TABLE IF EXISTS llm_calls__mig_old")
+    conn.execute("ALTER TABLE llm_calls RENAME TO llm_calls__mig_old")
+    conn.execute(LLM_CALLS_DDL)  # 新 CHECK（含 mcp_tool）
+    conn.execute("INSERT INTO llm_calls SELECT * FROM llm_calls__mig_old")
+    conn.execute("DROP TABLE llm_calls__mig_old")
+    conn.commit()
+    return "migrated"
 
 
 def log_llm_call(db, *, call_type, provider, status, model=None, input_chars=0, output_chars=0,

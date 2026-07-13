@@ -10,3 +10,8 @@ context_budget:            # 每类调用输入上限（chars）。超限=显式
 fallback:                  # claude_cli 回退规则（spec §9：连续失败 3 次自动降级并告警）
   fail_threshold: 3        # 连续失败 N 次进降级模式（简报回退确定性模板）
   cooldown_seconds: 300    # 降级后经冷却放行一次真实探测调用（半开）；恢复成功一次即清零
+
+agent:                     # M4 主通道 provider（裁3 可回退：provider 改回 claude_cli 即退旧单发档）
+  provider: claude_cli_mcp        # 默认新通道：本账号订阅 + 本体只读 MCP server 多轮真调用（模型自查库）
+  fallback_provider: claude_cli   # 主通道失败→单发合成（Python 预取上下文让模型朗读）→再不行确定性简报
+  # 环境变量 AGENT_PROVIDER 优先于本值（向后兼容既有 openai/anthropic 切换与 CI）

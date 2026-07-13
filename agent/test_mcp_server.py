@@ -1,0 +1,270 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""MCP server 正式化四门槛回归（API 层 plan M4）：python3 -m agent.test_mcp_server
+
+在 data/ontology.sqlite 的**临时副本**上（绝不污染工作库），用现查现算的真实锚点验证四道硬门槛：
+
+  ① 角色过滤：tools/list 按角色 × 本体 aiQueryTools[].domain 域矩阵过滤，与 agent.tools
+     allowed_tools_for_role **同一来源与语义**；traverse 对全角色可见；写工具对任何角色不可见。
+  ② 字段脱敏：返回数据按本体 sensitiveFieldRules 声明驱动脱敏（Customer.tier 仅 cs/manager 可见，
+     其余角色返回 MASK；掩码值 == agent.tools.MASK）；越域读被拒并审计。
+  ③ 审计入库：每次工具调用经审计写连接落 llm_calls 一行 call_type='mcp_tool'；CHECK 迁移幂等可重跑；
+     业务连接物理只读（mode=ro，写操作被 SQLite 拒）。
+  ④ 冻结区 + 零写工具：暴露集 ∩ snake_case(frozen 动作) == ∅ 且 暴露集 ∩ {6 个写工具名} == ∅；
+     input_schema 本体驱动（traverse 枚举 = 本体对象/关系；对象字段结构复用 M3 model_json_schema）。
+
+只读断言 + 临时副本。退出码 0 = 全绿。
+"""
+import copy
+import json
+import shutil
+import sqlite3
+import sys
+import tempfile
+from pathlib import Path
+
+from pipeline.ontology_runtime import build_forbidden_tools, load_ontology, snake_case
+from agent.tools import MASK, allowed_tools_for_role
+from agent.egress_gate import (LLM_CALLS_DDL, ensure_llm_calls_table,
+                               migrate_llm_calls_call_type_check)
+import agent.mcp_server as M
+
+FAILS: list[str] = []
+SRC_DB = "data/ontology.sqlite"
+ALL_ROLES = ("ops", "cs", "finance", "manager", "sales", "compliance", "procurement")
+SIX_WRITE = {"assign_task", "propose_mitigation", "create_admission_case",
+             "run_compliance_precheck", "build_logistics_plan", "calculate_cost_scenario"}
+FOUR_FROZEN = {"approve_mitigation", "close_risk_event",
+               "approve_quote_decision", "reject_or_request_more_info"}
+
+
+def check(cond: bool, label: str) -> None:
+    if not cond:
+        FAILS.append(label)
+        print(f"  [FAIL] {label}")
+    else:
+        print(f"  [PASS] {label}")
+
+
+def _tmp_db() -> Path:
+    d = Path(tempfile.mkdtemp(prefix="mcp_test_"))
+    db = d / "ontology.sqlite"
+    shutil.copy(SRC_DB, db)
+    return db
+
+
+def _call(server: M.OntologyMCPServer, name: str, args: dict):
+    res = server.call_tool(name, args)
+    return res["isError"], json.loads(res["content"][0]["text"])
+
+
+def _call_once(role: str, db: Path, name: str, args: dict):
+    """一次性调用：建 server → 调用 → 关连接（测试卫生：避免同一 tmp 库上多写连接争锁；
+    稳态真实 server 单进程单审计连接，无此争用）。"""
+    with M.OntologyMCPServer(role=role, db_path=db) as s:
+        return _call(s, name, args)
+
+
+def _pick_shipment_with_tier(db: Path) -> str | None:
+    """现查现算：找一个 onboard_lines 带客户 tier 的货件（脱敏锚点，绝不硬编码 PoC 旧真值）。"""
+    c = sqlite3.connect(db)
+    row = c.execute("""SELECT a.shipment_id FROM shipment_allocations a
+                       JOIN sales_order_lines l ON l.so_line_id=a.so_line_id
+                       JOIN sales_orders so ON so.so_id=l.so_id
+                       JOIN customers cu ON cu.customer_id=so.customer_id
+                       WHERE cu.tier IS NOT NULL AND cu.tier<>''
+                       ORDER BY a.shipment_id LIMIT 1""").fetchone()
+    c.close()
+    return row[0] if row else None
+
+
+def _pick_in_transit_with_risk(db: Path):
+    c = sqlite3.connect(db)
+    row = c.execute("""SELECT s.shipment_id FROM shipments s
+                       WHERE s.status='in_transit'
+                       AND EXISTS(SELECT 1 FROM risk_events r WHERE r.shipment_id=s.shipment_id)
+                       ORDER BY s.shipment_id LIMIT 1""").fetchone()
+    ship = row[0] if row else None
+    risks = []
+    if ship:
+        risks = [r[0] for r in c.execute(
+            "SELECT risk_event_id FROM risk_events WHERE shipment_id=? ORDER BY risk_event_id", (ship,))]
+    c.close()
+    return ship, risks
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+def test_role_filter(db: Path) -> None:
+    print("\n① 角色过滤（tools/list × 角色域矩阵，与 tools.py 同源）")
+    onto = load_ontology()
+    read_names = {t["name"] for t in M.build_readonly_tool_defs(onto)} - {"traverse"}  # 11
+    vis_by_role = {}
+    for role in ALL_ROLES:
+        with M.OntologyMCPServer(role=role, db_path=db) as s:
+            vis = s.visible_tool_names()
+        vis_by_role[role] = vis
+        # 与 allowed_tools_for_role 同源：可见读工具 == 角色允许集 ∩ 11 读工具
+        expected_reads = allowed_tools_for_role(role) & read_names
+        check(vis == expected_reads | {"traverse"},
+              f"{role}: 可见集 == allowed_tools_for_role∩读工具 + traverse")
+        check("traverse" in vis, f"{role}: traverse 可见")
+        check(not (vis & SIX_WRITE), f"{role}: 不含任何写工具")
+        check(not (vis & FOUR_FROZEN), f"{role}: 不含任何冻结区工具")
+    # 域矩阵具体校验：cs 无成本/准入域；ops 有；compliance 有准入无成本
+    cs, ops = vis_by_role["cs"], vis_by_role["ops"]
+    check("list_invoices" not in cs and "get_invoice_context" not in cs, "cs: 无成本域读工具")
+    check("list_admission_cases" not in cs, "cs: 无准入域读工具")
+    check({"list_invoices", "list_admission_cases"} <= ops, "ops: 成本+准入域读工具齐全")
+
+
+def test_field_masking(db: Path) -> None:
+    print("\n② 字段脱敏（本体 sensitiveFieldRules 声明驱动，掩码 == tools.py MASK）")
+    ship = _pick_shipment_with_tier(db)
+    check(ship is not None, "找到带客户 tier 的货件锚点")
+    if not ship:
+        return
+
+    def tiers(role):
+        _, d = _call_once(role, db, "get_shipment_context", {"shipment_id": ship})
+        return [ln.get("tier") for ln in d.get("onboard_lines", [])]
+
+    ops_t, cs_t, fin_t, mgr_t = tiers("ops"), tiers("cs"), tiers("finance"), tiers("manager")
+    check(len(cs_t) > 0, f"锚点 {ship} 有 onboard_lines（脱敏可判）")
+    check(all(t == MASK for t in ops_t), "ops: Customer.tier 全部 MASK（ops ∉ cs/manager）")
+    check(all(t == MASK for t in fin_t), "finance: Customer.tier 全部 MASK（finance ∉ cs/manager）")
+    check(all(t != MASK for t in cs_t), "cs: Customer.tier 明文可见")
+    check(all(t != MASK for t in mgr_t), "manager: Customer.tier 明文可见")
+    check(MASK == "🔒无权查看", "掩码值与 tools.py MASK 一致")
+
+    # 越域读被拒并审计（cs 调成本域 list_invoices）
+    err, d = _call_once("cs", db, "list_invoices", {})
+    check(err and "越域" in str(d.get("error", "")), "cs 调成本域 list_invoices → 越域读被拒")
+
+
+def test_audit_and_readonly(db: Path) -> None:
+    print("\n③ 审计入库（call_type='mcp_tool'）+ 业务连接物理只读 + 迁移幂等")
+    ship, risks = _pick_in_transit_with_risk(db)
+    with M.OntologyMCPServer(role="ops", db_path=db) as s:
+        check(s.audit_status in ("created", "migrated", "current"), f"审计迁移状态={s.audit_status}")
+        # 业务连接物理只读：写操作被 SQLite 拒
+        ro_blocked = False
+        try:
+            s.session.con.execute("UPDATE risk_events SET status='x' WHERE 1=0")
+        except sqlite3.OperationalError:
+            ro_blocked = True
+        check(ro_blocked, "业务连接 mode=ro：UPDATE 被 SQLite 拒（物理只读红线）")
+        # 触发若干工具调用 → llm_calls 落 mcp_tool 行
+        _call(s, "list_open_risks", {})
+        if risks:
+            _call(s, "get_risk", {"risk_event_id": risks[0]})
+        _call(s, "traverse", {"source_type": "Shipment", "source_id": ship or "X",
+                              "link_type": "risk_on_shipment"})
+    c = sqlite3.connect(db)
+    rows = c.execute("SELECT provider,status FROM llm_calls WHERE call_type='mcp_tool'").fetchall()
+    ck = c.execute("SELECT sql FROM sqlite_master WHERE name='llm_calls'").fetchone()[0]
+    c.close()
+    check(len(rows) >= 3, f"llm_calls 新增 ≥3 行 call_type='mcp_tool'（实={len(rows)}）")
+    check(all(r[0] == "mcp_server" for r in rows), "审计行 provider='mcp_server'")
+    check("'mcp_tool'" in ck, "llm_calls CHECK 已含 'mcp_tool'")
+
+    # 迁移幂等 + 存量行拷贝：造一个旧 CHECK 库，迁移后行保全、可插 mcp_tool、重跑 no-op
+    d2 = Path(tempfile.mkdtemp(prefix="mcp_mig_")) / "old.sqlite"
+    con = sqlite3.connect(d2)
+    con.execute("""CREATE TABLE llm_calls (
+        call_id INTEGER PRIMARY KEY AUTOINCREMENT, trace_id TEXT NOT NULL,
+        call_type TEXT NOT NULL CHECK (call_type IN ('briefing','parse','proposal')),
+        provider TEXT NOT NULL, model TEXT, input_chars INTEGER NOT NULL DEFAULT 0,
+        output_chars INTEGER NOT NULL DEFAULT 0, est_input_tokens INTEGER NOT NULL DEFAULT 0,
+        est_output_tokens INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK (status IN ('ok','error','degraded')), error TEXT,
+        redactions TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)""")
+    con.execute("INSERT INTO llm_calls (trace_id,call_type,provider,status,created_at) "
+                "VALUES ('T-OLD','briefing','claude_cli','ok','2026-07-14T00:00:00Z')")
+    con.commit()
+    r1 = migrate_llm_calls_call_type_check(con)
+    preserved = con.execute("SELECT count(*) FROM llm_calls WHERE trace_id='T-OLD'").fetchone()[0]
+    mcp_ok = False
+    try:
+        con.execute("INSERT INTO llm_calls (trace_id,call_type,provider,status,created_at) "
+                    "VALUES ('T-NEW','mcp_tool','mcp_server','ok','2026-07-14T00:00:00Z')")
+        mcp_ok = True
+    except sqlite3.IntegrityError:
+        mcp_ok = False
+    r2 = migrate_llm_calls_call_type_check(con)  # 重跑
+    con.close()
+    check(r1 == "migrated", f"旧 CHECK 库 → 迁移执行（返回 {r1}）")
+    check(preserved == 1, "迁移后存量行完整拷贝（幂等重建不丢数据）")
+    check(mcp_ok, "迁移后可插入 call_type='mcp_tool'")
+    check(r2 == "current", f"迁移幂等重跑 → no-op（返回 {r2}）")
+
+
+def test_frozen_and_schema(db: Path) -> None:
+    print("\n④ 冻结区机制化 + 零写工具 + input_schema 本体驱动")
+    onto = load_ontology()
+    with M.OntologyMCPServer(role="ops", db_path=db) as s:
+        exposed = s.exposed_names
+        frozen_snake = {snake_case(a["name"]) for a in onto["actions"]
+                        if a.get("ai_executable") == "frozen"}
+        check(exposed & frozen_snake == set(), "暴露集 ∩ snake_case(frozen 动作) == ∅")
+        check(exposed & SIX_WRITE == set(), "暴露集 ∩ {6 个写工具名} == ∅")
+        check(build_forbidden_tools(onto) == FOUR_FROZEN, "FORBIDDEN == 四个审批/关闭类")
+        check(len(exposed) == 12 and "traverse" in exposed, "暴露集 = 11 读工具 + traverse")
+        # 冻结区/写工具即便直接 call_tool 也被纵深防御拒
+        deep = all((lambda ed: ed[0] and "未向 AI 开放" in str(ed[1].get("error", "")))(
+            _call(s, name, {})) for name in FOUR_FROZEN | SIX_WRITE)
+        check(deep, "直调任一冻结区/写工具 → 纵深防御拒绝（proposal-only 护栏）")
+
+        # input_schema 本体驱动：traverse 枚举 == 本体对象/关系
+        tv = next(t for t in s.readonly_defs if t["name"] == "traverse")
+        otypes = {o["type"] for o in onto["objects"]}
+        ltypes = {l["linkType"] for l in onto.get("links", []) if l.get("status") != "declared_only"}
+        check(set(tv["input_schema"]["properties"]["source_type"]["enum"]) == otypes,
+              f"traverse object_type 枚举 == 本体 {len(otypes)} 对象类型")
+        check(set(tv["input_schema"]["properties"]["link_type"]["enum"]) == ltypes,
+              "traverse link_type 枚举 == 本体可遍历关系（排除 declared_only）")
+        # 对象字段结构复用 M3 model_json_schema（合流点）
+        check(len(s.type_schemas) == len(onto["objects"]),
+              f"model_json_schema 覆盖全部 {len(onto['objects'])} 对象类型（M3 合流）")
+        check(bool(s.type_schemas.get("Shipment", {}).get("properties")),
+              "Shipment 字段结构来自 ontology_models.model_json_schema")
+
+
+def test_protocol(db: Path) -> None:
+    print("\n⑤ JSON-RPC 协议冒烟（initialize / tools/list / tools/call）")
+    ship, risks = _pick_in_transit_with_risk(db)
+    with M.OntologyMCPServer(role="ops", db_path=db) as s:
+        init = s.handle_initialize({"protocolVersion": "2025-06-18"})
+        check(init["serverInfo"]["name"] == "ontology", "initialize 返回 serverInfo.name=ontology")
+        tl = s.handle_tools_list()
+        names = {t["name"] for t in tl["tools"]}
+        check(all("inputSchema" in t for t in tl["tools"]), "tools/list 线格式用 inputSchema(camel)")
+        check(names == s.visible_tool_names(), "tools/list == 角色可见集")
+        if risks:
+            out = s.handle_tools_call({"name": "get_risk", "arguments": {"risk_event_id": risks[0]}})
+            d = json.loads(out["content"][0]["text"])
+            check(not out["isError"] and d.get("risk_event_id") == risks[0],
+                  "tools/call get_risk 路由并返回目标对象")
+
+
+def main() -> int:
+    db = _tmp_db()
+    try:
+        test_role_filter(db)
+        test_field_masking(db)
+        test_audit_and_readonly(db)
+        test_frozen_and_schema(db)
+        test_protocol(db)
+    finally:
+        shutil.rmtree(db.parent, ignore_errors=True)
+    print("\n" + "=" * 60)
+    if FAILS:
+        print(f"FAIL: {len(FAILS)} 断言未过：")
+        for f in FAILS:
+            print("  -", f)
+        return 1
+    print("PASS: MCP server 四门槛全绿（角色过滤/脱敏/审计/冻结区+零写工具 + 协议冒烟）")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
