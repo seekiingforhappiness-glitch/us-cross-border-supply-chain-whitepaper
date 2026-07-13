@@ -48,10 +48,9 @@
 > React 驾驶舱与透视镜 v3 的底座。
 > **全程红线**：每单全量回归链（含 seed_demo_ops 步，勘误#2）+288 注入对抗+真值 md5 全绿；
 > EXPECTED_* 基线零改动。
-> **待 Daniel 三裁决（最保守先行，不阻塞）**：裁1 risk_affects_sku 删/补（现 declared_only 豁免
-> 挂账，lint 每次报告可见）；裁2 MCP 写提案工具是否开放（现零写工具）；裁3 AI 问答新通道速度
-> （实测 44-105 秒 vs 旧朗读档秒级——UI 已默认新通道，嫌慢改 config/llm.yaml agent.provider 回
-> claude_cli 一行即退）。**遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
+> **三裁决已定（决策日志 V6，2026-07-14 Daniel 亲批"1.补；2.可以；3.了解"）**：
+> 裁1=补 affected_sku_ids 承载列（豁免退场）；裁2=MCP 开放 6 个写提案工具（走既有 dispatch，
+> maker-checker 不变）；裁3=新通道维持（config 一行可回退，结案）。**裁1/裁2 落地执行中。****遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
 > 分叉、COST_FIELDS 等硬编码脱敏集全量声明化。
 > **Daniel 验收走查（5 分钟）**：完整重启 streamlit → 任意风险工作台点「询问」问一个问题
 > （预期 40-105 秒，回答头标"真实查库作答"，简报折叠区明示未被用作依据）→ 控制室审计视图查

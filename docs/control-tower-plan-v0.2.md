@@ -312,6 +312,18 @@ claude_cli 订阅通道真工具调用（成=不托底根治且不加 API 成本
 只提案）。③透视镜 v3（全局搜索/影响分析/动作↔工具联动/依赖与使用板块）**跟在 API 层后**——届时镜子
 照的是真机器。新顺序：桥1+MCP PoC（并行，立即）→ API 层=桥2+桥3+MCP 正式化 → 前台驾驶舱 → 透视镜 v3。
 
+**V6 — API 层收官三裁决（2026-07-14，Daniel 亲批，原文"1.补；2.可以；3.了解"）。**
+背景：API 层五单（M1-M5）交付时三项业务语义按最保守读法先行、挂账候裁（STATUS 2026-07-14 条）。
+裁决：①**裁1=补**：`risk_affects_sku`（RiskEvent→Sku N:M）补正式承载列 `affected_sku_ids`
+（json 列，与 risk_affects_line 等三条 N:M 同规），declared_only 豁免退场；R14 复用
+affected_po_line_ids 装 sku_id 的历史 hack 的退役与否以"评估器全绿+真值不动"为唯一约束，
+执行中核实。②**裁2=可以**：MCP server 开放 6 个 exposed 写提案工具（assign_task /
+propose_mitigation / create_admission_case / run_compliance_precheck / build_logistics_plan /
+calculate_cost_scenario）——调用必须走 agent/tools.py 既有 dispatch（同一套 ROLE_PERMS 白名单
++ FORBIDDEN 拦截 + 审计），不建第二写路径；冻结区照旧永不注册；maker-checker 不变（工具只产
+提案，审批仍人做）。③**裁3=了解**：AI 问答默认真查库通道（44-105s）维持，config/llm.yaml
+一行可回退旧朗读档——不再视为待裁项。
+
 ## 5. 对象模型骨架（11 个对象）
 
 完整属性字典是第 1 周交付物，此处定骨架和主键策略（沿用 v0.1：`*_id` 稳定主键，禁用名称做主键）。
