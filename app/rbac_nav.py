@@ -35,10 +35,14 @@ TAB_LABELS = {
 # compliance 不加（本切片不放宽协调写权限，导航与权限组严格同集）。写动作仍由动作层独立 gate。
 # 知识图谱(kg)：纯只读呈现层（本体地图 + 对象邻域 trace），零写动作零 agent 工具——挂 manager
 # （监督者）与 ops（理解者）两个工作台，紧跟对象详情(obj)；实例级查询过 data_scope（ops 区域过滤）。
+# 任务处理台(task)：凡有 ProposeMitigation 提案权的角色（ROLE_PERMS：ops/cs/finance/procurement）都必须
+# 能进任务台提交处置方案，否则「有权提案却无入口」= 断头路（陌生人测试王姐/财务 P0-1）。故 finance 补挂
+# task（排 cost 之后，主战场 cost 仍是落地页）；cs/procurement 本就有。此举是把导航对齐到动作层权限真源
+# （ROLE_PERMS 一字未改），不是放宽权限——写动作仍由动作层 ROLE_PERMS + maker-checker 硬 gate。
 ROLE_WORKSPACE = {
     "ops":         ["risk", "task", "coord", "dq", "obj", "kg", "log"],
     "cs":          ["risk", "task", "coord", "obj"],
-    "finance":     ["cost", "po", "coord", "adm", "obj"],
+    "finance":     ["cost", "task", "po", "coord", "adm", "obj"],
     "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
     "compliance":  ["adm", "risk", "obj", "log"],

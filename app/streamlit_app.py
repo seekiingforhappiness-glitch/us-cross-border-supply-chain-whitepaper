@@ -28,7 +28,7 @@ import yaml
 import streamlit as st
 
 try:
-    from app.actions import (assign_task, propose_mitigation, approve_mitigation,
+    from app.actions import (ROLE_PERMS, assign_task, propose_mitigation, approve_mitigation,
                              close_risk_event, ensure_task_work_queue_columns)
     from app.dq_actions import assign_dq_issue, close_dq_issue
     from app.admission_actions import (create_admission_case, run_compliance_precheck,
@@ -38,7 +38,7 @@ try:
                                           record_response, escalate_coordination,
                                           resolve_coordination, mark_dead_ended)
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
-    from actions import (assign_task, propose_mitigation, approve_mitigation,
+    from actions import (ROLE_PERMS, assign_task, propose_mitigation, approve_mitigation,
                          close_risk_event, ensure_task_work_queue_columns)
     from dq_actions import assign_dq_issue, close_dq_issue
     from admission_actions import (create_admission_case, run_compliance_precheck,
@@ -753,8 +753,13 @@ def render_risk_tab():
         return row
     render_table([risk_row(r) for r in risks], height=260)
     if risks:
-        demo_idx = next((i for i, r in enumerate(risks) if r["shipment_id"] == "SHP-2026-0099"), 0)
-        sel = st.selectbox("查看风险", [r["risk_event_id"] for r in risks], index=demo_idx)
+        # P0-4 默认选中 = 当前排序/筛选后的列表首行（最急那条，index=0），随数据范围/筛选变化跟随；
+        # 用户手动选择后 session 内尊重其选择（keyed selectbox）；选中项因改范围/筛选而不在列表时
+        # 回落首行（清 session 值避免 selectbox 报错）。不再固定钉演示锚点 SHP-2026-0099（无关的固定残留）。
+        opts = [r["risk_event_id"] for r in risks]
+        if st.session_state.get("risk_sel") not in opts:
+            st.session_state.pop("risk_sel", None)
+        sel = st.selectbox("查看风险", opts, index=0, key="risk_sel")
         r = next(x for x in risks if x["risk_event_id"] == sel)
         st.markdown(f"**根因**：{r['root_cause']}　|　ETA {r['eta_initial']} → **{r['eta_current']}**")
         lids = json.loads(r["affected_so_line_ids"])
@@ -783,30 +788,49 @@ def render_risk_tab():
                            "所属发票": x["invoice_id"], "vendor": x["vendor_name"],
                            "发票状态": f"{INV_STATUS_ICON.get(x['status'], '')}{x['status']}"}
                           for x in ilines])
-        c1, c2 = st.columns(2)
-        with c1, st.form(f"assign_{sel}"):
-            st.markdown("**派发任务（A3，运营）**")
-            a_role = st.selectbox("处理角色", ["ops", "cs"])
-            prio = st.selectbox("优先级", ["P1", "P2", "P3"])
-            due = st.date_input("任务处理截止日", date.fromisoformat(AS_OF) + timedelta(days=2),
-                                help="要求处理人完成处置的期限（默认 48 小时），"
-                                     "不是货物交付日期，也不是客户承诺日")
-            if st.form_submit_button("派单"):
-                show_result(assign_task(db(), sel, a_role, prio, due.isoformat(),
-                                        actor=actor, role=role, as_of=AS_OF))
-        with c2, st.form(f"close_{sel}"):
-            st.markdown("**关闭风险（A6，运营）**")
-            outcome = st.selectbox("结论", ["mitigated", "accepted_delay", "false_alarm", "escalated"])
-            summary = st.text_input("处理小结")
-            # C1 质量标签（Daniel 裁决 Q3）：专员关闭时顺手三选一，默认不打；人打标签 AI 不自评
-            _q = st.selectbox("AI 建议质量标签（选填，C1）",
-                              ["（不打标）", "有效", "部分有效", "无效"],
-                              help="对本案已批提案的实际效果打标（3 秒）——一致率成绩单与评估集的原料")
-            if st.form_submit_button("关闭"):
-                show_result(close_risk_event(
-                    db(), sel, outcome, summary, actor=actor, role=role, as_of=AS_OF,
-                    quality_label={"有效": "effective", "部分有效": "partial",
-                                   "无效": "ineffective"}.get(_q)))
+        # P0-3① 事前状态检查：选中风险已有非终态任务时，禁掉派单 + 常规关闭（点了必被动作层拒——
+        # 「看着能点、提交才被拒」是陌生人测试撞的坑），改摆人话提示卡 + 仅保留 false_alarm 强制关闭
+        # （动作层本就只放行 false_alarm 带活跃任务关闭）。动作层运行时校验一行未改，仅加 UI 事前层。
+        active = rows("""SELECT task_id, assignee_user_id, assignee_role, status FROM tasks
+                         WHERE risk_event_id=? AND status NOT IN ('done','cancelled')
+                         ORDER BY task_id LIMIT 1""", sel)
+        if active:
+            _at = active[0]
+            _owner = _at["assignee_user_id"] or _at["assignee_role"] or "-"
+            st.info(f"该风险已有任务 {_at['task_id']} 在处理（负责人 {_owner}，状态 {_at['status']}）"
+                    "——如需推进，去「任务处理台」提交处置方案；误报可选 false_alarm 强制关闭。")
+            with st.form(f"close_fa_{sel}"):
+                st.markdown("**误报强制关闭（A6，运营 · false_alarm）**")
+                fa_summary = st.text_input("处理小结（说明为何判定误报）")
+                if st.form_submit_button("误报强制关闭"):
+                    show_result(close_risk_event(db(), sel, "false_alarm", fa_summary,
+                                                 actor=actor, role=role, as_of=AS_OF))
+        else:
+            c1, c2 = st.columns(2)
+            with c1, st.form(f"assign_{sel}"):
+                st.markdown("**派发任务（A3，运营）**")
+                a_role = st.selectbox("处理角色", ["ops", "cs"])
+                prio = st.selectbox("优先级", ["P1", "P2", "P3"])
+                due = st.date_input("任务处理截止日", date.fromisoformat(AS_OF) + timedelta(days=2),
+                                    help="要求处理人完成处置的期限（默认 48 小时），"
+                                         "不是货物交付日期，也不是客户承诺日")
+                if st.form_submit_button("派单"):
+                    show_result(assign_task(db(), sel, a_role, prio, due.isoformat(),
+                                            actor=actor, role=role, as_of=AS_OF))
+            with c2, st.form(f"close_{sel}"):
+                st.markdown("**关闭风险（A6，运营）**")
+                outcome = st.selectbox("结论",
+                                       ["mitigated", "accepted_delay", "false_alarm", "escalated"])
+                summary = st.text_input("处理小结")
+                # C1 质量标签（Daniel 裁决 Q3）：专员关闭时顺手三选一，默认不打；人打标签 AI 不自评
+                _q = st.selectbox("AI 建议质量标签（选填，C1）",
+                                  ["（不打标）", "有效", "部分有效", "无效"],
+                                  help="对本案已批提案的实际效果打标（3 秒）——一致率成绩单与评估集的原料")
+                if st.form_submit_button("关闭"):
+                    show_result(close_risk_event(
+                        db(), sel, outcome, summary, actor=actor, role=role, as_of=AS_OF,
+                        quality_label={"有效": "effective", "部分有效": "partial",
+                                       "无效": "ineffective"}.get(_q)))
         # 对象工作台入口：点选的 risk → 进入 RiskEvent 富工作台（session_state 存 focus）
         st.divider()
         st.session_state["focus_risk_event_id"] = sel
@@ -923,7 +947,9 @@ def render_task_tab():
                               "accept_delay": {"reason": reason}}[act]
                     show_result(propose_mitigation(db(), tsel, act, params,
                                                    actor=actor, role=role, as_of=AS_OF))
-        if t["approval_status"] == "pending":
+        # P0-3② 审批块只对有审批权的角色（ROLE_PERMS.ApproveMitigation=仅 manager）整块渲染——
+        # 非 manager 根本不显示（原先显示但点了才拒=陌生人测试撞的坑）。对齐权限真源，ROLE_PERMS 未改。
+        if t["approval_status"] == "pending" and role in ROLE_PERMS["ApproveMitigation"]:
             with st.form(f"appr_{tsel}"):
                 st.markdown("**审批（A5，仅经理）**")
                 decision = st.radio("决定", ["approved", "rejected"], horizontal=True)
@@ -943,7 +969,12 @@ def render_task_tab():
 
 # ---------- 费用工作台（v0.4）----------
 def render_cost_tab():
-    st.caption("发票对账工作台：状态由 MatchInvoice（系统）与 A5 审批门径驱动，UI 只读呈现。")
+    # P0-3③ 只读呈现提示升级为醒目样式（复用既有 surface-banner 琥珀条 CSS）：写清「本台只读、
+    # 处置在任务处理台」，替代原先易忽略的小字 caption（陌生人测试王姐把只读台误当能干活的工具）。
+    st.markdown('<div class="surface-banner"><strong>只读视图</strong> · '
+                '本台仅做发票对账呈现（状态由系统对账与经理审批驱动，此处不做处置）；'
+                '处置动作请到「任务处理台」对关联任务提交处置方案（如发起争议）。</div>',
+                unsafe_allow_html=True)
     stat_filter = st.selectbox("发票状态筛选", ["全部", "received", "under_review", "approved", "disputed"])
     where_inv = "" if stat_filter == "全部" else f"WHERE iv.status='{stat_filter}'"
     invs = rows(f"""SELECT iv.invoice_id, iv.vendor_name, iv.vendor_type, iv.shipment_id,

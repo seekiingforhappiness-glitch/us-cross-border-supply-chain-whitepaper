@@ -35,10 +35,11 @@ MANAGER_TABS = ALL_TABS - {"coord"}
 # 与 coordination_actions.COORD_PERMS 严格同集；sales/compliance/manager 不加（本切片不放宽协调写权限）。
 # 知识图谱(kg)：纯只读呈现层（本体地图+对象邻域 trace，无任何写动作/agent 工具）——挂 manager（监督者）
 # 与 ops（理解者），紧跟对象详情(obj)；实例级查询过 data_scope（ops 区域过滤、manager 全量）。
+# P0-1：finance 补挂 task（陌生人测试王姐/财务断头路——有提案权却无任务台入口）；cs/procurement 本就有。
 EXPECTED_WORKSPACE = {
     "ops":         ["risk", "task", "coord", "dq", "obj", "kg", "log"],
     "cs":          ["risk", "task", "coord", "obj"],
-    "finance":     ["cost", "po", "coord", "adm", "obj"],
+    "finance":     ["cost", "task", "po", "coord", "adm", "obj"],
     "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
     "compliance":  ["adm", "risk", "obj", "log"],
@@ -89,8 +90,15 @@ def main():
     check("sales 不含费用工作台(cost)", "cost" not in ROLE_WORKSPACE["sales"])
     check("sales 不含准入外的运营 tab（无 task/risk/dq）",
           not ({"task", "risk", "dq"} & set(ROLE_WORKSPACE["sales"])))
-    check("finance 不含风险队列/任务台（导航层隔离）",
-          not ({"risk", "task"} & set(ROLE_WORKSPACE["finance"])))
+    check("finance 有任务处理台(task, 提案权对齐 P0-1) 但不含物流风险队列(risk)",
+          "task" in ROLE_WORKSPACE["finance"] and "risk" not in ROLE_WORKSPACE["finance"])
+    # P0-1 推导式断言（不硬编码角色名，与 ROLE_PERMS 真源对齐）：凡有 ProposeMitigation 提案权的角色，
+    # 工作台必须含任务处理台(task)——否则「有权提案却无入口」= 断头路（陌生人测试王姐/财务撞到）。
+    for _r in sorted(ROLE_PERMS["ProposeMitigation"]):
+        if _r not in ROLE_WORKSPACE:
+            continue
+        check(f"{_r} 有提案权 → 工作台含任务处理台(task)（P0-1 对齐 ROLE_PERMS）",
+              "task" in ROLE_WORKSPACE[_r], str(ROLE_WORKSPACE[_r]))
     check("cs 不含费用/准入/DQ",
           not ({"cost", "adm", "dq"} & set(ROLE_WORKSPACE["cs"])))
     check("审计日志(log)给 ops/compliance/manager（收敛：运营/治理/监督需审阅，data_scope 过滤）",

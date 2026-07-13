@@ -26,25 +26,77 @@ RISK_TERMINAL = ("resolved", "escalated")
 TASK_TERMINAL = ("done", "cancelled")
 
 
-def _render_object_llm_answer(question, briefing_text, role):
-    """对象级 AI 助手作答：先展示确定性简报（回答的 grounding 数据），再用 Opus 4.8（本账号 Claude
-    订阅、无需 API key）【仅据该简报】合成中文回答。简报已按 role 脱敏，故 LLM 继承同一数据范围；
-    模型无任何行动能力（不派单/不审批），写动作仍只走下方表单 + maker-checker。LLM 不可用时优雅降级。"""
+_DEFAULT_DB = "data/ontology.sqlite"  # AI 自检 / llm_calls 落库位置（与对象库同库）
+
+
+def _ai_availability(db_path=_DEFAULT_DB):
+    """AI 助手可用性（available, reason）——便宜自检并缓存进 session_state，避免每次 rerun 真调 CLI。
+    自检本身（agent.llm_agent.probe_cli_availability）绝不出境，只看 which/降级态/上次 llm_calls 状态。
+    自检异常按「可用」放行（自检不成为故障点），真失败时提问路径再人话降级。缓存在一次提问后失效重算。"""
     import streamlit as st
-    with st.expander("确定性简报（回答的 grounding 数据，每条带对象 ID）", expanded=not question):
-        st.text(briefing_text)
+    if "ai_cli_available" not in st.session_state:
+        try:
+            from agent.llm_agent import probe_cli_availability
+            st.session_state["ai_cli_available"] = probe_cli_availability(db_path)
+        except Exception:  # noqa: BLE001 —— 自检层兜底，绝不让自检故障放大为界面故障
+            st.session_state["ai_cli_available"] = (True, "")
+    return st.session_state["ai_cli_available"]
+
+
+def _render_object_ai_qa(briefing_text, role, key, db_path=_DEFAULT_DB):
+    """对象级 AI 提问区（6 个富工作台共用）：顶部状态徽标（可用/暂不可用）+ 提问框 + 询问按钮
+    （不可用时禁用并说明，而非可点后报错）+ 作答（异常→人话降级 + 自动展开简报，见 _render_object_llm_answer）。
+    徽标状态来自便宜自检 + session 缓存；一次提问后清缓存，让下次 rerun 按最新 llm_calls 状态翻牌。"""
+    import streamlit as st
+    available, reason = _ai_availability(db_path)
+    if available:
+        st.caption("AI 助手：🟢 **可用**（Opus 4.8 · 本账号订阅）")
+    else:
+        st.caption(f"AI 助手：🟠 **暂不可用**（{reason}）——下方确定性数据简报即为回答依据，可稍后重试。")
+    q = st.text_input("向对象级 AI 提问（focus 已锁定本对象）", key=f"{key}_q",
+                      disabled=not available)
+    asked = st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"{key}_ask",
+                      disabled=not available,
+                      help=None if available else "AI 助手暂不可用，已自动切换为下方确定性数据简报")
+    if asked:
+        _render_object_llm_answer(q, briefing_text, role, db_path)
+        st.session_state.pop("ai_cli_available", None)  # 提问后失效缓存：下次 rerun 按最新状态重算徽标
+
+
+def _render_object_llm_answer(question, briefing_text, role, db_path=_DEFAULT_DB):
+    """对象级 AI 助手作答：用 Opus 4.8（本账号 Claude 订阅、无需 API key）【仅据确定性简报】合成中文回答。
+    简报已按 role 脱敏，故 LLM 继承同一数据范围；模型无任何行动能力（不派单/不审批），写动作仍只走
+    下方表单 + maker-checker。故障（未登录/超时/降级等）一律人话降级并自动展开确定性简报——技术细节
+    只进 llm_calls 日志（answer_over_context 落库），绝不进界面（不再出现「退出码/CLI」等黑话）。"""
+    import streamlit as st
     if not question:
-        st.caption("输入问题后 Opus 4.8 将【仅据上方简报】作答——不编造、继承本角色脱敏、只解释不审批。")
+        st.caption("请先在上方输入问题，Opus 4.8 将【仅据确定性简报】作答——不编造、继承本角色脱敏、只解释不审批。")
         return
     with st.spinner("Opus 4.8 作答中（本账号订阅渠道，约 30–50 秒）…"):
         try:
             from agent.llm_agent import answer_over_context
-            ans = answer_over_context(question, briefing_text, role=role)
-        except Exception as exc:  # CLI 未登录/超时等 → 不崩，退回简报
-            st.info(f"Opus 未就绪（{exc}）；上方确定性简报即为回答依据。")
+            ans = answer_over_context(question, briefing_text, role=role, db=db_path)
+        except Exception:  # noqa: BLE001 —— 一切异常人话降级；技术原因已由 answer_over_context 记入 llm_calls
+            st.warning("AI 助手暂时不可用，已切换为数据简报（技术原因已记录，可稍后重试）。")
+            with st.expander("确定性数据简报（回答依据，每条带对象 ID）", expanded=True):
+                st.text(briefing_text)
             return
-    st.markdown("**🤖 Opus 4.8（仅据上方简报作答，继承本角色脱敏）**")
+    st.markdown("**🤖 Opus 4.8（仅据确定性简报作答，继承本角色脱敏）**")
+    with st.expander("确定性数据简报（回答的 grounding 数据，每条带对象 ID）", expanded=False):
+        st.text(briefing_text)
     st.markdown(ans)
+
+
+def _actions_or_hint(acts, role, empty_default):
+    """可发起动作的呈现串：① 有动作 → 顿号连接 ② 无动作但角色有提案权（ROLE_PERMS.ProposeMitigation）→
+    人话引导去任务台提交处置方案，消除「有权提案却显示（无）」的断头路（陌生人测试 P0-1 王姐/财务）
+    ③ 否则 → 领域专属 empty_default 说明。纯呈现，权限真源仍是 ROLE_PERMS（一字未改）。"""
+    if acts:
+        return "、".join(acts)
+    if role in ROLE_PERMS["ProposeMitigation"]:
+        return ("（本页暂无可直接发起的动作）——你可以在「任务处理台」对关联任务提交处置方案"
+                "（如发起争议 dispute）")
+    return empty_default
 # Invoice 富工作台呈现层脱敏字段：发票金额随 role 掩码（与 UI mask_cost 同规：finance/manager 可见）。
 # 收敛后 agent 对账工具 get_invoice_context 与本工作台**同一口径**（都掩码 INVOICE_COST_FIELDS+total_usd），
 # 常量从 agent.tools 单一事实源导入，保证「agent 看得到的 == UI 看得到的」逐字一致。
@@ -791,9 +843,7 @@ def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, rende
                + "　— approve/close 永不在内（agent 只提案不审批）。")
     with st.expander("查看确定性风险简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
         st.text(focus_briefing_text(sess))
-    q = st.text_input("向对象级 AI 提问（focus 已锁定本对象）", key=f"wb_q_{risk_event_id}")
-    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"wb_ask_{risk_event_id}"):
-        _render_object_llm_answer(q, focus_briefing_text(sess), role)
+    _render_object_ai_qa(focus_briefing_text(sess), role, key=f"wb_{risk_event_id}")
 
 
 def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_factory, render_table):
@@ -861,9 +911,7 @@ def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_
                + "　— 审批/拒接（B5/B6）永不在内（agent 只准备不决策）。")
     with st.expander("查看确定性准入简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
         st.text(focus_admission_briefing_text(sess))
-    q = st.text_input("向对象级 AI 提问（focus 已锁定本案）", key=f"awb_q_{admission_case_id}")
-    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"awb_ask_{admission_case_id}"):
-        _render_object_llm_answer(q, focus_admission_briefing_text(sess), role)
+    _render_object_ai_qa(focus_admission_briefing_text(sess), role, key=f"awb_{admission_case_id}")
 
 
 def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render_table):
@@ -923,9 +971,7 @@ def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render
                + "　— approve/close 永不在内（agent 只提案不审批）。")
     with st.expander("查看确定性任务简报（无需 API key，每条事实带对象 ID 出处）", expanded=False):
         st.text(focus_task_briefing_text(sess))
-    q = st.text_input("向对象级 AI 提问（focus 已锁定本任务）", key=f"twb_q_{task_id}")
-    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"twb_ask_{task_id}"):
-        _render_object_llm_answer(q, focus_task_briefing_text(sess), role)
+    _render_object_ai_qa(focus_task_briefing_text(sess), role, key=f"twb_{task_id}")
 
 
 def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, render_table):
@@ -983,7 +1029,7 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
     # ③ 该角色可用 action（按 ROLE_PERMS gate）
     acts = wb["available_actions"]
     st.markdown(f"**该角色（{role}）在本发票上可发起的动作**："
-                + ("、".join(acts) if acts else "（无——该角色对本发票关联任务状态无可发起动作）"))
+                + _actions_or_hint(acts, role, "（无——该角色对本发票关联任务状态无可发起动作）"))
     st.caption("费用提案 dispute/accept_charge/rebill_customer 经 propose_mitigation（ProposeMitigation "
                "权限）；rebill 的 G4 incoterm 门禁在审批时判定；审批（A5）永远人来点，AI 只提案不审批"
                "（原则2）。执行入口在任务台费用处置表单。")
@@ -996,9 +1042,7 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
                + "　— approve/close 永不在内（agent 只分析/起草提案，不审批）。")
     with st.expander("查看确定性发票对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
         st.text(focus_invoice_briefing_text(sess))
-    q = st.text_input("向对象级 AI 提问（focus 已锁定本发票）", key=f"iwb_q_{invoice_id}")
-    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"iwb_ask_{invoice_id}"):
-        _render_object_llm_answer(q, focus_invoice_briefing_text(sess), role)
+    _render_object_ai_qa(focus_invoice_briefing_text(sess), role, key=f"iwb_{invoice_id}")
 
 
 def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_table):
@@ -1061,7 +1105,7 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
         st.caption("（本 PO 三方对账未检出 R7-R10 异常）")
     acts = wb["available_actions"]
     st.markdown(f"**该角色（{role}）在本 PO 锚定风险上可发起的动作**："
-                + ("、".join(acts) if acts else "（无——该角色对本 PO 风险状态无可发起动作）"))
+                + _actions_or_hint(acts, role, "（无——该角色对本 PO 风险状态无可发起动作）"))
     st.caption("采购风险走既有闭环：派发（A3，运营）→提案 expedite_po/raise_supplier_claim/"
                "dispute_supplier_invoice/accept_receipt_variance（A4，ProposeMitigation 权限）→审批"
                "（A5，仅经理，maker-checker）；审批/关闭永远人来点，AI 只提案不审批（原则2）。"
@@ -1075,9 +1119,7 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
                + "　— approve/close 永不在内（agent 只分析三方差异/起草提案，不审批）。")
     with st.expander("查看确定性三方对账简报（无需 API key，逐行差异带对象 ID 出处）", expanded=False):
         st.text(focus_po_briefing_text(sess))
-    q = st.text_input("向对象级 AI 提问（focus 已锁定本 PO）", key=f"pwb_q_{po_id}")
-    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"pwb_ask_{po_id}"):
-        _render_object_llm_answer(q, focus_po_briefing_text(sess), role)
+    _render_object_ai_qa(focus_po_briefing_text(sess), role, key=f"pwb_{po_id}")
 
 
 def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_factory, render_table):
@@ -1153,6 +1195,4 @@ def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_facto
                + "　— approve/close 永不在内（agent 只分析库存/断货/现货可用性、起草提案，不审批）。")
     with st.expander("查看确定性仓储库存简报（无需 API key，每条带对象 ID 出处）", expanded=False):
         st.text(focus_warehouse_briefing_text(sess))
-    q = st.text_input("向对象级 AI 提问（focus 已锁定本仓）", key=f"wwb_q_{warehouse_id}")
-    if st.button("询问（Opus 4.8 作答 · 本账号订阅）", key=f"wwb_ask_{warehouse_id}"):
-        _render_object_llm_answer(q, focus_warehouse_briefing_text(sess), role)
+    _render_object_ai_qa(focus_warehouse_briefing_text(sess), role, key=f"wwb_{warehouse_id}")

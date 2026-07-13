@@ -48,10 +48,11 @@ FAILS = []
 # 工作台=操作型（风险队列/任务台/协调收件箱/费用/采购/准入）；控制室=理解与监督
 # （经理 KPI 总览/对象详情/知识图谱/DQ 处置/审计日志）。规格未列「仓储工作台」独立 tab
 # （仓储对象经 对象详情/富工作台 浏览），故不存在也不新造。
+# P0-1：finance 工作台面补挂 task（提案权对齐；cost 仍是主战场落地页，task 排其后）。
 EXPECTED_WORK = {
     "ops":         ["risk", "task", "coord"],
     "cs":          ["risk", "task", "coord"],
-    "finance":     ["cost", "po", "coord", "adm"],
+    "finance":     ["cost", "task", "po", "coord", "adm"],
     "procurement": ["po", "task", "coord"],
     "sales":       ["adm"],
     "compliance":  ["adm", "risk"],

@@ -12,6 +12,7 @@
 """
 import json
 import os
+import sqlite3
 import sys
 import time
 
@@ -21,6 +22,43 @@ from .tools import AgentSession, TOOL_DEFS
 
 DEFAULT_DB = "data/ontology.sqlite"  # llm_calls 落库位置（与对象库同库，spec §9）
 CLAUDE_CLI_TRACKER = FailureTracker("claude_cli")  # claude_cli 连续失败降级（进程内单例）
+
+
+def _last_cli_status(db=DEFAULT_DB):
+    """读 llm_calls 最近一条 claude_cli 调用的 status（ok/error/degraded）；无表/无行/异常一律返回 None。
+    绝不触发任何出境——只查审计流水，供 UI 便宜自检用（不必真调 CLI 就能知道上次通没通）。"""
+    own = isinstance(db, (str, os.PathLike))
+    try:
+        conn = sqlite3.connect(db) if own else db
+    except Exception:  # noqa: BLE001 —— 自检读库失败绝不反噬业务
+        return None
+    try:
+        row = conn.execute("SELECT status FROM llm_calls WHERE provider='claude_cli' "
+                           "ORDER BY call_id DESC LIMIT 1").fetchone()
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001 —— 表不存在/库损坏等
+        return None
+    finally:
+        if own:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def probe_cli_availability(db=DEFAULT_DB):
+    """便宜自检 AI 助手可用性（返回 (available: bool, reason: 人话)）——绝不调用 CLI，故可每次 rerun 廉价复算，
+    亦供 UI 缓存进 session_state。判据三层：① claude 命令不在 PATH → 不可用 ② 连续失败进降级冷却 → 不可用
+    ③ 上次 claude_cli 调用为 error/degraded → 不可用（捕捉「已安装但未登录」：which 找得到却调不通的情形，
+    首次失败后 llm_calls 落 error，自检据此自愈翻牌）。reason 为面向用户的中文，不含退出码/stderr 技术细节。"""
+    import shutil
+    if not shutil.which("claude"):
+        return False, "未检测到本地 AI 通道（未安装或不在 PATH）"
+    if not CLAUDE_CLI_TRACKER.should_attempt():
+        return False, "多次调用未成功，正在冷却，稍后自动重试"
+    if _last_cli_status(db) in ("error", "degraded"):
+        return False, "上次调用未成功，可稍后重试"
+    return True, ""
 
 
 class LLMDegradedError(RuntimeError):
