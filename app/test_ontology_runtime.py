@@ -11,12 +11,18 @@
 只读断言；不碰数据库、不碰任何业务代码。
 """
 import json
+import sqlite3
 import sys
+from pathlib import Path
 
+from pipeline.generate_ddl import object_ddls
 from pipeline.ontology_runtime import (build_forbidden_tools, build_role_perms,
-                                        build_tool_defs, load_ontology, snake_case)
+                                        build_tool_defs, load_ontology, snake_case,
+                                        traverse)
 # 人批口径（防被悄悄削弱）：权限侧基线直接取自安全回归的 EXPECTED_*（同一份守护）。
 from .test_agent_security import EXPECTED_ADM_PERMS, EXPECTED_ROLE_PERMS
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 FAILS = []
 
@@ -163,6 +169,101 @@ def _norm(obj):
     return json.dumps(obj, sort_keys=True, ensure_ascii=False)
 
 
+def _seed_memory_db(onto):
+    """内存合成库（用生成 DDL 建表 + 手植最小行），覆盖 traverse 四承载而不依赖检测/seed 状态。"""
+    ddls = object_ddls(onto)
+    con = sqlite3.connect(":memory:")
+    for tname in ["skus", "sales_order_lines", "shipments", "purchase_orders",
+                  "warehouses", "risk_events"]:
+        con.execute(ddls[tname][0])
+    con.executescript(
+        "INSERT INTO skus (sku_id) VALUES ('SKU-1');"
+        "INSERT INTO sales_order_lines (so_line_id, sku_id) VALUES ('L1','SKU-1');"
+        "INSERT INTO sales_order_lines (so_line_id, sku_id) VALUES ('L2','SKU-1');"
+        "INSERT INTO shipments (shipment_id, po_ids, destination_warehouse) VALUES ('SHP-1','PO-1|PO-2','WH-1');"
+        "INSERT INTO shipments (shipment_id, po_ids, destination_warehouse) VALUES ('SHP-2','PO-3','WH-1');"
+        "INSERT INTO purchase_orders (po_id) VALUES ('PO-1');"
+        "INSERT INTO warehouses (warehouse_id) VALUES ('WH-1');"
+        "INSERT INTO risk_events (risk_event_id, affected_so_line_ids) VALUES ('RSK-1','[\"L1\", \"L2\"]');")
+    con.commit()
+    return con
+
+
+def _traverse_tests(onto):
+    """traverse 单测：plan M3 点名覆盖——正向FK / reverse_json / column软命名 / N:M affected /
+    declared_only 拒绝 / 未知 link 拒绝（+ 双向 + 非端点拒绝 + 真库 smoke）。"""
+    print("== ⑨ traverse：四承载 + 双向 + 拒绝（内存合成库，覆盖 plan 点名 6 类）==")
+    con = _seed_memory_db(onto)
+    try:
+        # 正向外键（N:1 标准推导）+ 反向
+        check("⑨ 正向FK line_for_sku(SalesOrderLine→Sku)",
+              traverse(con, "SalesOrderLine", "L1", "line_for_sku") == ["SKU-1"],
+              str(traverse(con, "SalesOrderLine", "L1", "line_for_sku")))
+        check("⑨ 反向FK line_for_sku(Sku→lines)",
+              sorted(traverse(con, "Sku", "SKU-1", "line_for_sku")) == ["L1", "L2"],
+              str(traverse(con, "Sku", "SKU-1", "line_for_sku")))
+        # reverse_json（po_shipped_by：shipments.po_ids 承 PO 列表）双向
+        check("⑨ reverse_json po_shipped_by(Shipment→POs)",
+              traverse(con, "Shipment", "SHP-1", "po_shipped_by") == ["PO-1", "PO-2"],
+              str(traverse(con, "Shipment", "SHP-1", "po_shipped_by")))
+        check("⑨ reverse_json po_shipped_by 反向(PO→Shipment)",
+              traverse(con, "PurchaseOrder", "PO-1", "po_shipped_by") == ["SHP-1"],
+              str(traverse(con, "PurchaseOrder", "PO-1", "po_shipped_by")))
+        # column 软命名（shipment_to_warehouse：shipments.destination_warehouse）双向
+        check("⑨ column shipment_to_warehouse(Shipment→WH)",
+              traverse(con, "Shipment", "SHP-1", "shipment_to_warehouse") == ["WH-1"],
+              str(traverse(con, "Shipment", "SHP-1", "shipment_to_warehouse")))
+        check("⑨ column 反向(WH→Shipments)",
+              sorted(traverse(con, "Warehouse", "WH-1", "shipment_to_warehouse")) == ["SHP-1", "SHP-2"],
+              str(traverse(con, "Warehouse", "WH-1", "shipment_to_warehouse")))
+        # N:M affected（risk_affects_line：risk_events.affected_so_line_ids）双向
+        check("⑨ N:M risk_affects_line(RiskEvent→lines)",
+              traverse(con, "RiskEvent", "RSK-1", "risk_affects_line") == ["L1", "L2"],
+              str(traverse(con, "RiskEvent", "RSK-1", "risk_affects_line")))
+        check("⑨ N:M 反向(line→risks)",
+              traverse(con, "SalesOrderLine", "L1", "risk_affects_line") == ["RSK-1"],
+              str(traverse(con, "SalesOrderLine", "L1", "risk_affects_line")))
+        # declared_only 拒绝
+        try:
+            traverse(con, "RiskEvent", "RSK-1", "risk_affects_sku")
+            check("⑨ declared_only risk_affects_sku 拒绝(raise)", False, "未 raise")
+        except ValueError as e:
+            check("⑨ declared_only risk_affects_sku 拒绝(raise)", "declared_only" in str(e), str(e)[:70])
+        # 未知 link 拒绝
+        try:
+            traverse(con, "Shipment", "SHP-1", "not_a_real_link")
+            check("⑨ 未知 link 拒绝(raise)", False, "未 raise")
+        except ValueError as e:
+            check("⑨ 未知 link 拒绝(raise)", "未知关系" in str(e), str(e)[:70])
+        # 非端点 object_type 拒绝
+        try:
+            traverse(con, "Sku", "SKU-1", "po_shipped_by")
+            check("⑨ 非端点 object_type 拒绝(raise)", False, "未 raise")
+        except ValueError as e:
+            check("⑨ 非端点 object_type 拒绝(raise)", "端点" in str(e), str(e)[:70])
+    finally:
+        con.close()
+
+    # 真实库 smoke：正向 FK + reverse_json 在真数据上也通（库存在才跑，否则跳过不判失败）
+    db = REPO_ROOT / "data" / "ontology.sqlite"
+    if db.exists():
+        rcon = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            row = rcon.execute("SELECT so_line_id, sku_id FROM sales_order_lines LIMIT 1").fetchone()
+            if row:
+                check("⑨ 真库 smoke 正向FK line_for_sku 命中真数据",
+                      traverse(rcon, "SalesOrderLine", row[0], "line_for_sku") == [row[1]],
+                      str(traverse(rcon, "SalesOrderLine", row[0], "line_for_sku")))
+            shp = rcon.execute("SELECT shipment_id, po_ids FROM shipments WHERE po_ids!='' LIMIT 1").fetchone()
+            if shp:
+                expect = [p for p in shp[1].split("|") if p]
+                check("⑨ 真库 smoke reverse_json po_shipped_by 命中真数据",
+                      traverse(rcon, "Shipment", shp[0], "po_shipped_by") == expect,
+                      str(traverse(rcon, "Shipment", shp[0], "po_shipped_by")))
+        finally:
+            rcon.close()
+
+
 def main():
     onto = load_ontology()
     gen_perms = build_role_perms(onto)
@@ -273,6 +374,8 @@ def main():
         check("⑧ build_tool_defs 拒绝『exposed⇔auto 破缺』变异", False, "未 raise——防线失效")
     except ValueError as e:
         check("⑧ build_tool_defs 拒绝『exposed⇔auto 破缺』变异", "不变式" in str(e), str(e)[:80])
+
+    _traverse_tests(onto)
 
     print(f"\n{'=' * 44}")
     print(f"迁移一致性：生成结果 vs 迁移前基线 —— "

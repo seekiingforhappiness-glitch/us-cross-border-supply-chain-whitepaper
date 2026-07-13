@@ -5,11 +5,13 @@
 """
 import csv
 import json
+import os
 import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
 
 import yaml
+from pydantic import ValidationError
 
 from .event_envelope import normalize_event
 from .er import resolve, resolve_milestones
@@ -21,6 +23,11 @@ from engine.resolution_memory import ensure_resolution_memory_table
 # 跨目录引用（agent/）原因：llm_calls 的 DDL 单一事实源在 agent.egress_gate（LLM 出境治理层，
 # 仅标准库+yaml，无 app/streamlit 依赖链）；建表职责在本模块（与 resolution_memory 同模式）。
 from agent.egress_gate import ensure_llm_calls_table
+# 桥3 结构生成（API 层 plan M3）：34 对象表 DDL 与 Pydantic 模型均从本体生成——本模块不再散落
+# 硬编码列清单，改为消费生成产物（object_ddls 现取 DDL；MODEL_BY_TABLE 供插入前契约校验）。
+from pipeline.generate_ddl import object_ddls
+from pipeline.ontology_lint import load_ontology as _load_ontology_json
+from pipeline.ontology_models import MODEL_BY_TABLE
 
 RAW = Path("data/raw")
 DB = Path("data/ontology.sqlite")
@@ -404,10 +411,36 @@ def main():
     con = sqlite3.connect(DB)
     cur = con.cursor()
 
-    def table(name, rows, cols, pk):
-        cur.execute(f"CREATE TABLE {name} ({', '.join(cols)}, PRIMARY KEY ({pk}))")
-        cur.executemany(f"INSERT INTO {name} VALUES ({','.join('?' * len(cols))})",
-                        [[r.get(c.split()[0], "") for c in cols] for r in rows])
+    # 桥3（M3）：34 对象表 DDL 从本体生成（object_ddls 现取）。插入前 model_validate 做行级契约
+    # 校验：ONTOLOGY_VALIDATE=warn 只收集打印（不中止，供首跑核 0 违例），=enforce（默认）有违例即
+    # 中止建库，=off 跳过。校验是旁路闸门——不改写被插入的原始值（DB 内容与切库前逐字节一致，
+    # 仅 skus 5 字段 TEXT→REAL 的目标修正）。
+    gen_ddl = object_ddls(_load_ontology_json())
+    validate_mode = os.environ.get("ONTOLOGY_VALIDATE", "enforce")
+    validation_violations = []
+
+    def table(name, rows, cols=None, pk=None):
+        """建表 + 插入。本体对象表（在 gen_ddl 中）用生成 DDL + 模型校验；
+        非对象表（unresolved_milestones / rate_card，无本体声明）走 cols/pk 硬编码回退。"""
+        gen = gen_ddl.get(name)
+        if gen is not None:
+            create_sql, colnames = gen
+            cur.execute(create_sql)
+            model = MODEL_BY_TABLE.get(name)
+            if model is not None and validate_mode != "off":
+                for r in rows:
+                    try:
+                        model.model_validate(r)
+                    except ValidationError as e:
+                        rid = r.get(colnames[0], "?") if colnames else "?"
+                        validation_violations.append((name, rid, str(e).replace("\n", " ")[:240]))
+            cur.executemany(
+                f"INSERT INTO {name} VALUES ({','.join('?' * len(colnames))})",
+                [[r.get(c, "") for c in colnames] for r in rows])
+        else:
+            cur.execute(f"CREATE TABLE {name} ({', '.join(cols)}, PRIMARY KEY ({pk}))")
+            cur.executemany(f"INSERT INTO {name} VALUES ({','.join('?' * len(cols))})",
+                            [[r.get(c.split()[0], "") for c in cols] for r in rows])
 
     cur.execute("""create table if not exists source_events (
         idempotency_key text primary key,
@@ -439,77 +472,27 @@ def main():
         "duplicate_idempotency_keys": len(source_events) - len({r["idempotency_key"] for r in source_events}),
     }
 
-    table("suppliers", t["srm_suppliers"],
-          ["supplier_id TEXT", "supplier_name TEXT", "city TEXT", "lead_time_days INTEGER",
-           "factory_audit_status TEXT", "compliance_docs_status TEXT",
-           "uflpa_risk_flag TEXT", "origin_evidence_status TEXT"],
-          "supplier_id")
-    table("skus", t["catalog_skus"],
-          ["sku_id TEXT", "sku_name TEXT", "category TEXT", "unit_price_usd REAL", "supplier_id TEXT",
-           "sku_status TEXT", "declared_value_usd TEXT", "package_weight_kg TEXT",
-           "package_l_cm TEXT", "package_w_cm TEXT", "package_h_cm TEXT", "battery_flag TEXT",
-           "food_contact_flag TEXT", "children_product_flag TEXT", "material TEXT",
-           "use_case TEXT", "origin_country TEXT", "platform TEXT"],
-          "sku_id")
-    table("customers", t["oms_customers"],
-          ["customer_id TEXT", "customer_name TEXT", "tier TEXT", "us_state TEXT",
-           "business_model TEXT", "sales_channel TEXT", "ior_capability TEXT",
-           "broker_status TEXT", "credit_terms TEXT", "risk_tier TEXT"], "customer_id")
-    table("sales_orders", so_rows,
-          ["so_id TEXT", "customer_id TEXT", "order_date TEXT", "status TEXT"], "so_id")
-    table("sales_order_lines", line_rows,
-          ["so_line_id TEXT", "so_id TEXT", "sku_id TEXT", "qty INTEGER", "unit_price_usd REAL",
-           "promised_delivery_date TEXT", "original_promised_date TEXT",
-           "reschedule_count INTEGER", "line_status TEXT"], "so_line_id")
-    table("purchase_orders", sorted(t["srm_purchase_orders"], key=lambda x: x["po_id"]),
-          ["po_id TEXT", "supplier_id TEXT", "sku_id TEXT", "qty INTEGER", "po_date TEXT",
-           "expected_ready_date TEXT", "status TEXT"], "po_id")
-    table("shipments", ship_rows,
-          ["shipment_id TEXT", "booking_no TEXT", "mbl_no TEXT", "mode TEXT", "container_no TEXT",
-           "container_type TEXT", "vessel_voyage TEXT", "carrier_name TEXT", "carrier_scac TEXT",
-           "incoterm TEXT", "gross_weight_kg REAL", "volume_cbm REAL", "origin_port TEXT",
-           "origin_port_locode TEXT", "destination_port TEXT", "destination_port_locode TEXT",
-           "destination_warehouse TEXT", "etd TEXT", "eta_initial TEXT", "eta_current TEXT",
-           "ata TEXT", "customs_status TEXT", "missing_docs TEXT", "delay_days INTEGER",
-           "status TEXT", "status_source TEXT", "last_event_time TEXT", "expedite_flag INTEGER",
-           "po_ids TEXT"], "shipment_id")
-    table("shipment_milestones", ms_rows,
-          ["milestone_id TEXT", "shipment_id TEXT", "event_type TEXT", "event_classifier TEXT",
-           "event_time TEXT", "event_locode TEXT", "new_eta TEXT", "source_system TEXT",
-           "ingested_at TEXT", "is_duplicate INTEGER"], "milestone_id")
+    table("suppliers", t["srm_suppliers"])
+    table("skus", t["catalog_skus"])
+    table("customers", t["oms_customers"])
+    table("sales_orders", so_rows)
+    table("sales_order_lines", line_rows)
+    table("purchase_orders", sorted(t["srm_purchase_orders"], key=lambda x: x["po_id"]))
+    table("shipments", ship_rows)
+    table("shipment_milestones", ms_rows)
     # v0.6-H3 unresolved 停车表：单证号无法解析的 milestone 原行全列保留 + reason
     # （不丢弃、不猜；下游控制塔不消费，仅供 DQ / evaluate 审计）
     table("unresolved_milestones", unresolved_ms,
           ["milestone_id TEXT", "booking_no TEXT", "container_no TEXT", "event_type TEXT",
            "event_classifier TEXT", "event_time TEXT", "event_locode TEXT", "new_eta TEXT",
            "source_system TEXT", "ingested_at TEXT", "reason TEXT"], "milestone_id")
-    table("shipment_allocations", sorted(t["tms_allocations"], key=lambda x: x["allocation_id"]),
-          ["allocation_id TEXT", "shipment_id TEXT", "so_line_id TEXT", "allocated_qty INTEGER"],
-          "allocation_id")
+    table("shipment_allocations", sorted(t["tms_allocations"], key=lambda x: x["allocation_id"]))
     # v0.3 准入四表（工作流数据，qms 为记录系统，直通加载 + 引用完整性入 DQ）
-    table("admission_cases", sorted(t["qms_admission_cases"], key=lambda x: x["admission_case_id"]),
-          ["admission_case_id TEXT", "case_title TEXT", "customer_id TEXT", "sku_id TEXT",
-           "request_type TEXT", "incoterm_candidate TEXT", "target_launch_date TEXT",
-           "monthly_order_estimate INTEGER", "risk_level TEXT", "status TEXT",
-           "decision TEXT", "decision_reason TEXT", "conditions TEXT"], "admission_case_id")
+    table("admission_cases", sorted(t["qms_admission_cases"], key=lambda x: x["admission_case_id"]))
     table("compliance_findings", sorted(t["qms_compliance_findings"],
-                                        key=lambda x: x["compliance_finding_id"]),
-          ["compliance_finding_id TEXT", "admission_case_id TEXT", "finding_title TEXT",
-           "finding_type TEXT", "severity TEXT", "hts_candidate TEXT", "pga_agency TEXT",
-           "required_document TEXT", "evidence_status TEXT", "recommendation TEXT"],
-          "compliance_finding_id")
-    table("logistics_plans", sorted(t["qms_logistics_plans"], key=lambda x: x["logistics_plan_id"]),
-          ["logistics_plan_id TEXT", "admission_case_id TEXT", "plan_name TEXT", "route_type TEXT",
-           "incoterm TEXT", "origin_port_locode TEXT", "destination_port_locode TEXT",
-           "us_warehouse_region TEXT", "last_mile_method TEXT", "estimated_transit_days INTEGER",
-           "sla_risk TEXT", "operational_notes TEXT"], "logistics_plan_id")
-    table("cost_scenarios", sorted(t["qms_cost_scenarios"], key=lambda x: x["cost_scenario_id"]),
-          ["cost_scenario_id TEXT", "logistics_plan_id TEXT", "scenario_type TEXT",
-           "quote_price_usd REAL", "product_cost_usd REAL", "first_mile_cost_usd REAL",
-           "international_freight_usd REAL", "duty_tax_usd REAL", "customs_brokerage_usd REAL",
-           "warehouse_cost_usd REAL", "last_mile_cost_usd REAL", "returns_allowance_usd REAL",
-           "risk_buffer_usd REAL", "gross_margin_usd REAL", "gross_margin_rate REAL"],
-          "cost_scenario_id")
+                                        key=lambda x: x["compliance_finding_id"]))
+    table("logistics_plans", sorted(t["qms_logistics_plans"], key=lambda x: x["logistics_plan_id"]))
+    table("cost_scenarios", sorted(t["qms_cost_scenarios"], key=lambda x: x["cost_scenario_id"]))
     case_ids = {r["admission_case_id"] for r in t["qms_admission_cases"]}
     dq["admission_orphan_findings"] = sum(
         1 for r in t["qms_compliance_findings"] if r["admission_case_id"] not in case_ids)
@@ -517,57 +500,26 @@ def main():
         1 for r in t["qms_logistics_plans"] if r["admission_case_id"] not in case_ids)
 
     # v0.4 费用对账五表（ap/tms/rate_card 为记录系统，直通加载 + 引用完整性入 DQ）
-    table("containers", sorted(t["tms_containers"], key=lambda x: x["container_no"]),
-          ["container_no TEXT", "shipment_id TEXT", "container_type TEXT", "is_primary TEXT",
-           "free_days INTEGER", "gross_weight_kg REAL", "volume_cbm REAL"], "container_no")
+    table("containers", sorted(t["tms_containers"], key=lambda x: x["container_no"]))
     rate_card_rows = [{**r, "rate_card_id": f"RC-{i:04d}"}
                       for i, r in enumerate(t["rate_card"], 1)]
     table("rate_card", rate_card_rows,
           ["rate_card_id TEXT", "charge_code TEXT", "scope TEXT", "key TEXT", "rate_usd REAL"],
           "rate_card_id")
-    table("invoices", sorted(t["ap_invoices"], key=lambda x: x["invoice_id"]),
-          ["invoice_id TEXT", "vendor_type TEXT", "vendor_name TEXT", "vendor_invoice_no TEXT",
-           "shipment_id TEXT", "issue_date TEXT", "currency TEXT", "total_usd REAL",
-           "status TEXT"], "invoice_id")
-    table("invoice_lines", sorted(t["ap_invoice_lines"], key=lambda x: x["invoice_line_id"]),
-          ["invoice_line_id TEXT", "invoice_id TEXT", "charge_code TEXT", "container_no TEXT",
-           "qty INTEGER", "unit_price_usd REAL", "amount_usd REAL"], "invoice_line_id")
-    table("expected_costs", sorted(t["ap_expected_costs"], key=lambda x: x["expected_cost_id"]),
-          ["expected_cost_id TEXT", "shipment_id TEXT", "charge_code TEXT", "container_no TEXT",
-           "baseline_usd REAL", "source TEXT"], "expected_cost_id")
+    table("invoices", sorted(t["ap_invoices"], key=lambda x: x["invoice_id"]))
+    table("invoice_lines", sorted(t["ap_invoice_lines"], key=lambda x: x["invoice_line_id"]))
+    table("expected_costs", sorted(t["ap_expected_costs"], key=lambda x: x["expected_cost_id"]))
 
     # P1 采购三方对账五表（srm/ap 为记录系统，直通加载 + 引用完整性入 DQ）
     # PoLine 覆盖 D2 单 SKU 约束：采购单行为一等对象，引用既有 purchase_orders.po_id
-    table("po_lines", sorted(t["srm_po_lines"], key=lambda x: x["po_line_id"]),
-          ["po_line_id TEXT", "po_id TEXT", "sku_id TEXT", "qty INTEGER", "unit_price_usd REAL",
-           "currency TEXT", "expected_ready_date TEXT", "line_status TEXT", "as_of_date TEXT",
-           "created_at TEXT"], "po_line_id")
-    table("goods_receipts", sorted(t["srm_goods_receipts"], key=lambda x: x["grn_id"]),
-          ["grn_id TEXT", "po_id TEXT", "received_date TEXT", "status TEXT", "as_of_date TEXT",
-           "created_at TEXT"], "grn_id")
-    table("goods_receipt_lines", sorted(t["srm_goods_receipt_lines"], key=lambda x: x["grn_line_id"]),
-          ["grn_line_id TEXT", "grn_id TEXT", "po_line_id TEXT", "received_qty INTEGER",
-           "accepted_qty INTEGER", "rejected_qty INTEGER", "qc_status TEXT", "defect_ppm INTEGER",
-           "received_date TEXT", "as_of_date TEXT", "created_at TEXT"], "grn_line_id")
-    table("supplier_invoices", sorted(t["ap_supplier_invoices"], key=lambda x: x["supplier_invoice_id"]),
-          ["supplier_invoice_id TEXT", "supplier_id TEXT", "po_id TEXT", "vendor_invoice_no TEXT",
-           "issue_date TEXT", "currency TEXT", "total_usd REAL", "status TEXT", "as_of_date TEXT",
-           "created_at TEXT"], "supplier_invoice_id")
-    table("supplier_invoice_lines",
-          sorted(t["ap_supplier_invoice_lines"], key=lambda x: x["supplier_invoice_line_id"]),
-          ["supplier_invoice_line_id TEXT", "supplier_invoice_id TEXT", "po_line_id TEXT",
-           "qty INTEGER", "unit_price_usd REAL", "amount_usd REAL", "as_of_date TEXT",
-           "created_at TEXT"], "supplier_invoice_line_id")
+    table("po_lines", sorted(t["srm_po_lines"], key=lambda x: x["po_line_id"]))
+    table("goods_receipts", sorted(t["srm_goods_receipts"], key=lambda x: x["grn_id"]))
+    table("goods_receipt_lines", sorted(t["srm_goods_receipt_lines"], key=lambda x: x["grn_line_id"]))
+    table("supplier_invoices", sorted(t["ap_supplier_invoices"], key=lambda x: x["supplier_invoice_id"]))
+    table("supplier_invoice_lines", sorted(t["ap_supplier_invoice_lines"], key=lambda x: x["supplier_invoice_line_id"]))
     # P2 采购富化两表：预付款（R12）+ 供应商资质（R13）；直通加载 + 引用完整性入 DQ
-    table("purchase_payments", sorted(t["ap_purchase_payments"], key=lambda x: x["payment_id"]),
-          ["payment_id TEXT", "po_id TEXT", "payment_type TEXT", "amount_usd REAL",
-           "paid_date TEXT", "exposure_status TEXT", "as_of_date TEXT", "created_at TEXT"],
-          "payment_id")
-    table("supplier_qualifications",
-          sorted(t["srm_supplier_qualifications"], key=lambda x: x["qualification_id"]),
-          ["qualification_id TEXT", "supplier_id TEXT", "cert_type TEXT", "evidence_status TEXT",
-           "valid_from TEXT", "valid_to TEXT", "status TEXT", "as_of_date TEXT", "created_at TEXT"],
-          "qualification_id")
+    table("purchase_payments", sorted(t["ap_purchase_payments"], key=lambda x: x["payment_id"]))
+    table("supplier_qualifications", sorted(t["srm_supplier_qualifications"], key=lambda x: x["qualification_id"]))
 
     # 采购侧 DQ（引用完整性——应全为 0；total 不平也应为 0）
     po_id_set = {r["po_id"] for r in t["srm_purchase_orders"]}
@@ -607,23 +559,12 @@ def main():
 
     # W1 仓储库存主线四表（wms 为记录系统，直通加载 + 引用完整性入 DQ）
     # 库存粒度 SKU×仓库（决策 W1）；position/reservation/cycle_count 挂 Warehouse/SalesOrderLine
-    table("warehouses", sorted(t["wms_warehouses"], key=lambda x: x["warehouse_id"]),
-          ["warehouse_id TEXT", "type TEXT", "operator TEXT", "region TEXT",
-           "capacity_units INTEGER", "as_of_date TEXT"], "warehouse_id")
+    table("warehouses", sorted(t["wms_warehouses"], key=lambda x: x["warehouse_id"]))
     table("inventory_positions", sorted(t["wms_inventory_positions"],
-                                        key=lambda x: x["inventory_position_id"]),
-          ["inventory_position_id TEXT", "sku_id TEXT", "warehouse_id TEXT",
-           "available_qty INTEGER", "reserved_qty INTEGER", "in_transit_qty INTEGER",
-           "quarantine_qty INTEGER", "safety_stock INTEGER", "as_of_date TEXT"],
-          "inventory_position_id")
+                                        key=lambda x: x["inventory_position_id"]))
     table("inventory_reservations", sorted(t["wms_inventory_reservations"],
-                                           key=lambda x: x["reservation_id"]),
-          ["reservation_id TEXT", "so_line_id TEXT", "inventory_position_id TEXT",
-           "qty INTEGER", "status TEXT", "as_of_date TEXT"], "reservation_id")
-    table("cycle_counts", sorted(t["wms_cycle_counts"], key=lambda x: x["cycle_count_id"]),
-          ["cycle_count_id TEXT", "inventory_position_id TEXT", "warehouse_id TEXT",
-           "system_qty INTEGER", "counted_qty INTEGER", "variance INTEGER", "status TEXT",
-           "as_of_date TEXT"], "cycle_count_id")
+                                           key=lambda x: x["reservation_id"]))
+    table("cycle_counts", sorted(t["wms_cycle_counts"], key=lambda x: x["cycle_count_id"]))
 
     # 仓储侧 DQ（引用完整性——应全为 0）
     wh_id_set = {r["warehouse_id"] for r in t["wms_warehouses"]}
@@ -649,14 +590,9 @@ def main():
 
     # P3 采购富化2 询价三表（srm 为记录系统，直通加载 + 引用完整性入 DQ）
     # RFQ(单 SKU 询价)/RFQLine/Quote(供应商报价)；approved 备源 = awarded Quote → R14/R15 判据数据源。
-    table("rfqs", sorted(t["srm_rfqs"], key=lambda x: x["rfq_id"]),
-          ["rfq_id TEXT", "sku_id TEXT", "status TEXT", "created_date TEXT", "as_of_date TEXT"],
-          "rfq_id")
-    table("rfq_lines", sorted(t["srm_rfq_lines"], key=lambda x: x["rfq_line_id"]),
-          ["rfq_line_id TEXT", "rfq_id TEXT", "sku_id TEXT", "qty INTEGER"], "rfq_line_id")
-    table("quotes", sorted(t["srm_quotes"], key=lambda x: x["quote_id"]),
-          ["quote_id TEXT", "rfq_id TEXT", "supplier_id TEXT", "unit_price_usd REAL",
-           "currency TEXT", "status TEXT", "as_of_date TEXT"], "quote_id")
+    table("rfqs", sorted(t["srm_rfqs"], key=lambda x: x["rfq_id"]))
+    table("rfq_lines", sorted(t["srm_rfq_lines"], key=lambda x: x["rfq_line_id"]))
+    table("quotes", sorted(t["srm_quotes"], key=lambda x: x["quote_id"]))
     rfq_id_set = {r["rfq_id"] for r in t["srm_rfqs"]}
     src_sku_set = {r["sku_id"] for r in t["catalog_skus"]}
     src_sup_set = {r["supplier_id"] for r in t["srm_suppliers"]}
@@ -785,6 +721,18 @@ def main():
         "by_issue_type": dict(sorted(Counter(issue_type for _, issue_type, _ in dq_issue_rows).items())),
         "by_source_table": dict(sorted(Counter(source_table for source_table, _, _ in dq_issue_rows).items())),
     }
+    # 桥3（M3）：数据契约校验闸门——先前逐表 model_validate 收集的违例在此裁决。
+    if validate_mode != "off":
+        if validation_violations:
+            print(f"[model_validate] {validate_mode} 模式发现 {len(validation_violations)} 行契约违例：")
+            for name, rid, detail in validation_violations[:50]:
+                print(f"  - {name}[{rid}]：{detail}")
+            if validate_mode == "enforce":
+                con.close()
+                raise SystemExit(f"model_validate enforce：{len(validation_violations)} 行违例，建库中止"
+                                 "（数据与本体声明的契约不符，请核对本体或数据，勿抑制）")
+        else:
+            print(f"[model_validate] {validate_mode} 模式：0 违例（34 对象表生成 DDL + 数据契约全通过）")
     con.commit()
     con.close()
 
