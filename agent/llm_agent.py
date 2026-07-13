@@ -321,16 +321,28 @@ def _run_claude_cli(question, session, max_turns, verbose):
                                verbose=verbose, db=session.con)
 
 
-# —— M4 主通道 claude_cli_mcp provider：走本账号 Claude 订阅 + 本体只读 MCP server 多轮真调用 ——
+# —— M4 主通道 claude_cli_mcp provider：走本账号 Claude 订阅 + 本体 MCP server 多轮真调用 ——
 # 与旧 claude_cli（单发合成，Python 先取好上下文让模型朗读）本质不同：这里模型经 MCP 协议
-# **自己开口要数据**（查货件→沿关系走到风险→逐个深查），系统当场只读查库返给它。裁3 决议：新旧
+# **自己开口要数据**（查货件→沿关系走到风险→逐个深查），系统当场查库返给它。V6 裁2 起除只读工具外
+# 还可调 6 个写提案工具（派单/提案/准入准备，走 server→既有 dispatch，审批仍人做）。裁3 决议：新旧
 # 双通道并存，config 一键回退（provider 改回 claude_cli 即退旧档）；MCP 失败→回退 provider→确定性简报。
+
+# V6 裁2 提案纪律（最小措辞）：告知模型现在可提案但审批在人（maker-checker）。作为前缀注入问题——
+# server 侧脱敏/dispatch 鉴权是硬护栏，本前缀只是让模型行为得体（该提案时提案、明确审批归人），
+# 不承担安全职责（即便去掉前缀，冻结区工具仍不可达、越权写仍被 dispatch 拒）。
+_MCP_PROPOSAL_DISCIPLINE = (
+    "你可查数据并在权限内提交处置提案（派单/提案/准入准备等写工具）；但你没有审批与关闭权限，"
+    "提案一律交人工审批（maker-checker）。据实作答，关键事实附对象 ID，查不到就说查不到。\n\n"
+)
+
+
 def _mcp_allowed_tool_args():
-    """允许 claude 调用的 MCP 工具全名 mcp__ontology__*（读工具 11 + traverse，单一来源自 mcp_server）。
-    列全集即可——server 侧按 --role/env 再过滤 tools/list，模型实际只见角色可见子集。"""
-    from .mcp_server import build_readonly_tool_defs, SERVER_NAME
+    """允许 claude 调用的 MCP 工具全名 mcp__ontology__*（读工具 11 + 6 写提案工具 + traverse = 18，
+    单一来源自 mcp_server.build_exposed_tool_defs；V6 裁2 起含写工具）。列全集即可——server 侧按 --role/env
+    再过滤 tools/list + 写工具经 dispatch 二次鉴权，模型实际只见并只能调用角色可见子集。"""
+    from .mcp_server import build_exposed_tool_defs, SERVER_NAME
     from pipeline.ontology_runtime import load_ontology
-    names = [t["name"] for t in build_readonly_tool_defs(load_ontology())]
+    names = [t["name"] for t in build_exposed_tool_defs(load_ontology())]
     return ",".join(f"mcp__{SERVER_NAME}__{n}" for n in names)
 
 
@@ -342,7 +354,9 @@ def _invoke_cli_mcp(prompt, role, model, max_turns, timeout, verbose):
     if not shutil.which("claude"):
         raise RuntimeError("未找到 claude CLI（本账号订阅渠道）。安装并登录 Claude Code 后重试，"
                            "或改用确定性简报：python3 -m agent.evaluate")
-    cmd = ["claude", "-p", prompt, "--model", model,
+    # V6 裁2 提案纪律前缀（常量、无 PI，不影响出境审计口径）：告知模型可提案但审批在人
+    full_prompt = _MCP_PROPOSAL_DISCIPLINE + prompt
+    cmd = ["claude", "-p", full_prompt, "--model", model,
            "--mcp-config", _MCP_CONFIG_PATH, "--strict-mcp-config",
            "--allowedTools", _mcp_allowed_tool_args(), "--output-format", "json",
            "--max-turns", str(max(int(max_turns), 12)),  # 多轮工具往返留足余量（PoC 实测 num_turns≈7）

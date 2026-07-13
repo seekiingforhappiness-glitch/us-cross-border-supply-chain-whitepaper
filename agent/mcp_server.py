@@ -1,25 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""正式本体 MCP server（API 层 plan M4，V5 决议②正式化）—— 只读、角色感知、审计入库。
+"""正式本体 MCP server（API 层 plan M4 + 决策日志 V6 裁2）—— 角色感知、审计入库；读工具 + 6 写提案工具。
 
 迁移自 `poc/mcp-ontology/server.py`（该 PoC 目录冻结为历史证据，一字不改；本文件为其正式版）。
-相对 PoC 补齐 PoC 报告 §6 建议 1-4（四道硬门槛）：
+相对 PoC 补齐 PoC 报告 §6 建议 1-4（四道硬门槛）；V6 裁2 起开放 6 个写提案工具（见门槛2）：
 
   门槛1 角色过滤 + 字段脱敏：启动带 `--role <role>`（缺省 ops，亦读环境变量 ONTOLOGY_MCP_ROLE）。
-        tools/list 只返回该角色可见工具——读工具按本体 aiQueryTools[].domain × 角色域矩阵，
-        与 agent/tools.py 的 Session scoping **同一来源与语义**（直接复用 allowed_tools_for_role）；
-        返回数据按本体 sensitiveFieldRules 声明驱动脱敏（如 Customer.tier 仅 cs/manager 可见），
-        掩码值 = agent.tools.MASK。tools.py 既有 COST_FIELDS/INVOICE_COST_FIELDS 会话层脱敏本次不动
-        （由被复用的 Session 读方法原样执行；*_usd 成本模式规则仍由会话层承载）。
+        tools/list 只返回该角色可见工具——读工具按本体 aiQueryTools[].domain × 角色域矩阵、写工具按
+        ROLE_PERMS/ADM_PERMS，与 agent/tools.py 的 Session scoping **同一来源与语义**（直接复用
+        allowed_tools_for_role，读+写同一把尺）；返回数据按本体 sensitiveFieldRules 声明驱动脱敏
+        （如 Customer.tier 仅 cs/manager 可见），掩码值 = agent.tools.MASK。tools.py 既有 COST_FIELDS/
+        INVOICE_COST_FIELDS 会话层脱敏本次不动（由被复用的 Session 读方法原样执行；*_usd 成本模式规则仍由会话层承载）。
 
-  门槛2 冻结区机制化 + 零写工具：工具清单从 pipeline.ontology_runtime.build_tool_defs() **派生**，
-        按名单过滤掉 6 个写工具（exposed_as_tool=true 动作的 snake），只留 11 个读工具 + traverse。
-        冻结区 4 动作（审批/关闭/拒接）在生成层就不在读工具集中——纵深防御：暴露集 ∩ frozen == ∅、
-        暴露集 ∩ 6 写工具 == ∅（裁2 第一版纯只读，写提案工具不入，待创始人裁决后另开任务）。
+  门槛2 冻结区机制化 + 6 写提案工具（决策日志 V6 裁2）：工具清单 = build_tool_defs()（11 读 + 6 写）
+        + traverse = 18；6 写工具（exposed_as_tool=true 动作的 snake：assign_task / propose_mitigation /
+        create_admission_case / run_compliance_precheck / build_logistics_plan / calculate_cost_scenario）
+        **可见性按角色**（allowed_tools_for_role 单一来源），调用**走 agent/tools.py 既有 dispatch**
+        （同一套 ROLE_PERMS 白名单 + FORBIDDEN 拦截 + action_log 审计，不建第二写路径，server 内不 import
+        app.actions 写函数）。冻结区 4 动作（审批/关闭/拒接）在生成层永不入暴露集——纵深防御：
+        暴露集 ∩ frozen == ∅（协议层拦截，永不到达 dispatch）；maker-checker 不变（工具只产提案/派单，审批仍人做）。
 
-  门槛3 审计入库：双连接——业务查询连接维持 `mode=ro`（物理只读红线，写路径不存在）；审计另开写连接，
-        启动跑一次幂等迁移把 llm_calls.call_type CHECK 扩到含 'mcp_tool'，其后仅执行
-        INSERT INTO llm_calls（call_type='mcp_tool'）。同时保留 jsonl 落盘（PoC 取证格式兼容）。
+  门槛3 审计入库：连接三分离——① 业务查询连接维持 `mode=ro`（读工具物理只读红线，绝不被写路径复用）；
+        ② 写提案工具经独立读写 AgentSession 的 dispatch 执行（裁2；action_log 审计在 dispatch 内落）；
+        ③ 审计写连接启动跑一次幂等迁移把 llm_calls.call_type CHECK 扩到含 'mcp_tool'，其后仅执行
+        INSERT INTO llm_calls（call_type='mcp_tool'）——读/写工具调用皆落一行。同时保留 jsonl 落盘（PoC 取证格式兼容）。
+        双账本各记各的语义：llm_calls=MCP 通道遥测（每次工具调用的字符数/耗时/摘除），action_log=业务动作审计
+        （写提案/派单成功、或越权 denial）——一次写调用两账本各记一笔，语义互补不重复。
 
   门槛4 input_schema 本体驱动：traverse 的 object_type/link_type 枚举从本体生成（PoC 已做）；
         对象字段结构复用 pipeline.ontology_models 的 model_json_schema（M3 合流点，34 类型全覆盖）。
@@ -48,6 +54,8 @@ if str(REPO_ROOT) not in sys.path:                    # 便于 `python3 agent/mc
 DB_PATH = Path(os.environ.get("ONTOLOGY_DB_PATH", REPO_ROOT / "data" / "ontology.sqlite"))
 ONTOLOGY_JSON_PATH = Path(os.environ.get(
     "ONTOLOGY_JSON_PATH", REPO_ROOT / "ontology" / "control-tower-ontology.json"))
+# 写路径 AgentSession 的 datagen 配置（as_of 等）——绝对路径脱 cwd 依赖（写 session 构造用，裁2）
+CONFIG_PATH = Path(os.environ.get("DATAGEN_CONFIG_PATH", REPO_ROOT / "config" / "datagen.yaml"))
 # jsonl 落盘（PoC 取证格式兼容）：默认 data/（.gitignore 已忽略 data/，不污染版本库）
 CALL_LOG_PATH = Path(os.environ.get("MCP_CALL_LOG", REPO_ROOT / "data" / "mcp_call_log.jsonl"))
 
@@ -75,11 +83,12 @@ class ToolError(Exception):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 门槛2：只读工具集派生（build_tool_defs 结果过滤掉 6 个写工具 + 追加 traverse）
+# 门槛2：暴露工具集派生（build_tool_defs 全量 11 读 + 6 写 + 追加 traverse = 18；V6 裁2）
 # ═══════════════════════════════════════════════════════════════════════════
 def write_tool_names(ontology: dict) -> set[str]:
-    """6 个写工具名 = snake_case(exposed_as_tool=true 动作)。裁2 依据：第一版纯只读，
-    写动作（派单/提案/准入准备）一个不注册为 MCP 工具——它们只经 UI 表单 + maker-checker 执行。"""
+    """6 个写提案工具名 = snake_case(exposed_as_tool=true 动作)。V6 裁2：这 6 个写工具
+    （派单/提案/准入准备）向 AI 开放，但调用**走 agent/tools.py 既有 dispatch**（ROLE_PERMS 白名单
+    + FORBIDDEN 拦截 + action_log 审计），可见性按角色；冻结区审批/关闭类不在此列（永不注册）。"""
     return {snake_case(a["name"]) for a in ontology["actions"] if a.get("exposed_as_tool") is True}
 
 
@@ -111,12 +120,13 @@ def _traverse_tool_def(ontology: dict) -> dict:
     }
 
 
-def build_readonly_tool_defs(ontology: dict) -> list[dict]:
-    """MCP 暴露工具集（角色过滤前的全集）= build_tool_defs() 去掉 6 写工具 + traverse。
-    结果恒为 11 读工具 + traverse = 12（写工具一个不入；冻结区动作本就不在 build_tool_defs 里）。"""
-    writes = write_tool_names(ontology)
-    defs = [t for t in build_tool_defs(ontology) if t["name"] not in writes]  # 11 读工具
-    defs.append(_traverse_tool_def(ontology))                                 # + traverse
+def build_exposed_tool_defs(ontology: dict) -> list[dict]:
+    """MCP 暴露工具全集（角色过滤前）= build_tool_defs()（11 读 + 6 写）+ traverse = 18（V6 裁2）。
+    6 写工具随全集暴露、按角色过滤可见性（visible_tool_defs），调用走既有 dispatch；冻结区动作本就
+    不在 build_tool_defs（ai_executable=frozen ⇒ exposed_as_tool=false，_validate_ai_invariants 兜底），
+    故暴露集 ∩ frozen == ∅ 由生成层天然保证。"""
+    defs = list(build_tool_defs(ontology))       # 11 读工具 + 6 写工具（原样，不再过滤）
+    defs.append(_traverse_tool_def(ontology))    # + traverse（结构原语）
     return defs
 
 
@@ -215,6 +225,27 @@ def _make_readonly_session(db_path: Path, role: str):
     return session
 
 
+def _make_write_session(db_path: Path, role: str):
+    """写路径 AgentSession（读写连接）——V6 裁2：6 写提案工具经其 `.dispatch()` 执行，复用
+    agent/tools.py 既有 dispatch（ROLE_PERMS 白名单 + FORBIDDEN 拦截 + action_log 审计），不建第二写路径。
+    与业务只读连接（mode=ro）**物理分离**：ro 连接绝不被写路径复用；写动作由 dispatch→app.actions
+    函数用本读写连接执行并落审计。显式传 config_path（脱 cwd 依赖，与只读 session 构造对称）。"""
+    from agent.tools import AgentSession
+    return AgentSession(db_path=str(db_path), config_path=str(CONFIG_PATH), role=role)
+
+
+def _is_write_error(data) -> bool:
+    """判定 dispatch 写结果是否为错误（供 _finish 标 isError）：refused（越权/未注册）、
+    ok=False（动作层拒绝/前置不满足）、或裸 error 键 → True；ok=True 的成功提案 → False。"""
+    if not isinstance(data, dict):
+        return True
+    if data.get("refused"):
+        return True
+    if "ok" in data:
+        return not data["ok"]
+    return "error" in data
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # server 主体
 # ═══════════════════════════════════════════════════════════════════════════
@@ -224,15 +255,16 @@ class OntologyMCPServer:
         self.role = role
         self.db_path = Path(db_path)
         self.ontology = load_ontology(str(ontology_json))
-        self.session = _make_readonly_session(self.db_path, role)   # mode=ro 业务连接
+        self.session = _make_readonly_session(self.db_path, role)   # mode=ro 业务只读连接（读工具）
+        self._write_session = None                                  # 惰性读写连接（写工具经既有 dispatch，裁2）
         self.masker = SensitiveFieldMasker(self.ontology, role, MASK)
 
-        # 门槛2：只读工具全集（12）+ 派生的写工具名单 / 冻结区名单（供纵深防御与自检）
-        self.readonly_defs = build_readonly_tool_defs(self.ontology)
-        self.exposed_names = {t["name"] for t in self.readonly_defs}
-        self.write_names = write_tool_names(self.ontology)          # 6，一个不暴露
-        self.forbidden = build_forbidden_tools(self.ontology)       # 4 冻结区
-        self.read_tool_names = self.exposed_names - {"traverse"}    # 11 读工具（映射 Session 方法）
+        # 门槛2：暴露工具全集（18=11 读+6 写+traverse）+ 派生的写工具名单 / 冻结区名单（供纵深防御与自检）
+        self.exposed_defs = build_exposed_tool_defs(self.ontology)
+        self.exposed_names = {t["name"] for t in self.exposed_defs}
+        self.write_names = write_tool_names(self.ontology)          # 6 写提案工具（按角色可见，走 dispatch）
+        self.forbidden = build_forbidden_tools(self.ontology)       # 4 冻结区（永不暴露、永不到达 dispatch）
+        self.read_tool_names = self.exposed_names - self.write_names - {"traverse"}  # 11 读工具（映射 Session 方法）
 
         # 门槛4：对象字段结构复用 M3 生成模型的 json schema（合流点，34 类型覆盖自检）
         self.type_schemas = self._load_type_schemas()
@@ -245,18 +277,28 @@ class OntologyMCPServer:
             self.audit_con.execute("PRAGMA busy_timeout=5000")  # 审计写遇锁等待而非即失败
             self.audit_status = migrate_llm_calls_call_type_check(self.audit_con)
 
-        # 11 读工具 → Session 绑定方法（名称即方法名，无硬编码清单；桥2 声明驱动）
+        # 11 读工具 → 只读 Session 绑定方法（名称即方法名，无硬编码清单；桥2 声明驱动）
         self._read_handlers = {name: getattr(self.session, name) for name in self.read_tool_names}
-        self.tool_defs = self.readonly_defs
+        self.tool_defs = self.exposed_defs
 
     def close(self) -> None:
-        """释放业务只读连接 + 审计写连接（单进程 stdio 生命周期长驻，仅退出/测试时用）。"""
-        for con in (getattr(self.session, "con", None), self.audit_con):
+        """释放业务只读连接 + 写路径连接 + 审计写连接（单进程 stdio 生命周期长驻，仅退出/测试时用）。"""
+        cons = [getattr(self.session, "con", None), self.audit_con]
+        if self._write_session is not None:
+            cons.append(getattr(self._write_session, "con", None))
+        for con in cons:
             try:
                 if con is not None:
                     con.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _ensure_write_session(self):
+        """惰性构造写路径 AgentSession（读写连接）——仅当真有写工具调用时才开写连接。
+        与业务只读连接（self.session.con, mode=ro）物理分离，ro 连接绝不被写路径复用（裁2 连接管理红线）。"""
+        if self._write_session is None:
+            self._write_session = _make_write_session(self.db_path, self.role)
+        return self._write_session
 
     def __enter__(self):
         return self
@@ -285,10 +327,12 @@ class OntologyMCPServer:
 
     # ── 角色可见工具（门槛1 角色过滤）──────────────────────────────────────
     def visible_tool_defs(self) -> list[dict]:
-        """该 role 可见工具 = 角色域 scoping（allowed_tools_for_role，与 tools.py 同一来源）∩ 读工具，
-        并入 traverse（结构原语，只返回 ID 无字段、对全角色可见）。写工具从不在 readonly_defs 中。"""
+        """该 role 可见工具 = allowed_tools_for_role（与 tools.py Session **同一把尺**：读工具按域、
+        写工具按 ROLE_PERMS/ADM_PERMS）∩ 暴露集，并入 traverse（结构原语，对全角色可见）。
+        故一个角色只见自己有权的写工具（如 sales 仅见 create_admission_case）；冻结区永不在暴露集，
+        自然不可见。V6 裁2：写工具随全集暴露、可见性单一来源自 allowed_tools_for_role，不复制规则。"""
         allowed = allowed_tools_for_role(self.role)
-        return [t for t in self.readonly_defs
+        return [t for t in self.exposed_defs
                 if t["name"] == "traverse" or t["name"] in allowed]
 
     def visible_tool_names(self) -> set[str]:
@@ -296,20 +340,30 @@ class OntologyMCPServer:
 
     # ── 工具执行（门槛1 脱敏 + 门槛3 审计）────────────────────────────────
     def call_tool(self, name: str, args: dict) -> dict:
-        """执行只读工具：纵深防御拦截（冻结区/写工具/越域）→ 调用 → 声明脱敏 → 出境闸门 → 审计。
-        返回 MCP content 结果（isError 标注业务错误）。"""
+        """执行工具：纵深防御拦截 → 读工具直调只读 Session / 写工具经既有 dispatch → 声明脱敏 →
+        出境闸门 → 审计（llm_calls）。返回 MCP content 结果（isError 标注业务错误）。"""
         args = args or {}
         t0 = time.time()
 
-        # 纵深防御 1：冻结区 / 写工具永不执行（本就不在 tools/list，双保险）
-        if name in self.forbidden or name in self.write_names:
+        # 纵深防御 1：冻结区（审批/关闭/拒接）永不执行——本就不在暴露集，且**永不到达 dispatch**
+        # （协议层拦截：不落 action_log；对比越权写会经 dispatch 落 denial，见 _dispatch_write）。
+        if name in self.forbidden:
             return self._finish(name, args, {"error":
-                "该动作未向 AI 开放：审批/关闭/写动作只经人工 UI 表单执行（proposal-only 护栏，裁2）"},
+                "该动作未向 AI 开放：审批/关闭类只经人工执行（maker-checker 护栏）；此调用在协议层拦截、未进入 dispatch"},
                 is_error=True, t0=t0)
-        # 纵深防御 2：未知工具
+        # 纵深防御 2：未知工具（不在暴露集）
         if name not in self.exposed_names:
             return self._finish(name, args, {"error": f"未知工具 '{name}'"}, is_error=True, t0=t0)
-        # 纵深防御 3：角色域外（tools/list 已过滤，越域调用仍拒并审计）
+
+        # 写提案工具（V6 裁2）：路由到 agent/tools.py 既有 dispatch——ROLE_PERMS 白名单 + FORBIDDEN 拦截
+        # + action_log 审计都在 dispatch 内完成（无权角色→dispatch 落 denial 审计）；此处不预筛角色，
+        # 让越权写抵达 dispatch 以留 action_log 痕迹（双账本：另落 llm_calls）。
+        if name in self.write_names:
+            data = self._dispatch_write(name, args)
+            self.masker.mask_value(data)             # 门槛1：写结果也过声明脱敏（幂等，防提案回显敏感字段）
+            return self._finish(name, args, data, is_error=_is_write_error(data), t0=t0)
+
+        # 读工具：角色域外拒绝并审计（越域读，MCP 协议层拦截；读工具不触 action_log，仅 llm_calls 留痕）
         if name not in self.visible_tool_names():
             return self._finish(name, args, {"error":
                 f"工具 '{name}' 未向角色 '{self.role}' 开放（越域读，本次已记审计）"},
@@ -329,10 +383,21 @@ class OntologyMCPServer:
         return self._finish(name, args, data, is_error=False, t0=t0)
 
     def _invoke(self, name: str, args: dict):
-        """路由：11 读工具 → Session 方法；traverse → 桥3 运行时原语（同源消费 links[].storage）。"""
+        """路由：11 读工具 → 只读 Session 方法；traverse → 桥3 运行时原语（同源消费 links[].storage）。"""
         if name == "traverse":
             return self._traverse(args)
         return self._read_handlers[name](**args)
+
+    def _dispatch_write(self, name: str, args: dict) -> dict:
+        """写提案工具路由到 agent/tools.py 既有 dispatch（V6 裁2）：同一套 ROLE_PERMS 白名单 +
+        FORBIDDEN 拦截 + action_log 审计。写连接是独立读写 AgentSession（业务只读连接 mode=ro 不被复用）；
+        **不 import app.actions 任何写函数**——绝不绕过 dispatch 建第二写路径。dispatch 返回
+        {ok,object_id,...}（成功提案）/{refused,reason}（越权，已落 action_log denial）/{error}（参数错）。"""
+        try:
+            return self._ensure_write_session().dispatch(name, args)
+        except Exception as exc:  # noqa: BLE001  dispatch 内异常兜底为业务错误（不拖垮协议）
+            _stderr("写工具 dispatch 异常:\n" + traceback.format_exc())
+            return {"error": f"写工具执行异常: {exc}"}
 
     def _traverse(self, args: dict) -> dict:
         source_type = args.get("source_type")
@@ -381,6 +446,8 @@ class OntologyMCPServer:
     def _count_rows(name: str, data: dict, is_error: bool) -> int:
         if is_error or not isinstance(data, dict):
             return 0
+        if data.get("ok") is True and "object_id" in data:
+            return 1                                  # 写提案成功：1 个提案/任务对象（jsonl result_rows 记账口径）
         for key in ("count", "result_rows"):
             if isinstance(data.get(key), int):
                 return data[key]
@@ -519,8 +586,9 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         _stderr("启动失败:\n" + traceback.format_exc())
         sys.exit(1)
-    _stderr(f"就绪：role={role}，暴露 {len(server.visible_tool_names())} 工具"
-            f"（只读全集 {len(server.exposed_names)}），审计={server.audit_status}，DB={server.db_path}（只读）")
+    _stderr(f"就绪：role={role}，可见 {len(server.visible_tool_names())} 工具"
+            f"（暴露全集 {len(server.exposed_names)}=读{len(server.read_tool_names)}+写{len(server.write_names)}+traverse），"
+            f"审计={server.audit_status}，读连接 mode=ro，写提案经既有 dispatch，DB={server.db_path}")
     StdioLoop(server).serve()
 
 
