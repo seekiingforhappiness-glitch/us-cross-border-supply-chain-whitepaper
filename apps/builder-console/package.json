@@ -1,9 +1,9 @@
 {
   "name": "builder-console",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
-  "description": "建造者透视镜 v1 —— 给创始人的系统内在设计可视化（零后端静态应用）",
+  "description": "建造者透视镜 v2 —— 内在设计 + 活世界数据 + 关联织网 + 实体下钻（零后端静态应用）",
   "scripts": {
     "export": "python3 export_data.py",
     "dev": "vite",

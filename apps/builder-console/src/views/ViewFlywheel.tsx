@@ -13,9 +13,12 @@ export default function ViewFlywheel() {
   const d = flywheel;
   const maxFunnel = Math.max(...d.funnel.map((f) => f.count), 1);
 
+  const maxQ = Math.max(...(d.quality?.map((q) => q.n) ?? [1]), 1);
+  const QTONE: Record<string, string> = { effective: "green", partial: "amber", ineffective: "red" };
+
   return (
     <div>
-      <ViewHead idx="04" question={d.question} subtitle={d.subtitle} />
+      <ViewHead idx="10" question={d.question} subtitle={d.subtitle} />
 
       {/* 五资产接力 */}
       <div className="flow-track">
@@ -76,10 +79,32 @@ export default function ViewFlywheel() {
         </div>
       </section>
 
+      {/* 质量标签分布（人手打，越用越强的成绩单原料） */}
+      {d.quality && d.quality.length > 0 && (
+        <section className="panel" style={{ marginTop: 20 }}>
+          <div className="panel-head">
+            <span className="panel-title">先例质量标签分布（人关闭时手打）</span>
+            <span className="tag cyan" style={{ fontSize: 10 }}>sim · 180 条已回填</span>
+          </div>
+          <div style={{ padding: "14px 18px" }}>
+            {d.quality.map((q) => (
+              <div className="funnel-row" key={q.ql}>
+                <span className="funnel-stage">{q.ql}</span>
+                <div className="funnel-bar-wrap">
+                  <div className="funnel-bar" style={{ width: `${Math.max((q.n / maxQ) * 100, 4)}%`, background: `var(--${QTONE[q.ql] ?? "cyan"})` }} />
+                  <span className="funnel-n num">{q.n}</span>
+                </div>
+                <span className="funnel-plain muted">{q.ql === "effective" ? "处置有效" : q.ql === "partial" ? "部分有效" : q.ql === "ineffective" ? "无效（诚实记录，进评估集）" : "未标注"}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div className="honest-banner">
         <span className="honest-icon">◈</span>
         <div>
-          <div className="honest-label mono">诚实状态</div>
+          <div className="honest-label mono">诚实状态 · sim</div>
           <p className="honest-text">{d.honestState}</p>
         </div>
       </div>

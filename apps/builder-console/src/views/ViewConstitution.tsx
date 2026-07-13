@@ -5,7 +5,7 @@ export default function ViewConstitution() {
   const d = constitution;
   return (
     <div>
-      <ViewHead idx="03" question={d.question} subtitle={d.subtitle} />
+      <ViewHead idx="06" question={d.question} subtitle={d.subtitle} />
 
       <div className="stack">
         {d.groups.map((g) => (
