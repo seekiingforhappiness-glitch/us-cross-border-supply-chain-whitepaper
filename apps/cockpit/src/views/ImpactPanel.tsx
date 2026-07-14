@@ -8,17 +8,25 @@ import {
   traverse,
   type ObjectFields,
   type ObjectRef,
+  type PanoAlert,
   type Role,
 } from "../api";
 import Icon from "../components/Icons";
-import { LAYER_CN, type PanoSelection } from "./panoramaModel";
 
-// 影响分析面板（V9 追加修正的核心）：替代全景上的实体级线条爆炸——点异常组块后，用结构化
-// 紧凑表格呈现传播链：风险摘要 → 受影响订单行（N 条/金额合计/前 8 明细）→ 波及客户
-// （从受影响行 line→order→customer 归并，按敞口排序）→ 处置任务入口 → 组内成员。
-// 数据源：既有 panorama alerts/affected + GET /objects + traverse（apps/api 只读消费，不改）。
-// 注：本世界 /objects/Customer 端点 500（apps/api 既有问题，本单不碰）——客户名不可得，
-// 波及客户按 customer_id 呈现；全景同步点亮的结构关联组见 selection.affected（页脚计数）。
+// 影响分析面板（下钻第三段"详情"，右栏滑出）——V10 方案 C 直接复用 B3 资产、解耦全景依赖。
+// 风险类队列条目（区队列/航线队列的风险条）点开 → 这里：风险摘要 → 受影响订单行（N 条/金额合计/
+// 前 8 明细）→ 波及客户（line→order→customer 归并按敞口排序）→ 处置任务入口 → **动作区占位**
+// （V10-B：真实批/驳留 Streamlit 操作台，此处只给指引 + AI 建议摘要，防审批语义分叉/单量爆炸）。
+// 数据源：GET /objects + traverse（apps/api 只读消费，不改一行）；掩码/缺数如实。
+
+export interface ImpactFocus {
+  eyebrow?: string; // 默认"影响分析"
+  title: string; // 主名（风险 id / 客户 / 航线）
+  subtitle?: string; // 上下文行（区/层/路径）
+  alerts: PanoAlert[]; // 待呈现风险（≥1）；单条时最小 alert 仅需 risk_event_id，详情由 fetch 补全
+  members?: { id: string; label: string; ref: ObjectRef | null; note?: string }[];
+  actionHint?: string; // AI 建议摘要（如提案 proposed_action），进动作区占位
+}
 
 interface CustRow {
   customerId: string;
@@ -53,19 +61,9 @@ function parseIds(raw: unknown): string[] {
 
 const LINE_FETCH_CAP = 8; // 明细行按需拉取上限（用户点击触发，非循环，有界）
 
-export default function ImpactPanel({
-  selection,
-  role,
-  onOpenObject,
-  onClose,
-}: {
-  selection: PanoSelection;
-  role: Role;
-  onOpenObject: (r: ObjectRef) => void;
-  onClose: () => void;
-}) {
-  const { block, affected } = selection;
-  const alerts = [...block.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
+export default function ImpactPanel({ focus, role, onOpenObject, onClose }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void }) {
+  const alerts = [...focus.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
+  const members = focus.members ?? [];
   const [riskIdx, setRiskIdx] = useState(0);
   const focusAlert = alerts[riskIdx] ?? null;
 
@@ -78,7 +76,7 @@ export default function ImpactPanel({
 
   useEffect(() => {
     setRiskIdx(0);
-  }, [block.id]);
+  }, [focus.title]);
 
   useEffect(() => {
     if (!focusAlert) {
@@ -110,12 +108,9 @@ export default function ImpactPanel({
         setLines(okLines);
         setTaskIds(taskRes?.neighbor_ids ?? []);
 
-        // 波及客户：line→order→customer_id 归并 + 敞口(qty×price)排序（/objects/Customer 500，
-        // 只到 customer_id 粒度，如实）。SalesOrder 端点可用；按 so_id 去重拉取，有界。
+        // 波及客户：line→order→customer_id 归并 + 敞口(qty×price)排序，有界。
         const soIds = [...new Set(okLines.map((l) => String(l.so_id)).filter(Boolean))];
-        const orders = await Promise.all(
-          soIds.map((id) => fetchObject("SalesOrder", id, role).catch(() => null)),
-        );
+        const orders = await Promise.all(soIds.map((id) => fetchObject("SalesOrder", id, role).catch(() => null)));
         if (cancelled) return;
         const soToCust = new Map<string, string>();
         orders.forEach((o, i) => {
@@ -149,11 +144,11 @@ export default function ImpactPanel({
     <div className="cp-impact">
       <div className="cp-impact__head">
         <div className="cp-impact__eyebrow">
-          <Icon name="spark" size={13} /> 影响分析
+          <Icon name="spark" size={13} /> {focus.eyebrow ?? "影响分析"}
         </div>
         <div className="cp-impact__title">
-          <span className="cp-impact__layer">{LAYER_CN[block.layer]}</span>
-          <span className="cp-impact__name">{block.label}</span>
+          {focus.subtitle && <span className="cp-impact__layer">{focus.subtitle}</span>}
+          <span className="cp-impact__name">{focus.title}</span>
         </div>
         <button className="cp-drawer__close" onClick={onClose} aria-label="关闭影响分析">
           <Icon name="x" size={15} />
@@ -164,24 +159,22 @@ export default function ImpactPanel({
         {alerts.length === 0 ? (
           <div className="cp-impact__sect">
             <div className="cp-impact__ok">
-              <Icon name="approve" size={15} /> 该组块当前无未闭环风险
+              <Icon name="approve" size={15} /> 当前无未闭环风险
             </div>
-            <div className="cp-basis">组块规模 {block.sub}</div>
+            {focus.subtitle && <div className="cp-basis">{focus.subtitle}</div>}
           </div>
         ) : (
           <>
-            {/* 风险切换（组块多风险时） */}
+            {/* 风险切换（多风险时） */}
             {alerts.length > 1 && (
               <div className="cp-impact__risks">
                 {alerts.map((a, i) => (
-                  <button
-                    key={a.risk_event_id}
-                    className={`cp-riskchip ${i === riskIdx ? "is-active" : ""}`}
-                    onClick={() => setRiskIdx(i)}
-                  >
-                    <span className={sevChipClass(a.severity)} style={{ marginRight: 4 }}>
-                      {a.rule_id}
-                    </span>
+                  <button key={`${a.risk_event_id}-${i}`} className={`cp-riskchip ${i === riskIdx ? "is-active" : ""}`} onClick={() => setRiskIdx(i)}>
+                    {a.rule_id && (
+                      <span className={sevChipClass(a.severity)} style={{ marginRight: 4 }}>
+                        {a.rule_id}
+                      </span>
+                    )}
                     {a.risk_event_id.replace(/^RSK-?/, "")}
                   </button>
                 ))}
@@ -192,19 +185,17 @@ export default function ImpactPanel({
             <div className="cp-impact__sect">
               <div className="cp-impact__sect-t">风险摘要</div>
               {err ? (
-                <div className="cp-missing"><b>无法加载风险</b> · {err}</div>
+                <div className="cp-missing">
+                  <b>无法加载风险</b> · {err}
+                </div>
               ) : !risk ? (
                 <div className="cp-inline-load">{loading ? "加载中…" : "—"}</div>
               ) : (
                 <div className="cp-impact__risk">
                   <div className="cp-impact__risk-top">
-                    <span className={sevChipClass(String(risk.severity))}>
-                      {SEV_CN[String(risk.severity)] ?? String(risk.severity)}
-                    </span>
+                    <span className={sevChipClass(String(risk.severity))}>{SEV_CN[String(risk.severity)] ?? String(risk.severity)}</span>
                     <span className="cp-impact__rule num">{String(risk.rule_id)}</span>
-                    <span className="cp-impact__rule-cn">
-                      {RULE_CN[String(risk.type)] ?? String(risk.type)}
-                    </span>
+                    <span className="cp-impact__rule-cn">{RULE_CN[String(risk.type)] ?? String(risk.type)}</span>
                     <span className="cp-impact__risk-id num" onClick={() => onOpenObject({ type: "RiskEvent", id: String(risk.risk_event_id) })}>
                       {String(risk.risk_event_id)}
                     </span>
@@ -249,11 +240,7 @@ export default function ImpactPanel({
                       const price = l.unit_price_usd;
                       const amount = typeof price === "number" && typeof qty === "number" ? qty * price : price;
                       return (
-                        <tr
-                          key={String(l.so_line_id)}
-                          className="is-click"
-                          onClick={() => onOpenObject({ type: "SalesOrderLine", id: String(l.so_line_id) })}
-                        >
+                        <tr key={String(l.so_line_id)} className="is-click" onClick={() => onOpenObject({ type: "SalesOrderLine", id: String(l.so_line_id) })}>
                           <td className="name num">{String(l.so_line_id).replace(/^SOL-?/, "")}</td>
                           <td className="num">{String(l.sku_id)}</td>
                           <td className="num">{formatInt(qty)}</td>
@@ -265,12 +252,10 @@ export default function ImpactPanel({
                   </tbody>
                 </table>
               )}
-              {risk && affectedLineCount > (lines?.length ?? 0) && (
-                <div className="cp-basis">显示前 {lines?.length} 行（共 {affectedLineCount} 行受影响）</div>
-              )}
+              {risk && affectedLineCount > (lines?.length ?? 0) && <div className="cp-basis">显示前 {lines?.length} 行（共 {affectedLineCount} 行受影响）</div>}
             </div>
 
-            {/* 波及客户（line→order→customer_id 归并，按敞口排序） */}
+            {/* 波及客户 */}
             <div className="cp-impact__sect">
               <div className="cp-impact__sect-t">
                 波及客户
@@ -302,7 +287,7 @@ export default function ImpactPanel({
               )}
             </div>
 
-            {/* AI 处置任务入口 */}
+            {/* 处置任务入口（打开对象卡看任务） */}
             {taskIds.length > 0 && (
               <div className="cp-impact__sect">
                 <div className="cp-impact__sect-t">处置任务</div>
@@ -321,35 +306,36 @@ export default function ImpactPanel({
         )}
 
         {/* 组内成员（可开对象卡） */}
-        {block.members.length > 0 && (
+        {members.length > 0 && (
           <div className="cp-impact__sect">
             <div className="cp-impact__sect-t">
-              组内成员 <span className="cp-impact__agg">{block.members.length}</span>
+              相关成员 <span className="cp-impact__agg">{members.length}</span>
             </div>
             <div className="cp-impact__members">
-              {block.members.slice(0, 24).map((m) => (
-                <button
-                  key={m.id}
-                  className={`cp-member ${m.ref ? "" : "is-plain"}`}
-                  onClick={() => m.ref && onOpenObject(m.ref)}
-                  title={m.ref ? `打开 ${m.ref.type} ${m.ref.id}` : m.label}
-                >
+              {members.slice(0, 24).map((m) => (
+                <button key={m.id} className={`cp-member ${m.ref ? "" : "is-plain"}`} onClick={() => m.ref && onOpenObject(m.ref)} title={m.ref ? `打开 ${m.ref.type} ${m.ref.id}` : m.label}>
                   <span className="num">{m.label.length > 18 ? m.label.slice(0, 17) + "…" : m.label}</span>
                   {m.note && <span className="cp-member__note">{m.note}</span>}
                 </button>
               ))}
-              {block.members.length > 24 && (
-                <span className="cp-member is-plain">+{block.members.length - 24} 更多</span>
-              )}
+              {members.length > 24 && <span className="cp-member is-plain">+{members.length - 24} 更多</span>}
             </div>
           </div>
         )}
 
-        {affected.length > 0 && (
-          <div className="cp-impact__foot">
-            全景同步点亮 {affected.length} 个结构关联组块（聚合邻域投影，非因果口径）
+        {/* 动作区占位（V10-B：真实批/驳留 Streamlit 操作台，此处只指引 + AI 建议摘要） */}
+        <div className="cp-action">
+          <div className="cp-action__t">
+            <Icon name="stamp" size={13} /> 动作区
           </div>
-        )}
+          {focus.actionHint && (
+            <div className="cp-action__hint">
+              <span className="cp-action__hint-k">AI 建议</span>
+              <span className="cp-action__hint-v">{focus.actionHint}</span>
+            </div>
+          )}
+          <div className="cp-action__note">处置动作（批准 / 驳回 / 关闭）在 Streamlit 操作台执行——驾驶舱专注"看清 + 拍板定位"，审批语义与 maker-checker 留在操作台，防单量爆炸。</div>
+        </div>
       </div>
     </div>
   );

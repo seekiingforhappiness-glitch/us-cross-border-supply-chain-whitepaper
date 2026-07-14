@@ -17,5 +17,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "comment_exclude": "src/archive = 等距分层图（透视镜 v3 素材，V10 自驾驶舱归档）——排除出驾驶舱编译/构建，App 不引用",
+  "exclude": ["src/archive"]
 }

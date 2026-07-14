@@ -9,32 +9,53 @@ import {
   type ZoneId,
 } from "./api";
 import TopBar from "./components/TopBar";
-import VitalsBand from "./components/VitalsBand";
-import Panorama from "./views/Panorama";
-import ZoneDetail from "./views/ZoneDetail";
 import AiWorkflow from "./views/AiWorkflow";
+import CommandWall from "./views/CommandWall";
+import type { Lane } from "./views/corridorModel";
+import ImpactPanel, { type ImpactFocus } from "./views/ImpactPanel";
+import LaneQueue from "./views/LaneQueue";
 import ObjectCard from "./views/ObjectCard";
-import ImpactPanel from "./views/ImpactPanel";
-import type { PanoSelection } from "./views/panoramaModel";
+import RouteCorridor from "./views/RouteCorridor";
+import ZoneQueue from "./views/ZoneQueue";
+import type { DrillTarget } from "./views/zoneModel";
 
-// 驾驶舱首屏编排（V9 视觉升级）：顶栏 + 公司体征带（七掌控区）+ 主舞台（中央等距全景/区详情
-// 60% · 右栏 AI 工作流 40%，选中异常组块时右栏切为影响分析面板）+ 对象卡抽屉（第二层）。
-// 角色（X-Role）是唯一全局开关：切换即令 vitals/panorama/ai-flow 全部按新角色重取（脱敏+粒度）。
+// 驾驶舱首屏编排（V10 方案 C，Daniel 亲批）：顶栏 + 主舞台（中央 60% · 右栏 AI 工作流 40%）。
+// 中央四态（下钻四段式：总览→队列→详情→动作）：
+//   ① wall     七区指挥墙（默认首屏，体征带的放大态；顶部体征带已移除避免同信息两处）
+//   ② zone     某区工作队列（点区卡进入，面包屑返回）
+//   ③ corridor 航线走廊图（履约卡「航线视图」切入，SAP tile 内切换范式）
+//   ④ lane     某航线异常队列（点走廊弧线进入）
+// 队列条目 → 右栏滑出影响面板（风险类，含动作占位）/ 打开对象卡（对象类）——两资产直接复用。
+// 角色（X-Role）是唯一全局开关：切换即令 vitals/panorama/ai-flow 全部按新角色重取（脱敏+粒度），
+// 并回到指挥墙、收起详情与对象卡。
+
+type Stage = { view: "wall" } | { view: "zone"; zoneId: ZoneId } | { view: "corridor" } | { view: "lane"; lane: Lane };
+
 export default function App() {
   const [role, setRole] = useState<Role>("manager");
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [vitalsErr, setVitalsErr] = useState(false);
-  const [zoneId, setZoneId] = useState<ZoneId | null>(null); // null = 全景；否则该区展开
-  const [card, setCard] = useState<ObjectRef | null>(null);
   const [links, setLinks] = useState<OntologyLink[]>([]);
-  const [selection, setSelection] = useState<PanoSelection | null>(null); // 全景选中组块（驱动影响面板）
 
-  // 体征带数据（角色变即重取——脱敏在服务端做）
+  const [stage, setStage] = useState<Stage>({ view: "wall" });
+  const [detail, setDetail] = useState<ImpactFocus | null>(null); // 右栏影响面板（风险类下钻）
+  const [activeKey, setActiveKey] = useState<string | null>(null); // 队列高亮行
+  const [card, setCard] = useState<ObjectRef | null>(null); // 对象卡抽屉（对象类下钻）
+
+  const closeDetail = () => {
+    setDetail(null);
+    setActiveKey(null);
+  };
+
+  // 体征带数据（角色变即重取——脱敏在服务端做）；角色切换重置导航态。
   useEffect(() => {
     let cancelled = false;
     setVitals(null);
     setVitalsErr(false);
-    setSelection(null); // 角色切换重置全景选中（粒度/脱敏会变）
+    setStage({ view: "wall" });
+    setDetail(null);
+    setActiveKey(null);
+    setCard(null);
     fetchVitals(role)
       .then((v) => !cancelled && setVitals(v))
       .catch(() => !cancelled && setVitalsErr(true));
@@ -43,7 +64,7 @@ export default function App() {
     };
   }, [role]);
 
-  // 本体关系清单（对象卡的 links 列表来源，与角色无关，取一次）
+  // 本体关系清单（对象卡 links 列表来源，与角色无关，取一次）
   useEffect(() => {
     let cancelled = false;
     fetchOntologySummary(role)
@@ -57,7 +78,40 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activeZone = zoneId && vitals ? vitals.zones.find((z) => z.zone === zoneId) ?? null : null;
+  // —— 导航（每次切换收起右栏详情，回到 AI 工作流）——
+  const goWall = () => {
+    setStage({ view: "wall" });
+    closeDetail();
+  };
+  const goZone = (zoneId: ZoneId) => {
+    setStage({ view: "zone", zoneId });
+    closeDetail();
+  };
+  const goCorridor = () => {
+    setStage({ view: "corridor" });
+    closeDetail();
+  };
+  const goLane = (lane: Lane) => {
+    setStage({ view: "lane", lane });
+    closeDetail();
+  };
+
+  // —— 下钻：风险类 → 右栏影响面板；对象类 → 对象卡抽屉 ——
+  const handleDrill = (t: DrillTarget, key: string) => {
+    if (t.kind === "risk") {
+      setDetail({
+        title: t.title,
+        subtitle: t.subtitle,
+        alerts: [{ risk_event_id: t.riskId, rule_id: "", type: "", severity: "" }],
+        actionHint: t.actionHint,
+      });
+      setActiveKey(key);
+    } else {
+      setCard(t.ref);
+    }
+  };
+
+  const activeZone = stage.view === "zone" && vitals ? vitals.zones.find((z) => z.zone === stage.zoneId) ?? null : null;
 
   return (
     <div className="cockpit">
@@ -69,48 +123,30 @@ export default function App() {
       )}
       <TopBar world={vitals?.world ?? null} clock={vitals?.clock ?? null} role={role} onRole={setRole} />
 
-      {vitals ? (
-        <VitalsBand zones={vitals.zones} activeZone={zoneId} onSelect={(z) => setZoneId(z)} />
-      ) : (
-        !vitalsErr && <div className="cp-degrade" style={{ background: "var(--bg-1)", color: "var(--ink-2)" }}>体征带加载中…</div>
-      )}
-
       <div className="cp-stage">
         <div className="cp-center">
-          {activeZone ? (
-            <ZoneDetail zone={activeZone} onBack={() => setZoneId(null)} />
+          {stage.view === "corridor" ? (
+            <RouteCorridor role={role} onLane={goLane} onBack={goWall} />
+          ) : stage.view === "lane" ? (
+            <LaneQueue lane={stage.lane} onWall={goWall} onCorridor={goCorridor} onDrill={handleDrill} activeKey={activeKey} />
+          ) : !vitals ? (
+            <div className="cp-fill-msg">{vitalsErr ? "体征带不可用——确认 API 已启动" : "指挥墙加载中…"}</div>
+          ) : stage.view === "zone" && activeZone ? (
+            <ZoneQueue zone={activeZone} onBack={goWall} onCorridor={goCorridor} onDrill={handleDrill} activeKey={activeKey} />
           ) : (
-            <Panorama
-              role={role}
-              selectedId={selection?.block.id ?? null}
-              onSelect={setSelection}
-              onOpenObject={setCard}
-            />
+            <CommandWall zones={vitals.zones} onZone={goZone} onCorridor={goCorridor} />
           )}
         </div>
         <div className="cp-side">
-          {selection && !activeZone ? (
-            <ImpactPanel
-              selection={selection}
-              role={role}
-              onOpenObject={setCard}
-              onClose={() => setSelection(null)}
-            />
+          {detail ? (
+            <ImpactPanel focus={detail} role={role} onOpenObject={setCard} onClose={closeDetail} />
           ) : (
             <AiWorkflow role={role} onOpenObject={setCard} />
           )}
         </div>
       </div>
 
-      {card && (
-        <ObjectCard
-          target={card}
-          role={role}
-          links={links}
-          onOpenObject={setCard}
-          onClose={() => setCard(null)}
-        />
-      )}
+      {card && <ObjectCard target={card} role={role} links={links} onOpenObject={setCard} onClose={() => setCard(null)} />}
     </div>
   );
 }

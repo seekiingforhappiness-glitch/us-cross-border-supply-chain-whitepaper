@@ -1,3 +1,7 @@
+// ⚠️ 等距分层图——透视镜 v3 素材（V10 决议自驾驶舱移除归档）。
+// 本文件是"系统结构可视化"（客户/订单/在途/供应商/仓库对象分层），属后台建造者透视镜的语言，
+// 非驾驶舱业务视图。已按 V10 从驾驶舱首屏移除、归档于此，作透视镜 v3 迁移素材；App.tsx 不再引用，
+// 且 src/archive 已在 tsconfig 排除编译，不进驾驶舱构建。迁移到透视镜 v3 时从这里取。
 import { useEffect, useMemo, useState } from "react";
 import { fetchPanorama, type ObjectRef, type Panorama as PanoData, type Role } from "../api";
 import {

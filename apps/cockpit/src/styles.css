@@ -1521,6 +1521,570 @@ body {
   border-top-color: color-mix(in srgb, #fff 6%, var(--line));
 }
 
+/* ═══════════════════════════ 七区指挥墙（V10 方案 C · 体征带放大态） ═══════════════════════════ */
+.cp-wall-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-wall {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 12px;
+  padding: 14px;
+  align-content: start;
+}
+.cp-wall-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 3%, var(--bg-1)), var(--bg-1));
+  border: 1px solid var(--line);
+  border-top-color: color-mix(in srgb, #fff 7%, var(--line));
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 13px 14px 14px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  color: var(--ink-0);
+  min-height: 172px;
+  transition: background 0.14s, transform 0.14s, border-color 0.14s;
+}
+.cp-wall-card:hover {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  transform: translateY(-2px);
+  border-left-color: var(--beacon);
+}
+.cp-wall-card.is-nodata {
+  filter: saturate(0.55);
+  opacity: 0.86;
+}
+/* 有告警卡：左缘红/琥珀 + 辉光呼吸 */
+.cp-wall-card.is-alerted {
+  border-left-color: var(--sev-amber);
+  animation: wallpulse 2.6s ease-in-out infinite;
+}
+@keyframes wallpulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev-amber) 16%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 12px 1px color-mix(in srgb, var(--sev-amber) 30%, transparent);
+  }
+}
+.cp-wall-card__alert {
+  position: absolute;
+  top: 10px;
+  right: 11px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--sev-red);
+  color: #1a0508;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-num);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sev-red) 22%, transparent);
+}
+.cp-wall-card__alert.is-amber {
+  background: var(--sev-amber);
+  color: #1c1200;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sev-amber) 22%, transparent);
+}
+.cp-wall-card__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-1);
+  margin-bottom: 9px;
+}
+.cp-wall-card__icon {
+  display: inline-flex;
+  line-height: 0;
+  color: var(--ink-1);
+}
+.cp-wall-card--money .cp-wall-card__icon {
+  color: var(--gold);
+}
+.cp-wall-card--ai .cp-wall-card__icon {
+  color: var(--beacon);
+}
+.cp-wall-card__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cp-wall-card__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.cp-wall-card__big {
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  color: var(--ink-0);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.15;
+}
+.cp-wall-card--money .cp-wall-card__big:not(.is-missing):not(.is-masked) {
+  color: var(--gold);
+  text-shadow: 0 0 16px color-mix(in srgb, var(--gold) 20%, transparent);
+}
+.cp-wall-card__big.is-missing,
+.cp-wall-card__big.is-masked {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+.cp-wall-card__hllabel {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+.cp-wall-card__sum {
+  margin-top: 11px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cp-wall__sumrow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.cp-wall__sumk {
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.cp-wall__sumv {
+  color: var(--ink-0);
+  text-align: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-wall__sumv.gold {
+  color: var(--gold);
+}
+.cp-wall__sumv.pos {
+  color: var(--sev-green);
+}
+.cp-wall__sumv.neg {
+  color: var(--sev-amber);
+}
+.cp-wall__sumv.is-missing,
+.cp-wall__sumv.is-masked {
+  color: var(--ink-3);
+}
+/* 履约卡显眼「航线视图」切换钮（SAP 教训：切换钮必须显眼） */
+.cp-wall-card__switch {
+  margin-top: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--beacon-dim);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+  color: var(--beacon);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background 0.12s, border-color 0.12s;
+}
+.cp-wall-card__switch:hover {
+  background: color-mix(in srgb, var(--beacon) 22%, transparent);
+  border-color: var(--beacon);
+}
+
+/* ═══════════════════════════ 面包屑 / 队列 / 上下文（下钻） ═══════════════════════════ */
+.cp-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.cp-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.cp-crumb {
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+}
+.cp-crumb.is-link {
+  color: var(--beacon);
+  cursor: pointer;
+}
+.cp-crumb.is-link:hover {
+  background: var(--bg-2);
+  text-decoration: underline;
+}
+.cp-crumb.is-current {
+  color: var(--ink-0);
+  font-weight: 600;
+}
+.cp-crumb__sep {
+  color: var(--ink-3);
+}
+.cp-zone__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.cp-queue {
+  padding: 12px 14px 6px;
+}
+.cp-queue__table th:first-child,
+.cp-queue__table td.cp-queue__badge {
+  width: 46px;
+  padding-right: 8px;
+}
+.cp-queue__table th:last-child,
+.cp-queue__table td.cp-queue__go {
+  width: 22px;
+  text-align: right;
+}
+.cp-queue__go {
+  color: var(--ink-3);
+}
+.cp-table tr.is-active td {
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+}
+.cp-table tr.is-active td:first-child {
+  box-shadow: inset 2px 0 0 var(--beacon);
+}
+.cp-table td.neg {
+  color: var(--sev-red);
+}
+.cp-table td.pos {
+  color: var(--sev-green);
+}
+.cp-table td.gold {
+  color: var(--gold);
+}
+.cp-table td .cp-chip {
+  white-space: nowrap;
+}
+.cp-queue__empty {
+  margin: 14px;
+  padding: 12px 14px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-1);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+.cp-zone__context {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.cp-context-grid {
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+/* 头部动作钮：航线视图（区队列内）/ 返回指挥墙（走廊/航线队列） */
+.cp-switch-btn,
+.cp-return {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+  border: 1px solid var(--beacon-dim);
+  color: var(--beacon);
+  border-radius: var(--radius-sm);
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cp-switch-btn:hover,
+.cp-return:hover {
+  background: color-mix(in srgb, var(--beacon) 22%, transparent);
+}
+.cp-return__ic {
+  transform: rotate(180deg);
+}
+
+/* ═══════════════════════════ 动作区占位（影响面板底部） ═══════════════════════════ */
+.cp-action {
+  margin: 14px 0 0;
+  padding: 11px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--beacon) 5%, var(--bg-2));
+}
+.cp-action__t {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.cp-action__hint {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 7px;
+}
+.cp-action__hint-k {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--beacon);
+  font-weight: 700;
+  flex: none;
+}
+.cp-action__hint-v {
+  font-size: 12px;
+  color: var(--ink-0);
+  font-family: var(--font-num);
+}
+.cp-action__note {
+  font-size: 11px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+/* ═══════════════════════════ 航线走廊图（SVG 手绘零依赖） ═══════════════════════════ */
+.cp-corridor-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-corridor {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background-color: var(--bg-0);
+  background-image: radial-gradient(120% 90% at 50% -12%, #0f1d30 0%, transparent 62%),
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--beacon) 3%, transparent) 0 1px, transparent 1px 46px);
+}
+.cp-corridor__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.cp-corridor__col {
+  fill: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  font-family: var(--font-ui);
+}
+/* 弧线：粗细=票数、颜色=异常状态；命中区透明加粗好点选 */
+.cp-arc__hit {
+  fill: none;
+  stroke: transparent;
+  stroke-linecap: round;
+  cursor: pointer;
+}
+.cp-arc__line {
+  fill: none;
+  stroke-linecap: round;
+  transition: opacity 0.14s, filter 0.14s;
+  pointer-events: none;
+}
+.cp-arc--blue .cp-arc__line {
+  stroke: var(--beacon);
+  opacity: 0.5;
+}
+.cp-arc--amber .cp-arc__line {
+  stroke: var(--sev-amber);
+  opacity: 0.82;
+}
+.cp-arc--red .cp-arc__line {
+  stroke: var(--sev-red);
+  opacity: 0.9;
+}
+.cp-arc.is-hover .cp-arc__line {
+  opacity: 1;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+.cp-arc--blue.is-hover .cp-arc__line {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--beacon) 80%, transparent));
+}
+.cp-arc--amber.is-hover .cp-arc__line {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--sev-amber) 80%, transparent));
+}
+.cp-arc--red.is-hover .cp-arc__line {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--sev-red) 85%, transparent));
+}
+.cp-arc__dot {
+  fill: var(--bg-1);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+.cp-arc--amber .cp-arc__dot {
+  stroke: var(--sev-amber);
+}
+.cp-arc--red .cp-arc__dot {
+  stroke: var(--sev-red);
+}
+.cp-arc--blue .cp-arc__dot {
+  stroke: color-mix(in srgb, var(--beacon) 70%, var(--line-strong));
+}
+.cp-arc__num {
+  fill: var(--ink-0);
+  font-family: var(--font-num);
+  font-size: 10px;
+  font-weight: 600;
+}
+/* 港口节点 */
+.cp-port rect {
+  fill: var(--bg-2);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+.cp-port--origin rect {
+  stroke: color-mix(in srgb, var(--sev-amber) 34%, var(--line-strong));
+}
+.cp-port--dest rect {
+  stroke: color-mix(in srgb, var(--beacon) 40%, var(--line-strong));
+}
+.cp-port__code {
+  fill: var(--ink-0);
+  font-family: var(--font-num);
+  font-size: 12px;
+  font-weight: 700;
+}
+.cp-port__name {
+  fill: var(--ink-2);
+  font-size: 10px;
+  font-family: var(--font-ui);
+}
+.cp-port__tput {
+  fill: var(--ink-1);
+  font-family: var(--font-num);
+  font-size: 10px;
+}
+/* 悬停明细 tooltip */
+.cp-corridor__tip {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  max-width: 260px;
+  background: color-mix(in srgb, var(--bg-0) 92%, transparent);
+  backdrop-filter: blur(3px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  font-size: 11px;
+}
+.cp-corridor__tip-t {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-0);
+  margin-bottom: 6px;
+}
+.cp-corridor__tip-row {
+  display: flex;
+  gap: 12px;
+  color: var(--ink-1);
+  font-family: var(--font-num);
+}
+.cp-corridor__tip-row .neg {
+  color: var(--sev-amber);
+}
+.cp-corridor__tip-stat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+.cp-corridor__tip-hint {
+  margin-top: 8px;
+  color: var(--beacon);
+  font-size: 10.5px;
+}
+.cp-corridor__legend {
+  position: absolute;
+  bottom: 10px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 10px;
+  color: var(--ink-1);
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+  backdrop-filter: blur(2px);
+  padding: 6px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+.cp-corridor__legend span {
+  display: inline-flex;
+  align-items: center;
+}
+.cp-arc-lg {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+  margin-right: 6px;
+}
+.cp-arc-lg--blue {
+  background: var(--beacon);
+}
+.cp-arc-lg--amber {
+  background: var(--sev-amber);
+}
+.cp-arc-lg--red {
+  background: var(--sev-red);
+}
+.cp-corridor__legend-sep {
+  color: var(--ink-2);
+  border-left: 1px solid var(--line-strong);
+  padding-left: 14px;
+}
+
 /* ═══════════════════════════ 无障碍 / 减少动效 ═══════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
   .iso-halo,
@@ -1529,7 +2093,8 @@ body {
   .cp-flow-card.is-latest,
   .cp-drawer,
   .cp-drawer-scrim,
-  .cp-impact {
+  .cp-impact,
+  .cp-wall-card.is-alerted {
     animation: none !important;
   }
   .iso-halo {
@@ -1538,7 +2103,11 @@ body {
   .pano-trunk.is-lit {
     stroke-dasharray: none;
   }
-  .cp-vital:hover {
+  .cp-wall-card.is-alerted {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev-amber) 22%, transparent);
+  }
+  .cp-vital:hover,
+  .cp-wall-card:hover {
     transform: none;
   }
   * {
@@ -1552,8 +2121,8 @@ body {
 
 /* 窄屏：右栏折到下方（原型主要面向宽屏值台，窄屏保证不横向溢出即可） */
 @media (max-width: 980px) {
-  .cp-vitals {
-    grid-template-columns: repeat(4, 1fr);
+  .cp-wall {
+    grid-template-columns: repeat(2, 1fr);
   }
   .cp-stage {
     grid-template-columns: 1fr;
