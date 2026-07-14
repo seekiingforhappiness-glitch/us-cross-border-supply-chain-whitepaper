@@ -1,5 +1,6 @@
 import { formatInt } from "../api";
 import Icon from "../components/Icons";
+import { SEV_CN } from "./aiFlowModel";
 import { type Lane } from "./corridorModel";
 import WorkQueue from "./WorkQueue";
 import type { DrillTarget, QueueRow, QueueSpec } from "./zoneModel";
@@ -7,8 +8,8 @@ import type { DrillTarget, QueueRow, QueueSpec } from "./zoneModel";
 // 航线异常队列（下钻第二段，履约地图点弧线进入）——V10 补记。
 // 面包屑「指挥墙 > 航线地图 > 起→目」。主队列=该航线未闭环异常（按严重度降序），点条 → 风险详情面板；
 // 下方上下文=该航线全部在途货件（实体粒度世界才有），点条 → 货件对象卡。与区队列同一下钻语义。
+// severity 译名改从 aiFlowModel 权威表取（B5：原地重复定义与 ImpactPanel/aiFlowModel 归一）。
 
-const SEV_CN: Record<string, string> = { critical: "紧急", high: "高", medium: "中", low: "低" };
 const sevBadge = (sev: string): QueueRow["badge"] => {
   const rank = { critical: 3, high: 2, medium: 1, low: 0 }[sev] ?? 1;
   return { text: SEV_CN[sev] ?? sev, tone: rank >= 2 ? "red" : "amber" };

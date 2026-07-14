@@ -53,7 +53,8 @@ const KIND_SEQ: Record<string, number> = {
   detect: 0, llm_call: 0, propose: 1, ai_action: 1, task_flow: 1, approve: 2, reject: 2, close: 3,
 };
 
-const SEV_CN: Record<string, string> = { critical: "紧急", high: "高", medium: "中", low: "低" };
+// severity 译名导出供 ImpactPanel/LaneQueue 复用（三处曾各自本地重复定义同一张表，B5 归一）。
+export const SEV_CN: Record<string, string> = { critical: "紧急", high: "高", medium: "中", low: "低" };
 const OUTCOME_CN: Record<string, string> = { mitigated: "已缓解", accepted: "已接受", escalated: "已升级" };
 
 // 动作层 PascalCase 名（非 sim 世界 task_flow/ai_action 用）→ 中文

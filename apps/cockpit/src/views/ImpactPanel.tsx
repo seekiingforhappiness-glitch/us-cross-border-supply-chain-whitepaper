@@ -12,6 +12,7 @@ import {
   type Role,
 } from "../api";
 import Icon from "../components/Icons";
+import { RULE_CN, RULE_TYPE_CN, SEV_CN } from "./aiFlowModel";
 
 // 影响分析面板（下钻第三段"详情"，右栏滑出）——V10 方案 C 直接复用 B3 资产、解耦全景依赖。
 // 风险类队列条目（区队列/航线队列的风险条）点开 → 这里：风险摘要 → 受影响订单行（N 条/金额合计/
@@ -36,12 +37,9 @@ interface CustRow {
 }
 
 const SEV_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
-const SEV_CN: Record<string, string> = { critical: "紧急", high: "高", medium: "中", low: "低" };
-const RULE_CN: Record<string, string> = {
-  delay_breach: "延误击穿承诺",
-  missing_docs: "清关文件缺失",
-  stalled: "在途停滞",
-};
+// 规则/severity 译名改从 aiFlowModel 权威映射表取（原地重复定义且部分错译/错键——如
+// R1 曾显示"延误击穿承诺"而非权威源 ux_copy.py 的"延误传导"，"missing_docs"键名也与
+// ontology 实际枚举值"docs_missing"不符，从未真正命中过——B5 归一为一处映射全端共享）。
 
 function sevChipClass(sev: string): string {
   if (SEV_RANK[sev] >= 2) return "cp-chip red";
@@ -195,7 +193,9 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose }: { fo
                   <div className="cp-impact__risk-top">
                     <span className={sevChipClass(String(risk.severity))}>{SEV_CN[String(risk.severity)] ?? String(risk.severity)}</span>
                     <span className="cp-impact__rule num">{String(risk.rule_id)}</span>
-                    <span className="cp-impact__rule-cn">{RULE_CN[String(risk.type)] ?? String(risk.type)}</span>
+                    <span className="cp-impact__rule-cn">
+                      {RULE_CN[String(risk.rule_id)] || RULE_TYPE_CN[String(risk.type)] || String(risk.type)}
+                    </span>
                     <span className="cp-impact__risk-id num" onClick={() => onOpenObject({ type: "RiskEvent", id: String(risk.risk_event_id) })}>
                       {String(risk.risk_event_id)}
                     </span>
