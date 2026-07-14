@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Zone } from "../api";
 import { formatInt, formatPct, formatUsd, isMasked, isMissing } from "../api";
+import Icon from "../components/Icons";
 
 // 中央区展开视图：点体征块后，把该区 detail 的全量指标以高信息密度呈现（表格/排名/分桶条，
 // 零动效数字说话——智能感克制侧）。null 指标如实显示"无数据 + reason"，掩码值显示"无权查看"，
@@ -25,7 +26,11 @@ function MissingBox({ reason }: { reason: string }) {
 }
 
 function MaskedBox() {
-  return <div className="cp-masked">🔒 当前角色无权查看（切到 manager 可见）</div>;
+  return (
+    <div className="cp-masked cp-masked--row">
+      <Icon name="lock" size={13} /> 当前角色无权查看（切到 manager 可见）
+    </div>
+  );
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "pos" | "neg" }) {
@@ -219,7 +224,7 @@ function Customers({ d }: { d: D }) {
           <tbody>
             {health.map((h) => (
               <tr key={h.tier}>
-                <td>{isMasked(h.tier) ? "🔒" : `Tier ${h.tier}`}</td>
+                <td>{isMasked(h.tier) ? <Icon name="lock" size={12} /> : `Tier ${h.tier}`}</td>
                 <td className="num">{h.customers}</td>
                 <td className="num">{h.customers_at_risk}</td>
                 <td className="num">{h.open_risks}</td>

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { fetchAiFlow, refToObjectRef, type AiFlow, type ObjectRef, type Role } from "../api";
+import Icon, { type IconName } from "../components/Icons";
 
 // 页面第二主角：AI 工作流时间线卡片流（不是角落小按钮）。看得见 AI 此刻在做什么，像看同事工位。
 // 智能感之一：最新一条呼吸高亮 + 新条目滑入。底部两 tab：AI 工作流（默认）/ 协作流（预留态）。
-// 数据来自 GET /cockpit/ai-flow，kind/sim 徽标/ref 链接全部由载荷驱动。
+// 数据来自 GET /cockpit/ai-flow，kind/sim 徽标/ref 链接全部由载荷驱动。V9-B：全 emoji 清零。
 
 const KIND_CN: Record<string, string> = {
   llm_call: "AI 调用",
@@ -14,6 +15,17 @@ const KIND_CN: Record<string, string> = {
   approve: "批准",
   reject: "驳回",
   close: "结案",
+};
+
+const KIND_ICON: Record<string, IconName> = {
+  llm_call: "llm",
+  ai_action: "action",
+  task_flow: "flow",
+  detect: "detect",
+  propose: "propose",
+  approve: "approve",
+  reject: "reject",
+  close: "close",
 };
 
 type Tab = "ai" | "collab";
@@ -44,7 +56,7 @@ export default function AiWorkflow({ role, onOpenObject }: { role: Role; onOpenO
           aria-selected={tab === "ai"}
           onClick={() => setTab("ai")}
         >
-          🤖 AI 工作流{data ? ` · ${data.count}` : ""}
+          <Icon name="chip" size={13} /> AI 工作流{data ? ` · ${data.count}` : ""}
         </button>
         <button
           role="tab"
@@ -52,13 +64,17 @@ export default function AiWorkflow({ role, onOpenObject }: { role: Role; onOpenO
           aria-selected={tab === "collab"}
           onClick={() => setTab("collab")}
         >
-          👥 协作流
+          <Icon name="users" size={13} /> 协作流
         </button>
       </div>
 
       {tab === "collab" ? (
         <div className="cp-collab">
-          <div className="cp-collab__icons">💬 📧 🗨️</div>
+          <div className="cp-collab__icons">
+            <Icon name="chat" size={26} />
+            <Icon name="mail" size={26} />
+            <Icon name="users" size={26} />
+          </div>
           <div className="cp-collab__title">人与人的沟通，将在此同屏</div>
           <div className="cp-collab__body">
             飞书 / 企微 / Slack / 邮箱接入后，围绕一个风险的人的对话会与 AI 的处置在同一条时间线上并排。
@@ -84,6 +100,7 @@ export default function AiWorkflow({ role, onOpenObject }: { role: Role; onOpenO
               <div key={`${it.ts}-${i}`} className={`cp-flow-card ${i === 0 ? "is-latest" : ""}`}>
                 <div className="cp-flow-card__top">
                   <span className="cp-flow-card__kind" data-kind={it.kind}>
+                    {KIND_ICON[it.kind] && <Icon name={KIND_ICON[it.kind]} size={11} strokeWidth={2} />}
                     {KIND_CN[it.kind] ?? it.kind}
                   </span>
                   {it.sim && <span className="cp-flow-card__sim">SIM</span>}

@@ -3,6 +3,7 @@ import {
   fetchObject,
   isMasked,
   linksForType,
+  MASK_TEXT,
   traverse,
   type ObjectFields,
   type ObjectRef,
@@ -10,6 +11,7 @@ import {
   type Role,
   type UsableLink,
 } from "../api";
+import Icon from "../components/Icons";
 
 // 第二层对象卡（右侧抽屉）：点全景实体节点 / AI 卡片 ref / 邻居 id 打开。
 // GET /objects/{Type}/{id} 全字段分组呈现 + 该对象 links 列表；点 link 调 traverse 显示邻居 id，
@@ -25,9 +27,9 @@ interface Props {
 
 type Expanded = { state: "loading" } | { state: "done"; ids: string[] } | { state: "error" };
 
-function renderVal(v: unknown): { text: string; cls: string } {
+function renderVal(v: unknown): { text: string; cls: string; masked?: boolean } {
   if (v === null || v === undefined) return { text: "null", cls: "null" };
-  if (isMasked(v)) return { text: v as string, cls: "" };
+  if (isMasked(v)) return { text: MASK_TEXT, cls: "masked", masked: true };
   if (typeof v === "boolean") return { text: v ? "true" : "false", cls: "" };
   if (typeof v === "object") return { text: JSON.stringify(v), cls: "" };
   return { text: String(v), cls: "" };
@@ -105,7 +107,10 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
                   return (
                     <div className="cp-field" key={k}>
                       <span className="cp-field__k">{k}</span>
-                      <span className={`cp-field__v ${r.cls}`}>{r.text}</span>
+                      <span className={`cp-field__v ${r.cls}`}>
+                        {r.masked && <Icon name="lock" size={11} />}
+                        {r.text}
+                      </span>
                     </div>
                   );
                 })}

@@ -1,22 +1,24 @@
 import type { Zone, ZoneId } from "../api";
-import { formatInt, formatPct, formatUsd, isMasked } from "../api";
+import { formatInt, formatPct, formatUsd, isMasked, MASK_TEXT } from "../api";
+import Icon, { type IconName } from "./Icons";
 
 // 公司体征带：七掌控区各一枚体征块横排。点任一枚 → 中央区切换为该区展开视图。
-// "扫一眼知道公司今天怎么样"的答案（二稿一缺的掌控感主要由它补上）。
+// V9-D：每枚块三层信息层次（图标+标签 / 大数字 / 徽标+趋势）、hover 微抬升、选中态左缘光条、
+// 无数据格降饱和（依然如实显示 reason tooltip）。全 emoji 清零，图标改 Icons.tsx 几何线条。
 interface Props {
   zones: Zone[];
   activeZone: ZoneId | null;
   onSelect: (z: ZoneId) => void;
 }
 
-const ICON: Record<ZoneId, string> = {
-  money: "💰",
-  fulfillment: "📦",
-  customers: "🧑‍💼",
-  suppliers: "🏭",
-  inventory: "📊",
-  ai: "🤖",
-  decisions: "✅",
+const ICON: Record<ZoneId, IconName> = {
+  money: "money",
+  fulfillment: "box",
+  customers: "person",
+  suppliers: "factory",
+  inventory: "rack",
+  ai: "chip",
+  decisions: "stamp",
 };
 
 // 短标签（体征带空间紧，用短名；详情视图里用 API 的完整 headline_label）
@@ -33,14 +35,14 @@ const SHORT: Record<ZoneId, string> = {
 // headline 是比率的区（0-1 → 百分比）；其余按计数/金额/字符串各自处理
 const RATE_ZONES: ReadonlySet<ZoneId> = new Set<ZoneId>(["fulfillment", "suppliers"]);
 
-function renderValue(z: Zone): { text: string; cls: string } {
+function renderValue(z: Zone): { text: string; state: "real" | "missing" | "masked" } {
   const v = z.headline_value;
-  if (isMasked(v)) return { text: v, cls: "is-masked" };
-  if (v === null || v === undefined) return { text: "无数据", cls: "is-missing" };
-  if (z.headline_unit === "usd") return { text: formatUsd(v), cls: "" };
-  if (typeof v === "string") return { text: v, cls: "" }; // AI 区"N 检 / M 提案"
-  if (RATE_ZONES.has(z.zone)) return { text: formatPct(v), cls: "" };
-  return { text: formatInt(v), cls: "" };
+  if (isMasked(v)) return { text: MASK_TEXT, state: "masked" };
+  if (v === null || v === undefined) return { text: "无数据", state: "missing" };
+  if (z.headline_unit === "usd") return { text: formatUsd(v), state: "real" };
+  if (typeof v === "string") return { text: v, state: "real" }; // AI 区"N 检 / M 提案"
+  if (RATE_ZONES.has(z.zone)) return { text: formatPct(v), state: "real" };
+  return { text: formatInt(v), state: "real" };
 }
 
 export default function VitalsBand({ zones, activeZone, onSelect }: Props) {
@@ -65,10 +67,11 @@ export default function VitalsBand({ zones, activeZone, onSelect }: Props) {
             trendCls = "cp-trend--flat";
           }
         }
+        const nodata = val.state !== "real";
         return (
           <button
             key={z.zone}
-            className={`cp-vital cp-vital--${z.zone} ${activeZone === z.zone ? "is-active" : ""}`}
+            className={`cp-vital cp-vital--${z.zone} ${activeZone === z.zone ? "is-active" : ""} ${nodata ? "is-nodata" : ""}`}
             onClick={() => onSelect(z.zone)}
             aria-pressed={activeZone === z.zone}
             title={z.headline_reason || z.headline_label}
@@ -80,19 +83,22 @@ export default function VitalsBand({ zones, activeZone, onSelect }: Props) {
             )}
             <span className="cp-vital__top">
               <span className="cp-vital__icon" aria-hidden>
-                {ICON[z.zone]}
+                <Icon name={ICON[z.zone]} size={15} />
               </span>
               <span className="cp-vital__label">{SHORT[z.zone]}</span>
             </span>
-            <div className={`cp-vital__value num ${val.cls}`}>{val.text}</div>
+            <div className={`cp-vital__value num ${val.state === "real" ? "" : val.state === "masked" ? "is-masked" : "is-missing"}`}>
+              {val.state === "masked" && <Icon name="lock" size={12} />}
+              {val.text}
+            </div>
             <div className="cp-vital__sub">
               {t ? (
                 <span className={`cp-trend ${trendCls}`}>
                   {arrow} {Math.abs(t.delta) < 1 ? formatPct(Math.abs(t.delta)) : Math.abs(t.delta)}
-                  <span style={{ color: "var(--ink-3)", marginLeft: 3 }}>· {t.window_days}d</span>
+                  <span className="cp-vital__win">· {t.window_days}d</span>
                 </span>
               ) : (
-                <span className="cp-trend cp-trend--none">—</span>
+                <span className="cp-trend cp-trend--none">静态快照</span>
               )}
             </div>
           </button>

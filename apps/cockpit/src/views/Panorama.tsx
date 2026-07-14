@@ -1,90 +1,161 @@
 import { useEffect, useMemo, useState } from "react";
+import { fetchPanorama, type ObjectRef, type Panorama as PanoData, type Role } from "../api";
 import {
-  fetchPanorama,
-  nodeToObjectRef,
-  type ObjectRef,
-  type Panorama as PanoData,
-  type PanoLayerName,
-  type PanoNode,
-  type Role,
-} from "../api";
+  buildDisplay,
+  corridorFrom,
+  ISO_HH,
+  ISO_HW,
+  LAYER_CN,
+  LAYER_ORDER,
+  LIT_TRUNK_CAP,
+  planeCorners,
+  planeTopY,
+  projectFloor,
+  SLAB,
+  VB_H,
+  VB_W,
+  type DisplayBlock,
+  type DisplayModel,
+  type PanoSelection,
+} from "./panoramaModel";
 
-// 小全景：客户—订单—在途—供应商—仓库五层手绘 SVG 活图（零图形库依赖，纯 SVG/CSS）。
-// 节点大小按聚合量、颜色按状态；异常上浮 = open 风险节点红/黄脉动（智能感之二）；
-// 点节点 = 沿 edges 的受影响路径逐段点亮（影响走廊/连锁涟漪，智能感之三）+ 可打开对象卡。
-// 全部数据来自 GET /cockpit/panorama，零硬编码。
+// 小全景（V9 视觉升级）：等距 2.5D 分层浮板 + 节点聚合组块 + 聚合级影响走廊。
+// V9-A：五层半透明等距菱形浮板沿纵深堆叠（客户最上→仓库最下），实体点阵聚合为组块
+//   （客户按州 / 订单按州簇 / 在途按航线 / 供应商按城市 / 仓库实体），层间只画聚合主干线。
+// V9 追加修正：点击组块只做聚合级高亮（受影响组块整块点亮 + 计数徽标 + ≤5 粗光路，其余降暗），
+//   绝不画实体级线网；结构化传播链走右侧「影响分析」面板（App 编排）。
+// 智能感之二/之三：异常辉光脉动 + 影响走廊，集中于此；其余零动效数字说话。
 
-const LAYER_ORDER: PanoLayerName[] = ["customers", "orders", "shipments", "suppliers", "warehouses"];
-const LAYER_CN: Record<PanoLayerName, string> = {
-  customers: "客户",
-  orders: "订单",
-  shipments: "在途",
-  suppliers: "供应商",
-  warehouses: "仓库",
-};
-const VB_W = 1120;
-const VB_H = 640;
-const X0 = 112;
-const X1 = 1096;
-const BAND_Y: Record<PanoLayerName, number> = {
-  customers: 72,
-  orders: 196,
-  shipments: 322,
-  suppliers: 462,
-  warehouses: 584,
-};
-const SEV_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
+const LERP = (a: number, b: number, t: number) => a + (b - a) * t;
+const FH_RATIO = ISO_HH / ISO_HW; // 组块底面菱形高宽比（与浮板同等距角）
 
 interface Placed {
-  node: PanoNode;
-  x: number;
-  y: number;
-  r: number;
-  fill: string; // pano-node modifier
-  sev: number; // -1 无告警，否则最高严重度
+  block: DisplayBlock;
+  sx: number; // 底面中心
+  sy: number;
+  fw: number; // 底面半宽
+  fh: number; // 底面半高
+  h: number; // 立高
+  topX: number; // 顶面中心（连线锚点）
+  topY: number;
+  depth: number; // u+v，绘制前后序
 }
 
-function nodeRadius(n: PanoNode): number {
-  switch (n.layer) {
-    case "orders":
-      return 4 + Math.min(6, Math.sqrt(n.line_count ?? 0) / 3);
-    case "shipments":
-      return 4.5 + Math.min(4.5, n.container_count ?? 0);
-    case "warehouses":
-      return 9;
-    default:
-      return 5;
-  }
+function layoutLayer(blocks: DisplayBlock[], i: number): Placed[] {
+  const n = blocks.length;
+  if (n === 0) return [];
+  const cols = Math.min(6, Math.max(1, Math.ceil(Math.sqrt(n * 1.6))));
+  const rows = Math.ceil(n / cols);
+  const maxMetric = Math.max(...blocks.map((b) => b.metric), 1);
+  const topY = planeTopY(i);
+  const ordered = [...blocks].sort((a, b) => a.id.localeCompare(b.id));
+  return ordered.map((block, k) => {
+    const col = k % cols;
+    const row = Math.floor(k / cols);
+    const u = cols === 1 ? 0.5 : LERP(0.16, 0.84, col / (cols - 1));
+    const v = rows === 1 ? 0.5 : LERP(0.3, 0.7, row / (rows - 1));
+    const [sx, sy] = projectFloor(topY, u, v);
+    const norm = Math.sqrt(block.metric / maxMetric); // 0..1
+    const fw = 13 + 15 * norm;
+    const h = 12 + 22 * (block.metric / maxMetric);
+    return { block, sx, sy, fw, fh: fw * FH_RATIO, h, topX: sx, topY: sy - h, depth: u + v };
+  });
 }
 
-function nodeFill(n: PanoNode, sev: number): string {
-  if (sev >= 2) return "pano-node--red";
-  if (sev >= 0) return "pano-node--amber";
-  // 无 open 风险时的状态色（真实字段驱动，非装饰）
-  if (n.layer === "shipments") {
-    if ((n.delayed_count ?? (n.delay_days ?? 0) > 0 ? 1 : 0) > 0) return "pano-node--amber";
-    return "pano-node--busy";
-  }
-  if (n.layer === "warehouses" && (n.safety_breach_count ?? 0) > 0) return "pano-node--amber";
-  if (n.layer === "orders" && (n.at_risk_lines ?? 0) > 0) return "pano-node--amber";
-  return "pano-node--ok";
+// 等距组块（三面棱柱：顶亮 / 右中 / 左暗，微渐变靠 CSS 类）。
+function IsoBlock({
+  p,
+  state,
+  litWeight,
+  onClick,
+  onDouble,
+  onHover,
+  hovered,
+}: {
+  p: Placed;
+  state: "focus" | "lit" | "dim" | "normal";
+  litWeight: number;
+  onClick: () => void;
+  onDouble: () => void;
+  onHover: (id: string | null) => void;
+  hovered: boolean;
+}) {
+  const { sx, sy, fw, fh, h, block } = p;
+  const lift = hovered ? 4 : 0; // hover 微抬升（affordance，reduced-motion 关）
+  const y0 = sy - lift; // 底面
+  const yt = sy - h - lift; // 顶面
+  const fRight = `${sx + fw},${y0}`;
+  const fBot = `${sx},${y0 + fh}`;
+  const fLeft = `${sx - fw},${y0}`;
+  const tTop = `${sx},${yt - fh}`;
+  const tRight = `${sx + fw},${yt}`;
+  const tBot = `${sx},${yt + fh}`;
+  const tLeft = `${sx - fw},${yt}`;
+  const glow = block.alertCount > 0 ? (block.sev >= 2 ? "url(#glow-red)" : "url(#glow-amber)") : undefined;
+  const cls = `iso-blk iso-blk--${block.tone} is-${state}`;
+  return (
+    <g
+      className={cls}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        onDouble();
+      }}
+      onMouseEnter={() => onHover(block.id)}
+      onMouseLeave={() => onHover(null)}
+      style={{ cursor: "pointer" }}
+    >
+      {/* 立面 */}
+      <polygon className="iso-blk__left" points={`${fLeft} ${fBot} ${tBot} ${tLeft}`} />
+      <polygon className="iso-blk__right" points={`${fBot} ${fRight} ${tRight} ${tBot}`} />
+      {/* 顶面（辉光挂此） */}
+      <polygon
+        className="iso-blk__top"
+        points={`${tTop} ${tRight} ${tBot} ${tLeft}`}
+        filter={glow}
+      />
+      {block.alertCount > 0 && (
+        <circle
+          className={`iso-halo ${block.sev >= 2 ? "" : "iso-halo--amber"}`}
+          cx={sx}
+          cy={yt}
+          r={fw + 3}
+        />
+      )}
+      {state === "lit" && litWeight > 0 && (
+        <g className="iso-affbadge" transform={`translate(${sx + fw - 2},${yt - fh - 6})`}>
+          <rect x={-2} y={-9} width={String(litWeight).length * 6.5 + 14} height={15} rx={7.5} />
+          <text x={5} y={2}>{`×${litWeight}`}</text>
+        </g>
+      )}
+      <title>
+        {`${LAYER_CN[block.layer]} · ${block.label}\n${block.sub}` +
+          (block.alertCount > 0 ? `\n${block.alertCount} 未闭环风险` : "") +
+          (block.members.length ? `\n${block.members.length} 实体成员（双击展开明细）` : block.ref ? "\n双击开对象卡" : "")}
+      </title>
+    </g>
+  );
 }
 
-function maxSeverity(n: PanoNode): number {
-  if (!n.alerts || n.alerts.length === 0) return -1;
-  return Math.max(...n.alerts.map((a) => SEV_RANK[a.severity] ?? 1));
+interface Props {
+  role: Role;
+  selectedId: string | null;
+  onSelect: (sel: PanoSelection | null) => void;
+  onOpenObject: (r: ObjectRef) => void;
 }
 
-export default function Panorama({ role, onOpenObject }: { role: Role; onOpenObject: (r: ObjectRef) => void }) {
+export default function Panorama({ role, selectedId, onSelect, onOpenObject }: Props) {
   const [data, setData] = useState<PanoData | null>(null);
   const [err, setErr] = useState(false);
-  const [focus, setFocus] = useState<string | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setErr(false);
-    setFocus(null);
     fetchPanorama(role)
       .then((d) => !cancelled && setData(d))
       .catch(() => !cancelled && setErr(true));
@@ -93,48 +164,21 @@ export default function Panorama({ role, onOpenObject }: { role: Role; onOpenObj
     };
   }, [role]);
 
-  // —— 布局：节点定位 + 颜色 + 边端点坐标（useMemo，仅数据变时重算）——
-  const layout = useMemo(() => {
-    if (!data) return null;
-    const placed = new Map<string, Placed>();
-    for (const layer of LAYER_ORDER) {
-      const nodes = data.layers[layer]?.nodes ?? [];
-      const n = nodes.length;
-      const span = X1 - X0;
-      nodes.forEach((node, i) => {
-        const x = n === 1 ? (X0 + X1) / 2 : X0 + (span * (i + 0.5)) / n;
-        const sev = maxSeverity(node);
-        placed.set(node.id, { node, x, y: BAND_Y[layer], r: nodeRadius(node), fill: nodeFill(node, sev), sev });
-      });
-    }
-    // 无向邻接表（供影响走廊 BFS）
-    const adj = new Map<string, string[]>();
-    for (const e of data.edges) {
-      if (!placed.has(e.source) || !placed.has(e.target)) continue;
-      (adj.get(e.source) ?? adj.set(e.source, []).get(e.source)!).push(e.target);
-      (adj.get(e.target) ?? adj.set(e.target, []).get(e.target)!).push(e.source);
-    }
-    return { placed, adj };
-  }, [data]);
+  const model: DisplayModel | null = useMemo(() => (data ? buildDisplay(data) : null), [data]);
 
-  // —— 影响走廊：从 focus 节点 BFS 深度 2（一个延误沿关系图漾开到订单行/客户/兄弟货件）——
-  const lit = useMemo(() => {
-    if (!layout || !focus) return null;
-    const depth = new Map<string, number>([[focus, 0]]);
-    const queue: string[] = [focus];
-    while (queue.length) {
-      const u = queue.shift()!;
-      const du = depth.get(u)!;
-      if (du >= 2) continue;
-      for (const v of layout.adj.get(u) ?? []) {
-        if (!depth.has(v)) {
-          depth.set(v, du + 1);
-          queue.push(v);
-        }
-      }
-    }
-    return depth; // nodeId -> hop
-  }, [layout, focus]);
+  const layout = useMemo(() => {
+    if (!model) return null;
+    const placed = new Map<string, Placed>();
+    LAYER_ORDER.forEach((layer, i) => {
+      for (const p of layoutLayer(model.blocksByLayer[layer], i)) placed.set(p.block.id, p);
+    });
+    return placed;
+  }, [model]);
+
+  const corridor = useMemo(() => {
+    if (!model || !selectedId) return null;
+    return corridorFrom(model, selectedId);
+  }, [model, selectedId]);
 
   if (err)
     return (
@@ -142,166 +186,232 @@ export default function Panorama({ role, onOpenObject }: { role: Role; onOpenObj
         全景数据加载失败——确认 API 已启动（uvicorn 命令见 apps/cockpit/README.md）
       </div>
     );
-  if (!data || !layout) return <div className="cp-fill-msg">全景加载中…</div>;
+  if (!data || !model || !layout) return <div className="cp-fill-msg">全景加载中…</div>;
 
-  const focusRef = focus ? nodeToObjectRef(focus) : null;
-  const focusPlaced = focus ? layout.placed.get(focus) ?? null : null;
+  const litHops = corridor?.litHops ?? null;
 
-  // 边：基础层（全部，faint）+ 点亮层（focus 时，键随 focus 变 → 动画重放）
-  const baseEdges = data.edges.map((e, i) => {
-    const s = layout.placed.get(e.source);
-    const t = layout.placed.get(e.target);
+  function selectBlock(b: DisplayBlock) {
+    if (!model) return;
+    if (selectedId === b.id) {
+      onSelect(null);
+      return;
+    }
+    onSelect({ block: b, affected: corridorFrom(model, b.id).affected });
+  }
+
+  function doubleBlock(b: DisplayBlock) {
+    // 单实体块（仓库/单成员组）→ 直开对象卡；多成员聚合块 → 选中，明细走影响面板成员表。
+    if (b.ref) onOpenObject(b.ref);
+    else selectBlock(b);
+  }
+
+  // —— 边：底层 faint（cap 后）+ 走廊粗光路（≤5，按关系数量取强）——
+  const baseEdgeEls = model.baseEdges.map((e, i) => {
+    const s = layout.get(e.source);
+    const t = layout.get(e.target);
     if (!s || !t) return null;
-    return <line key={i} className="pano-edge" x1={s.x} y1={s.y} x2={t.x} y2={t.y} />;
+    return (
+      <line
+        key={`b${i}`}
+        className="pano-trunk"
+        x1={s.topX}
+        y1={s.topY}
+        x2={t.topX}
+        y2={t.topY}
+        strokeWidth={0.6 + Math.min(2.4, Math.log2(e.count + 1) * 0.5)}
+      />
+    );
   });
 
-  const litEdges: React.ReactNode[] = [];
-  if (lit) {
-    data.edges.forEach((e, i) => {
-      if (!lit.has(e.source) || !lit.has(e.target)) return;
-      const s = layout.placed.get(e.source)!;
-      const t = layout.placed.get(e.target)!;
-      const len = Math.hypot(t.x - s.x, t.y - s.y);
-      const hop = Math.max(lit.get(e.source)!, lit.get(e.target)!);
-      const st = { ["--len"]: len, animationDelay: `${(hop - 1) * 0.22}s` } as React.CSSProperties;
-      litEdges.push(
-        <line key={`l${i}`} className="pano-edge is-lit" x1={s.x} y1={s.y} x2={t.x} y2={t.y} style={st} />,
+  let litEdgeEls: React.ReactNode[] = [];
+  if (litHops) {
+    const inCorridor = model.edges.filter((e) => litHops.has(e.source) && litHops.has(e.target));
+    inCorridor.sort((a, b) => b.count - a.count);
+    litEdgeEls = inCorridor.slice(0, LIT_TRUNK_CAP).map((e, i) => {
+      const s = layout.get(e.source)!;
+      const t = layout.get(e.target)!;
+      const hop = Math.max(litHops.get(e.source)!, litHops.get(e.target)!);
+      return (
+        <line
+          key={`l${i}`}
+          className="pano-trunk is-lit"
+          x1={s.topX}
+          y1={s.topY}
+          x2={t.topX}
+          y2={t.topY}
+          strokeWidth={1.6 + Math.min(4, Math.log2(e.count + 1) * 0.7)}
+          style={{ animationDelay: `${(hop - 1) * 0.18}s` }}
+        />
       );
     });
   }
 
+  // 全部 placed，按层序 + depth 排序（后画者在前/上）
+  const allPlaced = [...layout.values()].sort((a, b) => {
+    const li = LAYER_ORDER.indexOf(a.block.layer) - LAYER_ORDER.indexOf(b.block.layer);
+    return li !== 0 ? li : a.depth - b.depth;
+  });
+
+  const openRisks = data.meta.open_risks_total;
+  const unanchored = data.meta.alerts_unanchored_total;
+
   return (
     <>
       <div className="cp-panel-head">
-        <span className="cp-panel-head__title">小全景 · 五层活图</span>
+        <span className="cp-panel-head__title">小全景 · 等距分层图</span>
         <span className="cp-panel-head__meta">
-          {data.meta.open_risks_total} open 风险 · {data.meta.edge_count} 关系
-          {data.meta.aggregated_layers.length > 0 && ` · 聚合层：${data.meta.aggregated_layers.join("/")}`}
+          {model.blocks.length} 组块 · {model.edges.length} 聚合关系 · {openRisks} open 风险
         </span>
+        <span className="cp-panel-head__spacer" />
+        {selectedId && (
+          <button className="cp-zone__back" onClick={() => onSelect(null)}>
+            清除高亮
+          </button>
+        )}
       </div>
       <div className="cp-pano">
-        <svg className="cp-pano__svg" viewBox={`0 0 ${VB_W} ${VB_H}`} preserveAspectRatio="xMidYMid meet">
-          {/* 层带 + 层标签 */}
-          {LAYER_ORDER.map((layer) => (
-            <g key={layer}>
-              <rect className="pano-layer-band" x={0} y={BAND_Y[layer] - 30} width={VB_W} height={60} rx={0} />
-              <text className="pano-layer-label" x={16} y={BAND_Y[layer] - 4}>
-                {LAYER_CN[layer]}
-              </text>
-              <text className="pano-layer-count" x={16} y={BAND_Y[layer] + 12}>
-                {data.layers[layer].nodes.length}
-                {data.layers[layer].granularity === "group" ? " 组" : ""}
-              </text>
-            </g>
-          ))}
+        <svg
+          className="cp-pano__svg"
+          viewBox={`0 0 ${VB_W} ${VB_H}`}
+          preserveAspectRatio="xMidYMid meet"
+          onClick={() => selectedId && onSelect(null)}
+        >
+          <defs>
+            <filter id="glow-red" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="4.5" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            <filter id="glow-amber" x="-60%" y="-60%" width="220%" height="220%">
+              <feGaussianBlur stdDeviation="3.5" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
 
-          {/* 基础边（faint 布线纹理） */}
-          <g>{baseEdges}</g>
-          {/* 点亮走廊（逐段绘制，键随 focus 变以重放动画） */}
-          <g key={focus ?? "none"}>{litEdges}</g>
-
-          {/* 节点 + 告警脉动光晕 */}
-          {[...layout.placed.values()].map((p) => {
-            const dim = lit ? !lit.has(p.node.id) : false;
-            const isFocus = p.node.id === focus;
-            const ref = nodeToObjectRef(p.node.id);
-            const alertN = p.node.alert_count;
-            const title =
-              `${p.node.label}` +
-              (p.node.lane ? ` · ${p.node.lane}` : "") +
-              (p.node.status ? ` · ${p.node.status}` : "") +
-              (typeof p.node.delay_days === "number" && p.node.delay_days > 0 ? ` · 延误${p.node.delay_days}天` : "") +
-              (p.node.so_count ? ` · 订单${p.node.so_count}` : "") +
-              (p.node.safety_breach_count ? ` · 击穿${p.node.safety_breach_count}` : "") +
-              (alertN > 0 ? ` · ${alertN} 告警(${p.node.alerts.map((a) => a.rule_id).join(",")})` : "") +
-              (ref ? "  ▸ 点击看走廊 / 双击开对象卡" : "  （聚合节点，无单一对象）");
+          {/* 五层等距浮板（背景层，客户上→仓库下） */}
+          {LAYER_ORDER.map((layer, i) => {
+            const topY = planeTopY(i);
+            const c = planeCorners(topY);
+            const P = (pt: [number, number]) => `${pt[0]},${pt[1]}`;
+            const topFace = `${P(c.top)} ${P(c.right)} ${P(c.bottom)} ${P(c.left)}`;
+            const slab = `${P(c.left)} ${P(c.bottom)} ${P(c.right)} ${P([c.right[0], c.right[1] + SLAB])} ${P([c.bottom[0], c.bottom[1] + SLAB])} ${P([c.left[0], c.left[1] + SLAB])}`;
+            const cnt = data.layers[layer].nodes.length;
+            const gran = data.layers[layer].granularity;
             return (
-              <g key={p.node.id}>
-                {alertN > 0 && (
-                  <circle
-                    className={`pano-halo ${p.sev >= 2 ? "" : "pano-halo--amber"}`}
-                    cx={p.x}
-                    cy={p.y}
-                    r={p.r}
-                  />
-                )}
-                <circle
-                  className={`pano-node ${p.fill} ${dim ? "is-dim" : ""} ${isFocus ? "is-focus" : ""}`}
-                  cx={p.x}
-                  cy={p.y}
-                  r={p.r + (alertN > 0 ? 1.5 : 0)}
-                  onClick={() => setFocus(p.node.id)}
-                  onDoubleClick={() => ref && onOpenObject(ref)}
-                >
-                  <title>{title}</title>
-                </circle>
+              <g key={layer} className={`pano-plane pano-plane--${layer}`}>
+                <polygon className="pano-plane__slab" points={slab} />
+                <polygon className="pano-plane__top" points={topFace} />
+                <line
+                  className="pano-plane__edge"
+                  x1={c.left[0]}
+                  y1={c.left[1]}
+                  x2={c.top[0]}
+                  y2={c.top[1]}
+                />
+                <line
+                  className="pano-plane__edge"
+                  x1={c.left[0]}
+                  y1={c.left[1]}
+                  x2={c.bottom[0]}
+                  y2={c.bottom[1]}
+                />
+                <text className="pano-plane__label" x={c.left[0] + 12} y={c.left[1] - 4}>
+                  {LAYER_CN[layer]}
+                </text>
+                <text className="pano-plane__count" x={c.left[0] + 12} y={c.left[1] + 12}>
+                  {cnt}
+                  {gran === "group" ? " 组" : ""}
+                </text>
               </g>
             );
           })}
 
-          {/* 仓库 + 告警节点标签（其余不标，防拥挤） */}
-          {[...layout.placed.values()]
-            .filter((p) => p.node.layer === "warehouses" || p.node.alert_count > 0 || p.node.id === focus)
-            .map((p) => (
-              <text
-                key={`t${p.node.id}`}
-                className="pano-node-label"
-                x={p.x}
-                y={p.y - p.r - 4}
-                textAnchor="middle"
-              >
-                {p.node.label.length > 16 ? p.node.label.slice(0, 15) + "…" : p.node.label}
-              </text>
-            ))}
+          {/* 聚合主干线（faint） */}
+          <g className="pano-trunks">{baseEdgeEls}</g>
+          {/* 影响走廊粗光路（键随 focus 变以重放） */}
+          <g key={selectedId ?? "none"}>{litEdgeEls}</g>
 
-          {/* focus 涟漪圈 */}
-          {focusPlaced && (
-            <circle
-              key={`rip${focus}`}
-              className="pano-ripple"
-              cx={focusPlaced.x}
-              cy={focusPlaced.y}
-              r={focusPlaced.r + 6}
-              strokeDasharray={260}
-            />
-          )}
+          {/* 组块 */}
+          {allPlaced.map((p) => {
+            const id = p.block.id;
+            let state: "focus" | "lit" | "dim" | "normal" = "normal";
+            let weight = 0;
+            if (litHops) {
+              if (id === selectedId) state = "focus";
+              else if (litHops.has(id)) {
+                state = "lit";
+                // 徽标 = 入走廊关系数（聚合投影）
+                for (const e of model.edges) {
+                  const other = e.source === id ? e.target : e.target === id ? e.source : null;
+                  if (other && litHops.has(other)) weight += e.count;
+                }
+              } else state = "dim";
+            }
+            return (
+              <IsoBlock
+                key={id}
+                p={p}
+                state={state}
+                litWeight={weight}
+                hovered={hovered === id}
+                onHover={setHovered}
+                onClick={() => selectBlock(p.block)}
+                onDouble={() => doubleBlock(p.block)}
+              />
+            );
+          })}
+
+          {/* 组块标签（组名 + 计数；异常/焦点/走廊/悬停附 sub） */}
+          {allPlaced.map((p) => {
+            const id = p.block.id;
+            const showSub =
+              hovered === id ||
+              id === selectedId ||
+              (litHops?.has(id) ?? false) ||
+              p.block.alertCount > 0;
+            const label = p.block.label.length > 15 ? p.block.label.slice(0, 14) + "…" : p.block.label;
+            const dim = litHops && !litHops.has(id) && id !== selectedId;
+            return (
+              <g key={`t${id}`} className={`pano-blk-label ${dim ? "is-dim" : ""}`} pointerEvents="none">
+                <text className="pano-blk-label__name" x={p.topX} y={p.topY - p.fh - (p.block.alertCount > 0 ? 12 : 7)} textAnchor="middle">
+                  {label}
+                </text>
+                {showSub && (
+                  <text className="pano-blk-label__sub" x={p.topX} y={p.topY - p.fh + (p.block.alertCount > 0 ? 1 : 5)} textAnchor="middle">
+                    {p.block.sub}
+                  </text>
+                )}
+              </g>
+            );
+          })}
         </svg>
 
         <div className="cp-pano__legend">
-          <span>
-            <i style={{ background: "var(--sev-red)" }} />高危
-          </span>
-          <span>
-            <i style={{ background: "var(--sev-amber)" }} />关注/延误
-          </span>
-          <span>
-            <i style={{ background: "var(--beacon)" }} />在途
-          </span>
-          <span>
-            <i style={{ background: "#3a5573" }} />正常
-          </span>
+          <span><i className="lg lg--red" />高危</span>
+          <span><i className="lg lg--amber" />关注/延误</span>
+          <span><i className="lg lg--busy" />在途</span>
+          <span><i className="lg lg--ok" />正常</span>
         </div>
 
-        {focus ? (
-          <div className="cp-pano__hint">
-            已选 <b>{focusPlaced?.node.label ?? focus}</b>
-            {lit && <> · 影响走廊 {lit.size} 节点点亮</>}
-            {focusRef ? (
-              <span className="cp-pano__clear" onClick={() => onOpenObject(focusRef)}>
-                打开对象卡 →
-              </span>
-            ) : (
-              <span style={{ color: "var(--ink-3)" }}> · 聚合节点无对象卡</span>
-            )}
-            <span className="cp-pano__clear" onClick={() => setFocus(null)}>
-              清除
-            </span>
-          </div>
-        ) : (
-          <div className="cp-pano__hint">
-            点节点看<b>影响走廊</b>，双击开<b>对象卡</b>。挂红黄标的异常永远比安静的亮、大、脉动。
-          </div>
-        )}
+        <div className="cp-pano__hint">
+          {selectedId ? (
+            <>
+              已选 <b>{layout.get(selectedId)?.block.label ?? selectedId}</b>
+              {corridor && corridor.affected.length > 0 && <> · 影响走廊点亮 {corridor.affected.length} 组</>}
+              <span className="cp-pano__clear" onClick={() => onSelect(null)}>清除</span>
+            </>
+          ) : (
+            <>
+              点<b>组块</b>看影响走廊（聚合级），异常组块<b>辉光脉动</b>。
+              {unanchored > 0 && <> · <b>{unanchored}</b> 起未锚定风险见右栏</>}
+            </>
+          )}
+        </div>
       </div>
     </>
   );

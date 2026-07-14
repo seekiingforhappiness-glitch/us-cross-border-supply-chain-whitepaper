@@ -26,6 +26,8 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+
+from pydantic import ValidationError
 from pathlib import Path
 from typing import Any
 
@@ -265,7 +267,16 @@ def get_object(type: str, id: str,
         raise HTTPException(404, detail=f"{type} '{id}' 不存在")
 
     model = MODEL_BY_TYPE[type]
-    obj = model.model_validate(dict(row)).model_dump(mode="json")
+    try:
+        obj = model.model_validate(dict(row)).model_dump(mode="json")
+    except ValidationError as exc:
+        # 读路径韧性：历史/模拟数据违反本体契约时不 500——原样返回并如实暴露违规清单
+        # （校验的强制口岸在写路径与 build 期 enforce；读端点的职责是"呈现 + 指出问题"。
+        #   例：simworld 的 S1/S2 历史行存在枚举外值/缺列，对齐工作挂账 sim 侧，见 STATUS）
+        obj = dict(row)
+        obj["_validation_warnings"] = [
+            {"field": ".".join(str(p) for p in e["loc"]), "problem": e["msg"]}
+            for e in exc.errors()]
     SensitiveFieldMasker(get_ontology_dict(), x_role).mask_value(obj)
     return obj
 

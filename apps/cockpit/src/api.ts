@@ -8,9 +8,12 @@ export const API_BASE_URL = "/api";
 // 角色缩放：X-Role 头全局生效（体征带脱敏 + 全景粒度）。二稿起步两档：老板/运营专员。
 export type Role = "manager" | "ops";
 
-// 无权查看的掩码值（与 agent/tools.py::MASK 逐字一致）。金额类 _usd 键与 margin_distribution
-// 对无成本权限角色（ops）会被 apps/api 替换成这个字符串——渲染层需识别它、不当数字画。
+// 无权查看的掩码值（与 agent/tools.py::MASK 逐字一致——服务端契约，不可改）。金额类 _usd 键与
+// margin_distribution 对无成本权限角色（ops）会被 apps/api 替换成这个字符串——渲染层需识别它、
+// 不当数字画。MASK_TEXT 是其去 emoji 的展示文案（V9-B emoji 清零：契约值不变，渲染剥 emoji，
+// 锁图标由 Icons.tsx 在渲染处补）。
 export const MASK = "🔒无权查看";
+export const MASK_TEXT = "无权查看";
 
 // 缺域指标的统一形状（apps/api::_missing）：{value:null, reason:"该世界无此域数据（…）"}。
 // 模拟世界缺采购/准入/审计等域，对应指标如实返回此形状——渲染层照实画"无数据 + 原因"。
@@ -292,10 +295,10 @@ export function linksForType(links: OntologyLink[], type: string): UsableLink[] 
 }
 
 // ═══════════════════════════ 展示格式化小工具（纯函数，无副作用）═══════════════════════════
-/** 金额 → 紧凑美元串：$1.2M / $23.4K / $512。掩码/缺值原样透出，不冒充数字。 */
+/** 金额 → 紧凑美元串：$1.2M / $23.4K / $512。掩码显示去 emoji 文案、缺值 —，不冒充数字。 */
 export function formatUsd(v: number | string | null | undefined): string {
   if (v === null || v === undefined) return "—";
-  if (typeof v === "string") return v; // MASK 掩码串
+  if (typeof v === "string") return v === MASK ? MASK_TEXT : v; // MASK 掩码串（剥 emoji）
   const abs = Math.abs(v);
   if (abs >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
@@ -308,9 +311,9 @@ export function formatPct(v: number | null | undefined, digits = 1): string {
   return `${(v * 100).toFixed(digits)}%`;
 }
 
-/** 千分位整数（掩码串原样透出）。 */
+/** 千分位整数（掩码串去 emoji 展示）。 */
 export function formatInt(v: number | string | null | undefined): string {
   if (v === null || v === undefined) return "—";
-  if (typeof v === "string") return v;
+  if (typeof v === "string") return v === MASK ? MASK_TEXT : v;
   return v.toLocaleString("en-US");
 }

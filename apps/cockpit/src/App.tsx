@@ -14,9 +14,11 @@ import Panorama from "./views/Panorama";
 import ZoneDetail from "./views/ZoneDetail";
 import AiWorkflow from "./views/AiWorkflow";
 import ObjectCard from "./views/ObjectCard";
+import ImpactPanel from "./views/ImpactPanel";
+import type { PanoSelection } from "./views/panoramaModel";
 
-// 驾驶舱首屏编排（二稿画面）：顶栏（世界徽标+时钟+角色）+ 公司体征带（七掌控区）+
-// 主舞台（中央全景/区详情 60% · 右栏 AI 工作流 40%）+ 对象卡抽屉（第二层）。
+// 驾驶舱首屏编排（V9 视觉升级）：顶栏 + 公司体征带（七掌控区）+ 主舞台（中央等距全景/区详情
+// 60% · 右栏 AI 工作流 40%，选中异常组块时右栏切为影响分析面板）+ 对象卡抽屉（第二层）。
 // 角色（X-Role）是唯一全局开关：切换即令 vitals/panorama/ai-flow 全部按新角色重取（脱敏+粒度）。
 export default function App() {
   const [role, setRole] = useState<Role>("manager");
@@ -25,12 +27,14 @@ export default function App() {
   const [zoneId, setZoneId] = useState<ZoneId | null>(null); // null = 全景；否则该区展开
   const [card, setCard] = useState<ObjectRef | null>(null);
   const [links, setLinks] = useState<OntologyLink[]>([]);
+  const [selection, setSelection] = useState<PanoSelection | null>(null); // 全景选中组块（驱动影响面板）
 
   // 体征带数据（角色变即重取——脱敏在服务端做）
   useEffect(() => {
     let cancelled = false;
     setVitals(null);
     setVitalsErr(false);
+    setSelection(null); // 角色切换重置全景选中（粒度/脱敏会变）
     fetchVitals(role)
       .then((v) => !cancelled && setVitals(v))
       .catch(() => !cancelled && setVitalsErr(true));
@@ -76,11 +80,25 @@ export default function App() {
           {activeZone ? (
             <ZoneDetail zone={activeZone} onBack={() => setZoneId(null)} />
           ) : (
-            <Panorama role={role} onOpenObject={setCard} />
+            <Panorama
+              role={role}
+              selectedId={selection?.block.id ?? null}
+              onSelect={setSelection}
+              onOpenObject={setCard}
+            />
           )}
         </div>
         <div className="cp-side">
-          <AiWorkflow role={role} onOpenObject={setCard} />
+          {selection && !activeZone ? (
+            <ImpactPanel
+              selection={selection}
+              role={role}
+              onOpenObject={setCard}
+              onClose={() => setSelection(null)}
+            />
+          ) : (
+            <AiWorkflow role={role} onOpenObject={setCard} />
+          )}
         </div>
       </div>
 
