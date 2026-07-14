@@ -12,10 +12,23 @@ import {
   type UsableLink,
 } from "../api";
 import Icon from "../components/Icons";
+import {
+  fieldLabel,
+  humanizeDqWarning,
+  humanizeFieldValue,
+  linkPhrase,
+  OBJECT_TYPE_CN,
+  type DqWarning,
+} from "./objectLabels";
 
 // 第二层对象卡（右侧抽屉）：点全景实体节点 / AI 卡片 ref / 邻居 id 打开。
 // GET /objects/{Type}/{id} 全字段分组呈现 + 该对象 links 列表；点 link 调 traverse 显示邻居 id，
 // 邻居可继续点开卡——这就是第三层"关系走廊"的雏形（基本版，不求全）。
+//
+// V12（Daniel 贴 Supplier 对象卡截图"这里不容易懂"）：字段名/枚举值/关系词条全部经 objectLabels.ts
+// 人话化；_validation_warnings 不再作为字段行直出 JSON，改为顶部可折叠"数据质量提示"徽标。
+// 语义红线：本文件只改变呈现，不改变 fetchObject 拿到的数据本身——humanizeFieldValue 返回 null 时
+// 原样展示，未映射字段/枚举值不编造。
 
 interface Props {
   target: ObjectRef;
@@ -27,10 +40,13 @@ interface Props {
 
 type Expanded = { state: "loading" } | { state: "done"; ids: string[] } | { state: "error" };
 
-function renderVal(v: unknown): { text: string; cls: string; masked?: boolean } {
-  if (v === null || v === undefined) return { text: "null", cls: "null" };
+const DQ_WARNINGS_KEY = "_validation_warnings";
+
+function renderVal(type: string, field: string, v: unknown): { text: string; cls: string; masked?: boolean } {
+  if (v === null || v === undefined) return { text: "—", cls: "null" };
   if (isMasked(v)) return { text: MASK_TEXT, cls: "masked", masked: true };
-  if (typeof v === "boolean") return { text: v ? "true" : "false", cls: "" };
+  const humanized = humanizeFieldValue(type, field, v);
+  if (humanized !== null) return { text: humanized, cls: "" };
   if (typeof v === "object") return { text: JSON.stringify(v), cls: "" };
   return { text: String(v), cls: "" };
 }
@@ -39,12 +55,14 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
   const [fields, setFields] = useState<ObjectFields | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, Expanded>>({});
+  const [dqOpen, setDqOpen] = useState(false); // 数据质量提示徽标：默认折叠
 
   useEffect(() => {
     let cancelled = false;
     setFields(null);
     setErr(null);
     setExpanded({});
+    setDqOpen(false);
     fetchObject(target.type, target.id, role)
       .then((f) => !cancelled && setFields(f))
       .catch((e: Error) => !cancelled && setErr(e.message));
@@ -61,6 +79,11 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
   }, [onClose]);
 
   const usable: UsableLink[] = linksForType(links, target.type);
+
+  // _validation_warnings 不是业务字段——从字段列表里摘出来单独走徽标；其余字段照常渲染。
+  const rawWarnings = fields?.[DQ_WARNINGS_KEY];
+  const warnings: DqWarning[] = Array.isArray(rawWarnings) ? (rawWarnings as DqWarning[]) : [];
+  const fieldEntries = fields ? Object.entries(fields).filter(([k]) => k !== DQ_WARNINGS_KEY) : [];
 
   function toggleLink(l: UsableLink) {
     const cur = expanded[l.linkType];
@@ -81,10 +104,12 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
   return (
     <>
       <div className="cp-drawer-scrim" onClick={onClose} />
-      <aside className="cp-drawer" role="dialog" aria-label={`${target.type} ${target.id}`}>
+      <aside className="cp-drawer" role="dialog" aria-label={`${OBJECT_TYPE_CN[target.type] ?? target.type} ${target.id}`}>
         <div className="cp-drawer__head">
           <div>
-            <div className="cp-drawer__type">{target.type}</div>
+            <div className="cp-drawer__type" title={target.type}>
+              {OBJECT_TYPE_CN[target.type] ?? target.type}
+            </div>
             <div className="cp-drawer__id num">{target.id}</div>
           </div>
           <button className="cp-drawer__close" onClick={onClose} aria-label="关闭">
@@ -100,13 +125,36 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
             <div className="cp-inline-load">加载中…</div>
           ) : (
             <>
-              <div className="cp-drawer__section-title">字段（{Object.keys(fields).length}）</div>
+              {warnings.length > 0 && (
+                <div className="cp-dq">
+                  <button
+                    className={`cp-dq__toggle ${dqOpen ? "is-open" : ""}`}
+                    onClick={() => setDqOpen((v) => !v)}
+                    aria-expanded={dqOpen}
+                  >
+                    <Icon name="warn" size={12} />
+                    数据质量提示 {warnings.length}
+                    <Icon name="chevron-right" size={12} className="cp-dq__chev" />
+                  </button>
+                  {dqOpen && (
+                    <ul className="cp-dq__list">
+                      {warnings.map((w, i) => (
+                        <li key={`${w.field}-${i}`}>{humanizeDqWarning(target.type, w, fields[w.field])}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
+              <div className="cp-drawer__section-title">字段（{fieldEntries.length}）</div>
               <div className="cp-fields">
-                {Object.entries(fields).map(([k, v]) => {
-                  const r = renderVal(v);
+                {fieldEntries.map(([k, v]) => {
+                  const r = renderVal(target.type, k, v);
                   return (
                     <div className="cp-field" key={k}>
-                      <span className="cp-field__k">{k}</span>
+                      <span className="cp-field__k" title={k}>
+                        {fieldLabel(target.type, k)}
+                      </span>
                       <span className={`cp-field__v ${r.cls}`}>
                         {r.masked && <Icon name="lock" size={11} />}
                         {r.text}
@@ -120,13 +168,15 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
               <div className="cp-links">
                 {usable.map((l) => {
                   const exp = expanded[l.linkType];
+                  const arrow = l.direction === "forward" ? "→" : "←";
                   return (
                     <div key={l.linkType}>
-                      <button className="cp-link-btn" onClick={() => toggleLink(l)}>
-                        <span className="cp-link-btn__type">{l.linkType}</span>
-                        <span style={{ color: "var(--ink-2)" }}>→ {l.neighborType}</span>
+                      <button className="cp-link-btn" onClick={() => toggleLink(l)} title={l.linkType}>
+                        <span className="cp-link-btn__type">
+                          {arrow} {OBJECT_TYPE_CN[l.neighborType] ?? l.neighborType}
+                        </span>
                         <span className="cp-link-btn__dir">
-                          {l.direction === "forward" ? "正向" : "反向"}
+                          （{linkPhrase(l.linkType, l.direction)}）
                           {exp?.state === "done" ? ` · ${exp.ids.length}` : ""}
                         </span>
                       </button>
@@ -146,7 +196,7 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
                                 key={id}
                                 className="cp-neighbor"
                                 onClick={() => onOpenObject({ type: l.neighborType, id })}
-                                title={`打开 ${l.neighborType} ${id}`}
+                                title={`打开${OBJECT_TYPE_CN[l.neighborType] ?? l.neighborType} ${id}`}
                               >
                                 {id}
                               </span>

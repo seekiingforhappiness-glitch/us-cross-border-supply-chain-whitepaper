@@ -24,7 +24,10 @@ export const RULE_CN: Record<string, string> = {
 export const RULE_TYPE_CN: Record<string, string> = {
   delay_breach: "延误传导", docs_missing: "单证缺失", stalled: "静默停滞",
   rate_overbilling: "费率超收", duplicate_charge: "重复计费", unplanned_charge: "计划外费用",
-  overdue_receivable: "逾期应收", cash_runway: "现金水位", payment_anomaly: "重复或不符付款",
+  // cash_watch：B6 核对 engine/finance_rules.py 的 emit("R20", "cash_watch", ...) 发现此处原键
+  // 误写作 "cash_runway"（全仓库 grep 唯一出现处），从未真实匹配过——顺手订正，不改变任何行为
+  // （RULE_CN 按 rule_id 已优先命中，这条 fallback 平时不会被触达；订正只会让它开始正确匹配）。
+  overdue_receivable: "逾期应收", cash_watch: "现金水位", payment_anomaly: "重复或不符付款",
 };
 
 // ── 处置动作码 → 中文动词（英文码取自 app/streamlit_app.py::_APPROVE_HUMAN_TEMPLATES；
@@ -40,6 +43,12 @@ export const ACTION_CN: Record<string, string> = {
   suggest_substitution: "现货替代", adjust_inventory: "调整库存",
   escalate_replenishment: "升级补货", initiate_second_source: "启动第二来源",
   block_non_po_payment: "拦截无PO付款", backfill_po: "补建采购单",
+  // B6（对象卡用户语言化）补齐：Task.proposed_action 本体枚举里存在、但此前未入表的 3 个真实值
+  // （v0.11.2/G4 词表对齐后的真实词表，见决策日志 V11 勘误）——collect 与 propose_collection 同义
+  // （ontology RiskEvent 字段注释明确标注"duplicates 'collect' in intent"，非猜测合并）；
+  // chase_docs 是 R2 单证缺失的催办动作（当前无独立处置函数，暂用通用改期/加急/接受延误三选一
+  // 处置，故译作"催办单证"而非借用其它域的"催"字动词避免误导）；escalate 是通用升级动词。
+  collect: "催收", chase_docs: "催办单证", escalate: "升级",
 };
 
 // ── kind → 人话徽标 ─────────────────────────────────────────────────────────
