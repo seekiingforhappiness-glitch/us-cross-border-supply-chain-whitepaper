@@ -138,9 +138,13 @@ def build_static_world(cfg, rng):
             "chronic_delay": i in chronic,                       # 惯性延期 flag（S2 触发）
             "qual_expiring": i in qual_exp,                      # 资质将过期 flag（S2 触发）
             "payment_terms_days": terms[(i - 1) % len(terms)],   # F2 账期（out 向 due 自动推算）
-            # ontology schema 兼容字段（准入域，S1 给合规默认值）
-            "factory_audit_status": "passed", "compliance_docs_status": "complete",
-            "uflpa_risk_flag": "low", "origin_evidence_status": "verified",
+            # G5 枚举对齐（本体 Supplier 枚举治本，V12 决策日志；G1 同款模式，其漏网之鱼）：
+            # compliance_docs_status 本体枚举无 "complete"，"齐全"语义最贴 provided（已提供单证；
+            # 不擅升 verified——那需另行核验）；uflpa_risk_flag 本体是 boolean（语义=是否有 UFLPA
+            # 风险），"low"→false（25 家实测均此值，无 medium/high 出现，故无需 true 分支）。纯
+            # 字面量改，不消费 rng → S1/S2 世界随机序列逐字节不变；仅这两列既有值被校正（可审计）。
+            "factory_audit_status": "passed", "compliance_docs_status": "provided",
+            "uflpa_risk_flag": False, "origin_evidence_status": "verified",
         }
     w["suppliers"] = suppliers
 
