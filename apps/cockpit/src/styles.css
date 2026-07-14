@@ -731,6 +731,10 @@ body {
 .cp-metric-big.gold {
   color: var(--gold);
 }
+.cp-metric-big.neg {
+  /* G2：现金水位预警击穿态（净流出 > 阈值）——沿用告警红，不新增色板 */
+  color: var(--sev-red);
+}
 
 /* 缺数/掩码：如实标注，绝不空白冒充 */
 .cp-missing {

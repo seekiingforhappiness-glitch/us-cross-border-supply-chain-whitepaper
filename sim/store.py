@@ -7,7 +7,7 @@ SKU/客户性格参数、货代-船绑定、公司画像、船期、sim_event_lo
 ④ 写入顺序确定 → 内容可复现（verify 已核验逐字节一致）。
 """
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -118,7 +118,7 @@ S2_DDL = {
         affected_invoice_line_ids TEXT, po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT,
         warehouse_id TEXT, source TEXT)""",
     "tasks": """(task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT, assignee_role TEXT,
-        priority TEXT, proposed_action TEXT, proposal_params TEXT, approval_status TEXT,
+        priority TEXT, due_at TEXT, proposed_action TEXT, proposal_params TEXT, approval_status TEXT,
         approved_by_role TEXT, action_taken TEXT, status TEXT, proposal_actor_id TEXT,
         decided_at TEXT, decision_day TEXT, economics_json TEXT, precedent_block TEXT, source TEXT)""",
     # 对齐 engine.resolution_memory.COLUMNS（21 列，四件套血缘）+ source
@@ -309,11 +309,38 @@ def _sim_rows(world, cfg):
     }
 
 
+# G1 枚举对齐（本体 Task 枚举治本）：sim 任务内部 status 用 "open"（同 RiskEvent 生命周期语义），
+# 但本体 Task.status 枚举为 assigned/in_progress/done/cancelled——对象层投影时把待审批(open,
+# approval_status=pending) 映射为 in_progress（与真实 data/ontology.sqlite 一致：pending 任务即 in_progress）。
+_TASK_STATUS_MAP = {"open": "in_progress"}
+# 处置 SLA（按优先级确定性推算 due_at；纯算术不消费 rng）：P1 紧 / P3 松。
+_TASK_SLA_DAYS = {"P1": 2, "P2": 5, "P3": 10}
+
+
+def _project_task(world, task):
+    """把 sim 任务投影到本体对象层：① 补 due_at（本体 required——从其风险 detected_at + 优先级 SLA
+    确定性推算的处置截止日，非交付日）；② status 枚举对齐（open→in_progress）。返回新 dict 不改
+    world（保 verify 复现性）——sim 内部逻辑仍用 "open"，仅对象层落库值对齐本体枚举。"""
+    t = dict(task)
+    t["status"] = _TASK_STATUS_MAP.get(t.get("status"), t.get("status"))
+    base = (world.get("risk_events", {}).get(t.get("risk_event_id"), {}) or {}).get("detected_at") or ""
+    if base:
+        try:
+            t["due_at"] = (date.fromisoformat(base)
+                           + timedelta(days=_TASK_SLA_DAYS.get(t.get("priority"), 5))).isoformat()
+        except ValueError:
+            t["due_at"] = base
+    else:
+        t["due_at"] = ""
+    return t
+
+
 def _s2_rows(world):
-    """AI 回路产物 → risk_events/tasks/resolution_memory/sim_ai_activity 行（确定性排序，全 source='sim'）。"""
+    """AI 回路产物 → risk_events/tasks/resolution_memory/sim_ai_activity 行（确定性排序，全 source='sim'）。
+    tasks 经 _project_task 投影：补本体 required 的 due_at + status 枚举对齐（G1 治本）。"""
     return {
         "risk_events": [world["risk_events"][k] for k in sorted(world.get("risk_events", {}))],
-        "tasks": [world["tasks"][k] for k in sorted(world.get("tasks", {}))],
+        "tasks": [_project_task(world, world["tasks"][k]) for k in sorted(world.get("tasks", {}))],
         "resolution_memory": sorted(world.get("memory", []), key=lambda m: m["memory_id"]),
         "sim_ai_activity": sorted(world.get("ai_activity", []), key=lambda a: a["ai_event_id"]),
     }

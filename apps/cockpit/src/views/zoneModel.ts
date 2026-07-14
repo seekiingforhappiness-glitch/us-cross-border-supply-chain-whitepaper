@@ -12,6 +12,7 @@ import {
   isMasked,
   isMissing,
   MASK_TEXT,
+  type Missing,
   type ObjectRef,
   type Zone,
   type ZoneId,
@@ -99,7 +100,34 @@ function moneySummary(d: D): SummaryLine[] {
       tone: c.state === "real" ? "gold" : undefined,
     });
   }
+  // 应收/应付水位（G2/V8-② payments 表）：在外未收的钱、其中已逾期的 + 要付的钱——一行两问
+  lines.push(moneyFlowLine(d));
   return lines;
+}
+
+function moneyFlowLine(d: D): SummaryLine {
+  const recv = d.receivables;
+  const pay = d.payables;
+  if (isMissing(recv) || isMissing(pay)) {
+    return { label: "应收", value: "无数据", state: "missing" };
+  }
+  const r = recv as { amount_usd: number | string; overdue: { amount_usd: number | string } | Missing };
+  const p = pay as { amount_usd: number | string };
+  const rc = cell(r.amount_usd, formatUsd);
+  const pc = cell(p.amount_usd, formatUsd);
+  if (rc.state !== "real" || pc.state !== "real") {
+    // 掩码/缺数如实：金额键与其余钱区指标同规，两值任一非 real 就不拼数字避免半掩半露
+    return { label: "应收", value: rc.state === "masked" ? MASK_TEXT : rc.text, state: rc.state === "masked" || pc.state === "masked" ? "masked" : "missing" };
+  }
+  const overdueMissing = isMissing(r.overdue);
+  const overdueText = overdueMissing ? "逾期无数据" : `逾期 ${formatUsd((r.overdue as { amount_usd: number | string }).amount_usd)}`;
+  const overdueAmt = overdueMissing ? null : (r.overdue as { amount_usd: number | string }).amount_usd;
+  return {
+    label: "应收",
+    value: `${rc.text}（${overdueText}）｜应付 ${pc.text}`,
+    state: "real",
+    tone: typeof overdueAmt === "number" && overdueAmt > 0 ? "neg" : undefined,
+  };
 }
 
 function fulfillmentSummary(d: D, alertCount: number): SummaryLine[] {

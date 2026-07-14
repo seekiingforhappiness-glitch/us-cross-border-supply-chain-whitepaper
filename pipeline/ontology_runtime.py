@@ -178,7 +178,9 @@ def traverse(con, source_type: str, source_id: str, link_type: str) -> list[str]
 
     读 links[] 承载声明处理四种承载 + 标准外键推导（双向可走：source_type 命中关系 source 端走
     正向、命中 target 端走反向）：
-      · storage.kind=="column"       标量外键列（shipment_to_warehouse: shipments.destination_warehouse）
+      · storage.kind=="column"       标量外键列（shipment_to_warehouse: shipments.destination_warehouse）；
+                                     可带 discriminator 判别式（F1 三 payment 关系共用 payments.ref_id、
+                                     由 ref_type 值区分）——正反向都按 discriminator_value 过滤
       · storage.kind=="reverse_json" 反向多值列（po_shipped_by: shipments.po_ids 承 PO 列表）
       · via（affected_*_ids）          N:M 多值列落 source 表（risk_affects_line: risk_events.affected_so_line_ids）
       · 无声明                          标准外键推导（N:1 外键落 source 表 / 1:N 落 target 表）
@@ -202,9 +204,9 @@ def traverse(con, source_type: str, source_id: str, link_type: str) -> list[str]
     via = link.get("via")
     card = link.get("cardinality", "")
 
-    def _scalar_q(sql: str) -> list[str]:
+    def _scalar_q(sql: str, extra: tuple = ()) -> list[str]:
         out: list[str] = []
-        for row in con.execute(sql, (source_id,)).fetchall():
+        for row in con.execute(sql, (source_id, *extra)).fetchall():
             v = row[0]
             if v not in (None, "") and str(v) not in out:
                 out.append(str(v))
@@ -225,13 +227,21 @@ def traverse(con, source_type: str, source_id: str, link_type: str) -> list[str]
                 out.append(str(hid))
         return out
 
-    # 承载 1：storage.kind == column（标量外键列）
+    # 承载 1：storage.kind == column（标量外键列；可带 discriminator 判别式承载多关系）
     if storage and storage.get("kind") == "column":
         htype = s if tbl[s] == storage["table"] else t
         col, htbl, hpk = storage["column"], storage["table"], pk[htype]
+        # F1 判别式（ref_type+ref_id 单列承载三 payment 结算/催收关系）：值列(ref_id)须按判别列
+        # (ref_type) 分支——**正反向都按 discriminator_value 过滤**。反向尤为关键：从 SalesOrder
+        # 反查 payments 时若不加 ref_type='sales_order'，会把 ref_id 恰好相同的 supplier_invoice/
+        # invoice 付款一并误召（判别盲）；正向亦过滤，使从非本类型付款走本关系正确返回空。
+        # 无 discriminator 的既有 column 声明（shipment_to_warehouse）：disc_sql 空、extra 空，行为不变。
+        disc, disc_val = storage.get("discriminator"), storage.get("discriminator_value")
+        disc_sql = f' AND "{disc}"=?' if disc else ""
+        extra = (disc_val,) if disc else ()
         if source_type == htype:
-            return _scalar_q(f'SELECT "{col}" FROM "{htbl}" WHERE "{hpk}"=?')
-        return _scalar_q(f'SELECT "{hpk}" FROM "{htbl}" WHERE "{col}"=?')
+            return _scalar_q(f'SELECT "{col}" FROM "{htbl}" WHERE "{hpk}"=?{disc_sql}', extra)
+        return _scalar_q(f'SELECT "{hpk}" FROM "{htbl}" WHERE "{col}"=?{disc_sql}', extra)
 
     # 承载 2：storage.kind == reverse_json（反向多值列）
     if storage and storage.get("kind") == "reverse_json":

@@ -1,5 +1,5 @@
 {
-  "version": "0.11.0",
+  "version": "0.11.1",
   "name": "cross_border_unified_ontology",
   "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账 + 仓储库存，五场景共享）",
   "scope": "Five scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice); (5) warehouse inventory accuracy (Warehouse / InventoryPosition / InventoryReservation / CycleCount) — all REUSING the RiskEvent/Task closed loop (F1/P1/W1). Shared objects zero duplication.",
@@ -22,7 +22,8 @@
     {"object": "Customer", "field": "credit_terms", "visibleTo": ["finance", "manager"]},
     {"object": "Customer", "field": "risk_tier", "visibleTo": ["finance", "manager"]},
     {"object": "Supplier", "field": "uflpa_risk_flag", "visibleTo": ["compliance", "manager"]},
-    {"object": "CostScenario", "field": "*_usd and margin fields", "visibleTo": ["finance", "manager"]},
+    {"object": "CostScenario", "field": "*_usd and margin fields", "fields": ["quote_price_usd", "product_cost_usd", "first_mile_cost_usd", "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd", "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd", "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"], "visibleTo": ["finance", "manager"], "description": "G1 全量声明化：成本情景金额/毛利字段脱敏的唯一权威源（agent.tools.COST_FIELDS 现从本 fields 派生，硬编码退役）。fields=机读具名列表；field 通配串保留供既有展示层(masker/standard_object_view/export_data)按原样跳过——避免对遍地 *_usd 运营列(affected_value_usd 等)误脱敏。"},
+    {"object": "Invoice", "fields": ["amount_usd", "unit_price_usd", "baseline_usd", "diff_usd"], "visibleTo": ["finance", "manager"], "description": "G1 全量声明化：发票行金额脱敏字段的唯一权威源（agent.tools.INVOICE_COST_FIELDS 现从本 fields 派生）。仅 plural fields、无 field——按对象组在会话层(get_invoice_context)脱敏，不作具名递归规则(否则 amount_usd/unit_price_usd 会跨对象 Payment/供票行等误脱敏)。"},
     {"object": "AdmissionCase", "field": "conditions", "visibleTo": ["finance", "manager"]},
     {"object": "Payment", "field": "amount_usd", "visibleTo": ["finance", "manager"]},
     {"rendering": "Fields hidden by permission must render as 'no access', never as blank/null. null must not be interpreted as 'no risk'."}
@@ -219,8 +220,8 @@
       "statusField": "status",
       "properties": [
         {"name": "risk_event_id", "type": "string", "required": true},
-        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge", "supplier_delay", "short_receipt", "qc_failure", "price_qty_mismatch", "invoice_over_receipt", "prepayment_exposure", "qualification_expired", "stockout", "unfulfillable", "shrinkage"], "description": "Cost anomaly types added in v0.4 (F1); procurement three-way-match types added in v0.5 (P1); procurement enrichment in v0.6 (P2); warehouse inventory-accuracy types (stockout/unfulfillable/shrinkage) added in v0.7 (W1). Same closed loop."},
-        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R16", "R17", "R18"], "description": "R7-R10 = procurement three-way match (P1); R11-R13 = procurement enrichment (P2); R16-R18 = warehouse inventory accuracy (W1: stockout/unfulfillable/shrinkage)."},
+        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge", "supplier_delay", "short_receipt", "qc_failure", "price_qty_mismatch", "invoice_over_receipt", "prepayment_exposure", "qualification_expired", "single_source", "maverick_spend", "stockout", "unfulfillable", "shrinkage", "overdue_receivable", "cash_watch", "payment_anomaly"], "description": "Cost anomaly types added in v0.4 (F1); procurement three-way-match types added in v0.5 (P1); procurement enrichment in v0.6 (P2); procurement sourcing types (single_source/maverick_spend) added in P3; warehouse inventory-accuracy types (stockout/unfulfillable/shrinkage) added in v0.7 (W1); finance cash-flow types (overdue_receivable/cash_watch/payment_anomaly) added in F1 (V8-②). Same closed loop."},
+        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "R16", "R17", "R18", "R19", "R20", "R21"], "description": "R7-R10 = procurement three-way match (P1); R11-R13 = procurement enrichment (P2); R14-R15 = procurement sourcing (P3: single_source/maverick_spend); R16-R18 = warehouse inventory accuracy (W1: stockout/unfulfillable/shrinkage); R19-R21 = finance cash-flow (F1 V8-②: overdue_receivable/cash_watch/payment_anomaly)."},
         {"name": "severity", "type": "enum", "required": true, "values": ["medium", "high", "critical"]},
         {"name": "shipment_id", "type": "string", "required": false, "description": "Nullable since v0.5 (P1): procurement anomalies (R7-R10) anchor on po_id/supplier_id, not a shipment. Logistics/cost risks still set it."},
         {"name": "po_id", "type": "string", "required": false, "description": "v0.5 (P1): anchor for procurement anomalies; null for logistics/cost risks. The only place RiskEvent touches a core object by fk (add-field-not-join-table philosophy)."},

@@ -186,8 +186,12 @@ def build_static_world(cfg, rng):
                 "tolerance_days": rng.randint(*tspec["tolerance_days"]),
                 "lines_per_order_range": tspec["lines_per_order"],
                 "next_order_offset": rng.randint(0, tspec["order_interval_days"][1]),  # 错峰起点
-                "business_model": "wholesale", "sales_channel": "b2b",
-                "ior_capability": "has_ior", "broker_status": "active",
+                # G1 枚举对齐（本体 Customer 枚举治本）：wholesale→trader（批发/B2B 分销商在本体
+                # business_model 分类下最贴切 trader=贸易商；platform_seller/brand_dtc/service_provider
+                # 均不符批发分销业态）；active→has_broker（"有活跃报关行"= has_broker）。纯字面量改，不消费
+                # rng → S1/S2 世界随机序列逐字节不变；仅这两列既有值被校正（可审计，见报告值映射表）。
+                "business_model": "trader", "sales_channel": "b2b",
+                "ior_capability": "has_ior", "broker_status": "has_broker",
                 "credit_terms": "net30", "risk_tier": "low",
             }
     w["customers"] = customers

@@ -19,6 +19,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from agent.tools import MASK
@@ -28,6 +29,9 @@ REPO_DB = REPO_ROOT / "data" / "ontology.sqlite"
 SIM_DB = REPO_ROOT / "data" / "simworld.sqlite"
 ZONE_ORDER = ["money", "fulfillment", "customers", "suppliers", "inventory", "ai", "decisions"]
 ZONE_KEYS = {"zone", "headline_label", "headline_value", "trend", "alert_count", "detail"}
+# G2 应收/应付/净流出：阈值/窗口现查 config（非誊抄字面量）——finance-manual v0.11 明示
+# cash_watch_threshold_usd 是"初值代定候调"，硬编码字面量会在 Daniel 调阈值后无声失配。
+_FINANCE_CFG = yaml.safe_load(open(REPO_ROOT / "config" / "datagen.yaml", encoding="utf-8"))["finance"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -146,6 +150,73 @@ def test_vitals_money_matches_sql(client, con):
         assert in_transit["value"] is None and "申报价值" in in_transit["reason"]
     else:
         assert in_transit["value_usd"] == (itv["v"] or 0.0)
+
+
+def test_vitals_money_finance_flow_matches_sql(client, con):
+    """G2：应收/应付/净流出预警三指标与手工 SQL 现查对照（验证世界）。"""
+    money = _zones(client.get("/cockpit/vitals", headers={"X-Role": "manager"}))["money"]
+    clock = con.execute("SELECT max(date(detected_at)) FROM risk_events").fetchone()[0]
+
+    for direction, key in (("in", "receivables"), ("out", "payables")):
+        base = con.execute(
+            "SELECT count(*) c, round(sum(amount_usd),2) v FROM payments "
+            "WHERE direction=? AND status='scheduled'", (direction,)).fetchone()
+        metric = money["detail"][key]
+        assert metric["count"] == base["c"]
+        assert metric["amount_usd"] == (base["v"] or 0.0)
+        overdue = con.execute(
+            "SELECT count(*) c, round(sum(amount_usd),2) v FROM payments "
+            "WHERE direction=? AND status='scheduled' AND due_date < ? "
+            "AND (paid_date IS NULL OR paid_date='')", (direction, clock)).fetchone()
+        assert metric["overdue"]["count"] == overdue["c"]
+        assert metric["overdue"]["amount_usd"] == (overdue["v"] or 0.0)
+        assert metric["overdue"]["count"] <= metric["count"], "逾期笔数不能超过在外总笔数"
+
+    window_days = _FINANCE_CFG["cash_watch_window_days"]
+    threshold = _FINANCE_CFG["cash_watch_threshold_usd"]
+    win_hi = con.execute("SELECT date(?, ?)", (clock, f"+{window_days} days")).fetchone()[0]
+    out_win = con.execute(
+        "SELECT round(sum(amount_usd),2) v FROM payments WHERE direction='out' "
+        "AND status='scheduled' AND due_date > ? AND due_date <= ?", (clock, win_hi)).fetchone()[0]
+    in_win = con.execute(
+        "SELECT round(sum(amount_usd),2) v FROM payments WHERE direction='in' "
+        "AND status='scheduled' AND due_date > ? AND due_date <= ?", (clock, win_hi)).fetchone()[0]
+    net = round((out_win or 0.0) - (in_win or 0.0), 2)
+    nc = money["detail"]["net_cash_14d"]
+    assert nc["out_scheduled_usd"] == (out_win or 0.0)
+    assert nc["in_scheduled_usd"] == (in_win or 0.0)
+    assert nc["value_usd"] == net
+    assert nc["window_days"] == window_days
+    assert nc["threshold_usd"] == threshold
+    assert nc["breach"] == (net > threshold)
+    # headline/alert_count 语义不因新指标改变（任务书明示）
+    row = con.execute("SELECT count(*) c, round(sum(affected_value_usd),2) v FROM risk_events "
+                      "WHERE rule_id IN ('R4','R5','R6') AND status='open'").fetchone()
+    assert money["headline_value"] == row["v"] and money["alert_count"] == row["c"]
+
+
+def test_vitals_money_missing_payments_table(tmp_path):
+    """缺 payments 表的世界：G2 三指标如实 null+reason，不 500，不连累钱区其余既有指标。"""
+    dest = tmp_path / "no_payments.sqlite"
+    shutil.copy(REPO_DB, dest)
+    con = sqlite3.connect(dest)
+    con.execute("DROP TABLE payments")
+    con.commit()
+    con.close()
+    app.dependency_overrides[get_db_path] = lambda: str(dest)
+    try:
+        with TestClient(app) as c:
+            resp = c.get("/cockpit/vitals", headers={"X-Role": "manager"})
+            assert resp.status_code == 200
+            money = {z["zone"]: z for z in resp.json()["zones"]}["money"]
+            for key in ("receivables", "payables", "net_cash_14d"):
+                metric = money["detail"][key]
+                assert metric["value"] is None and "该世界无此域数据" in metric["reason"], (key, metric)
+            # 不连累回归：费用敞口（既有指标，非本次改动范围）仍正常给数，不因钱区新指标缺表而挂
+            assert isinstance(money["headline_value"], (int, float))
+            assert isinstance(money["detail"]["fee_exposure"]["value_usd"], (int, float))
+    finally:
+        app.dependency_overrides.pop(get_db_path, None)
 
 
 def test_vitals_fulfillment_matches_sql(client, con):
@@ -271,9 +342,22 @@ def test_vitals_money_masked_for_ops(client):
     cs = _zones(client.get("/cockpit/vitals", headers={"X-Role": "cs"}))
     assert any(h["tier"] != MASK for h in cs["customers"]["detail"]["health_cross"])
 
+    # G2：应收/应付/净流出金额同规掩码；计数、breach、window_days 是状态/计数，不掩
+    recv, pay, nc = (ops["money"]["detail"]["receivables"], ops["money"]["detail"]["payables"],
+                     ops["money"]["detail"]["net_cash_14d"])
+    assert recv["amount_usd"] == MASK and recv["overdue"]["amount_usd"] == MASK
+    assert isinstance(recv["count"], int) and isinstance(recv["overdue"]["count"], int), "计数不掩码"
+    assert pay["amount_usd"] == MASK and pay["overdue"]["amount_usd"] == MASK
+    assert nc["value_usd"] == MASK and nc["out_scheduled_usd"] == MASK
+    assert nc["in_scheduled_usd"] == MASK and nc["threshold_usd"] == MASK
+    assert isinstance(nc["breach"], bool), "breach 是告警状态，不掩码"
+    assert isinstance(nc["window_days"], int), "窗口天数不掩码"
+
     fin = _zones(client.get("/cockpit/vitals", headers={"X-Role": "finance"}))
     assert isinstance(fin["money"]["headline_value"], (int, float)), "finance 见真金额"
     assert isinstance(fin["money"]["detail"]["margin_distribution"], dict)
+    assert isinstance(fin["money"]["detail"]["receivables"]["amount_usd"], (int, float))
+    assert isinstance(fin["money"]["detail"]["net_cash_14d"]["value_usd"], (int, float))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -369,10 +453,21 @@ def test_simworld_vitals_not_500_with_honest_reasons(sim_world):
     assert data["world"] == "simulation"
     assert [z["zone"] for z in data["zones"]] == ZONE_ORDER
     zones = {z["zone"]: z for z in data["zones"]}
-    # 缺域指标必须 value=null + reason 如实标注（F2 补灌后仍合法缺的域：llm_calls/任务 due_at）
-    for zone, path in [("ai", "llm_calls"), ("decisions", "overdue_tasks")]:
+    # 缺域指标必须 value=null + reason 如实标注（仍合法缺的域：llm_calls）
+    for zone, path in [("ai", "llm_calls")]:
         metric = zones[zone]["detail"][path]
         assert metric["value"] is None and "该世界无此域数据" in metric["reason"], (zone, path, metric)
+    # overdue_tasks：动态跟随（G1 给 sim tasks 补了 due_at 列后指标应点亮——不再硬编码"必缺"）
+    has_due = any(r[1] == "due_at" for r in scon.execute("PRAGMA table_info(tasks)"))
+    ot = zones["decisions"]["detail"]["overdue_tasks"]
+    if has_due:
+        expected_ot = scon.execute(
+            "SELECT count(*) FROM tasks WHERE status NOT IN ('done','cancelled') "
+            "AND due_at IS NOT NULL AND due_at != '' AND date(due_at) < ?",
+            (data["clock"],)).fetchone()[0]
+        assert ot.get("value") == expected_ot, (ot, expected_ot)
+    else:
+        assert ot["value"] is None and "该世界无此域数据" in ot["reason"], ot
     # F2 补灌域：数据在库 ⇒ 指标必须点亮（非 null 包装、直给数据体）且与现查一致
     # （动态跟随库内现实，不硬编码补灌进度；点亮态形状=数据体，缺数态形状={value:null,reason}）
     def lit(zone, path):
@@ -408,10 +503,38 @@ def test_simworld_vitals_not_500_with_honest_reasons(sim_world):
     blocked = scon.execute("SELECT round(sum(affected_value_usd),2) FROM risk_events "
                            "WHERE rule_id='R4' AND status='resolved'").fetchone()[0]
     assert zones["money"]["detail"]["intercepted_overbilling"]["value_usd"] == blocked
+    # G2：应收/应付/净流出预警——simworld（第二世界）同样与手工 SQL 现查对照，不誊抄数字
+    clock = data["clock"]
+    for direction, key in (("in", "receivables"), ("out", "payables")):
+        base = scon.execute(
+            "SELECT count(*) c, round(sum(amount_usd),2) v FROM payments "
+            "WHERE direction=? AND status='scheduled'", (direction,)).fetchone()
+        metric = zones["money"]["detail"][key]
+        assert metric["count"] == base["c"]
+        assert metric["amount_usd"] == (base["v"] or 0.0)
+        overdue = scon.execute(
+            "SELECT count(*) c, round(sum(amount_usd),2) v FROM payments "
+            "WHERE direction=? AND status='scheduled' AND due_date < ? "
+            "AND (paid_date IS NULL OR paid_date='')", (direction, clock)).fetchone()
+        assert metric["overdue"]["count"] == overdue["c"]
+        assert metric["overdue"]["amount_usd"] == (overdue["v"] or 0.0)
+    window_days = _FINANCE_CFG["cash_watch_window_days"]
+    threshold = _FINANCE_CFG["cash_watch_threshold_usd"]
+    win_hi = scon.execute("SELECT date(?, ?)", (clock, f"+{window_days} days")).fetchone()[0]
+    out_win = scon.execute(
+        "SELECT round(sum(amount_usd),2) v FROM payments WHERE direction='out' "
+        "AND status='scheduled' AND due_date > ? AND due_date <= ?", (clock, win_hi)).fetchone()[0]
+    in_win = scon.execute(
+        "SELECT round(sum(amount_usd),2) v FROM payments WHERE direction='in' "
+        "AND status='scheduled' AND due_date > ? AND due_date <= ?", (clock, win_hi)).fetchone()[0]
+    net = round((out_win or 0.0) - (in_win or 0.0), 2)
+    nc = zones["money"]["detail"]["net_cash_14d"]
+    assert nc["out_scheduled_usd"] == (out_win or 0.0) and nc["in_scheduled_usd"] == (in_win or 0.0)
+    assert nc["value_usd"] == net and nc["breach"] == (net > threshold)
+    assert nc["threshold_usd"] == threshold and nc["window_days"] == window_days
     # trend：AI 区有 detected_at 流水支撑 → 7 天对比为测量值；无快照支撑区仍 null
     ai_trend = zones["ai"]["trend"]
     assert ai_trend is not None and ai_trend["window_days"] == 7
-    clock = data["clock"]
     cur = scon.execute("SELECT count(*) FROM risk_events WHERE date(detected_at) "
                        "BETWEEN date(?,'-6 days') AND ?", (clock, clock)).fetchone()[0]
     assert ai_trend["current"] == cur

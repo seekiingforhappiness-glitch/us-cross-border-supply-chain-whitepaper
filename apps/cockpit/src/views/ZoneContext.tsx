@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Zone } from "../api";
+import type { Missing, Zone } from "../api";
 import { formatInt, formatPct, formatUsd, isMasked, isMissing } from "../api";
 import Icon from "../components/Icons";
 
@@ -65,6 +65,84 @@ function guard(v: unknown): "missing" | "masked" | "real" {
 type D = Record<string, unknown>;
 
 // ── 无队列区：全聚合卡 ─────────────────────────────────────────────────────
+type PaymentFlow = { count: number; amount_usd: number | string; overdue: { count: number; amount_usd: number | string } | Missing };
+type NetCash14d = {
+  value_usd: number | string;
+  window_days: number;
+  out_scheduled_usd: number | string;
+  in_scheduled_usd: number | string;
+  threshold_usd: number | string;
+  breach: boolean;
+  window: string;
+};
+
+/** 应收/应付水位卡体（G2/V8-②，两卡同构，direction 只影响标题/笔数文案）。 */
+function PaymentFlowCard({ title, chipSuffix, flow }: { title: string; chipSuffix: string; flow: unknown }) {
+  return (
+    <Card title={title}>
+      {isMissing(flow) ? (
+        <MissingBox reason={flow.reason} />
+      ) : (
+        (() => {
+          const f = flow as PaymentFlow;
+          return (
+            <>
+              <div className={`cp-metric-big ${isMasked(f.amount_usd) ? "" : "gold"}`}>{formatUsd(f.amount_usd)}</div>
+              <div style={{ marginTop: 8 }}>
+                <span className="cp-chip">
+                  {formatInt(f.count)} {chipSuffix}
+                </span>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                {isMissing(f.overdue) ? (
+                  <MissingBox reason={f.overdue.reason} />
+                ) : (
+                  <Metric
+                    label="其中已逾期"
+                    value={`${formatUsd(f.overdue.amount_usd)} · ${formatInt(f.overdue.count)} 笔`}
+                    tone={!isMasked(f.overdue.amount_usd) && f.overdue.count > 0 ? "neg" : undefined}
+                  />
+                )}
+              </div>
+            </>
+          );
+        })()
+      )}
+    </Card>
+  );
+}
+
+/** 14 天净流出预警卡体：breach 是状态位，不随金额一起掩码——ops 也能看到告警灯。 */
+function NetCash14dCard({ cash14 }: { cash14: unknown }) {
+  return (
+    <Card title="现金水位预警（未来窗口）" wide>
+      {isMissing(cash14) ? (
+        <MissingBox reason={cash14.reason} />
+      ) : (
+        (() => {
+          const c = cash14 as NetCash14d;
+          const masked = isMasked(c.value_usd);
+          return (
+            <>
+              <div className={`cp-metric-big ${masked ? "" : c.breach ? "neg" : "gold"}`}>{formatUsd(c.value_usd)}</div>
+              <div className="cp-basis">
+                未来 {c.window_days} 天 scheduled 应付 − 应收 · 阈值 {formatUsd(c.threshold_usd)}
+              </div>
+              <div style={{ marginTop: 8 }}>
+                <span className={`cp-chip ${c.breach ? "red" : ""}`}>{c.breach ? "预警：净流出击穿阈值" : "水位正常"}</span>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <Metric label="窗口内应付（scheduled）" value={formatUsd(c.out_scheduled_usd)} />
+                <Metric label="窗口内应收（scheduled）" value={formatUsd(c.in_scheduled_usd)} />
+              </div>
+            </>
+          );
+        })()
+      )}
+    </Card>
+  );
+}
+
 function MoneyCtx({ d }: { d: D }) {
   const fee = d.fee_exposure as { value_usd: number | string; open_risks: number; rules: string[] };
   const itv = d.in_transit_value;
@@ -120,6 +198,9 @@ function MoneyCtx({ d }: { d: D }) {
           })()
         )}
       </Card>
+      <PaymentFlowCard title="应收水位（在外未收）" chipSuffix="笔在外" flow={d.receivables} />
+      <PaymentFlowCard title="应付水位（要付未付）" chipSuffix="笔待付" flow={d.payables} />
+      <NetCash14dCard cash14={d.net_cash_14d} />
     </>
   );
 }

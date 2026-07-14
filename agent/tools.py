@@ -29,13 +29,41 @@ AI_ROLE = "ops"  # 默认角色（不传 role 时的向后兼容值）
 # 审批/关闭/拒接类动作永不向任何 role 的 AI 会话开放（v0.2 E5 + v0.3 AD2 红线，原则2）——
 # 桥2 M2 起从本体 ai_executable=frozen 声明生成（恰四个审批/关闭类动作的 snake，全局红线3）。
 FORBIDDEN_TOOLS = build_forbidden_tools(_ONTO)
-COST_FIELDS = {"quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
-               "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
-               "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
-               "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"}
+
+
+# ─── G1 脱敏全量声明化（M4/B5 挂账治本）：脱敏字段集与可见角色**唯一权威源 = 本体 sensitiveFieldRules** ───
+# 迁移前 COST_FIELDS/INVOICE_COST_FIELDS 是硬编码字面量、_can_see_* 是硬编码角色判断，与本体声明"两张皮"。
+# 本节把两者都改为从本体解释派生（本体成为唯一权威源，V5 桥的精神）：改本体重跑即生效，代码零脱敏字面量。
+def _sensitive_rules(onto):
+    return onto.get("sensitiveFieldRules", [])
+
+
+def _named_visible(onto, obj, field):
+    """具名字段规则(singular field) → 可见角色集；无声明返回空集（=脱敏不触发）。"""
+    for r in _sensitive_rules(onto):
+        if r.get("object") == obj and r.get("field") == field:
+            return set(r.get("visibleTo", []))
+    return set()
+
+
+def _group_rule(onto, obj):
+    """字段组规则(plural fields，按对象组脱敏) → (有序字段列表, 可见角色集)；无声明返回 ([], set())。"""
+    for r in _sensitive_rules(onto):
+        if r.get("object") == obj and r.get("fields"):
+            return list(r["fields"]), set(r.get("visibleTo", []))
+    return [], set()
+
+
+# 成本情景金额/毛利脱敏集：从本体 CostScenario.fields 派生（硬编码 12 字面量退役；集合值逐字等价迁移前）。
+_COST_FIELD_LIST, _COST_VISIBLE = _group_rule(_ONTO, "CostScenario")
+COST_FIELDS = set(_COST_FIELD_LIST)
 # 发票对账金额字段脱敏集（单一事实源，app.object_workbench / standard_object_view 复用本常量）：
-# 发票 total_usd + 逐行 amount/unit_price/baseline/diff。与 UI mask_cost 同规（finance/manager 可见）。
-INVOICE_COST_FIELDS = ("amount_usd", "unit_price_usd", "baseline_usd", "diff_usd")
+# 发票逐行 amount/unit_price/baseline/diff。从本体 Invoice.fields 派生，与 UI mask_cost 同规（finance/manager 可见）。
+_INVOICE_FIELD_LIST, _INVOICE_VISIBLE = _group_rule(_ONTO, "Invoice")
+INVOICE_COST_FIELDS = tuple(_INVOICE_FIELD_LIST)
+# 客户 tier / credit_terms 可见角色集：从本体具名规则派生（tier=cs/manager；credit_terms=risk_tier=finance/manager）。
+_TIER_VISIBLE = _named_visible(_ONTO, "Customer", "tier")
+_CREDIT_VISIBLE = _named_visible(_ONTO, "Customer", "credit_terms")
 MASK = "🔒无权查看"
 
 # --- 角色 → 工具集 scoping（对象工作台切片：给同一框架注入 role，不复制平行 agent）---
@@ -87,13 +115,20 @@ def allowed_tools_for_role(role):
 
 
 def _can_see_tier(role):
-    """Customer.tier 脱敏规则（与 UI mask_tier 同规）：cs/manager 可见，其余脱敏。"""
-    return role in ("cs", "manager")
+    """Customer.tier 脱敏规则（本体 sensitiveFieldRules 派生，与 UI mask_tier 同规）：cs/manager 可见。"""
+    return role in _TIER_VISIBLE
 
 
 def _can_see_cost(role):
-    """成本字段脱敏规则（与 UI mask_cost 同规）：finance/manager 可见，其余脱敏。"""
-    return role in ("finance", "manager")
+    """成本字段脱敏规则（本体 sensitiveFieldRules 派生，与 UI mask_cost 同规）：finance/manager 可见。"""
+    return role in _COST_VISIBLE
+
+
+def _can_see_credit(role):
+    """Customer.credit_terms / risk_tier 脱敏规则（本体 sensitiveFieldRules 派生）：finance/manager 可见。
+    G1 治本：迁移前此二字段误用 tier gate(cs/manager)、与本体声明(finance/manager)分叉——现按本体校正
+    （行为变化：cs 失去 credit_terms/risk_tier 可见、finance 获得；与 standard_object_view/MCP masker 同口径）。"""
+    return role in _CREDIT_VISIBLE
 
 # Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）——桥2 M2 起
 # 从本体解释生成：aiQueryTools 节的 11 读工具 + exposed_as_tool=true 的 6 写动作（原样搬家、
@@ -324,10 +359,11 @@ class AgentSession:
         if not case:
             return {"error": f"准入案件 {admission_case_id} 不存在"}
         case = case[0]
-        # 字段脱敏随 role：credit_terms/risk_tier 仅 tier 可见角色（cs/manager）返回
-        tier_visible = _can_see_tier(self.role)
+        # 字段脱敏随 role：credit_terms/risk_tier 按本体 sensitiveFieldRules（finance/manager）返回
+        # ——G1 治本：迁移前误用 tier gate(cs/manager)、与本体声明分叉；现按本体校正（cs 失、finance 得）。
+        credit_visible = _can_see_credit(self.role)
         cust_cols = "customer_id, customer_name, business_model, ior_capability, broker_status"
-        if tier_visible:
+        if credit_visible:
             cust_cols += ", credit_terms, risk_tier"
         cust = self._rows(f"SELECT {cust_cols} FROM customers WHERE customer_id=?",
                           case["customer_id"])[0]
@@ -346,7 +382,7 @@ class AgentSession:
         return {"case": case, "customer": cust, "findings": finds, "plans": plans,
                 "cost_scenarios": scens,
                 "note": f"cost fields {'visible' if cost_visible else 'masked'} for role={self.role}; "
-                        f"credit_terms/risk_tier {'returned' if tier_visible else 'not returned'}"}
+                        f"credit_terms/risk_tier {'returned' if credit_visible else 'not returned'}"}
 
     def list_invoices(self, status=None):
         sql = """SELECT invoice_id, vendor_type, vendor_name, shipment_id, total_usd,

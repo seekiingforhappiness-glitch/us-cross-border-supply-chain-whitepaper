@@ -31,6 +31,8 @@ AID = "AC-2026-0031"     # priced DDP 案，成本情景 CS-00034/35/36
 EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5 + P4（ProposeMitigation +procurement）
     "AssignTask": {"ops", "system"},
     "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
+    "RecordPayment": {"finance", "system"},          # F1（finance-manual §3，A9 转正）
+    "ProposeCollection": {"cs", "finance"},          # F1（A26 催收提案）
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }

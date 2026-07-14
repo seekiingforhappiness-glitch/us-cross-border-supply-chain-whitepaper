@@ -177,11 +177,16 @@ def _norm(obj):
 
 
 def _seed_memory_db(onto):
-    """内存合成库（用生成 DDL 建表 + 手植最小行），覆盖 traverse 四承载而不依赖检测/seed 状态。"""
+    """内存合成库（用生成 DDL 建表 + 手植最小行），覆盖 traverse 四承载 + F1 判别式而不依赖检测/seed 状态。
+
+    payments 判别式锚点（三 payment 关系共用 payments.ref_id、由 ref_type 判别）：
+      PAY-1/PAY-2 ref_type='sales_order' ref_id='SO-1'（应收，挂销售订单）；
+      PAY-3 ref_type='supplier_invoice' ref_id='SO-1'（应付，故意同 ref_id='SO-1' 制造跨类型碰撞）；
+      PAY-4 ref_type='invoice' ref_id='INV-1'（应付物流费）——覆盖判别过滤/隔离/正反向。"""
     ddls = object_ddls(onto)
     con = sqlite3.connect(":memory:")
     for tname in ["skus", "sales_order_lines", "shipments", "purchase_orders",
-                  "warehouses", "risk_events"]:
+                  "warehouses", "risk_events", "payments"]:
         con.execute(ddls[tname][0])
     con.executescript(
         "INSERT INTO skus (sku_id) VALUES ('SKU-1');"
@@ -192,15 +197,20 @@ def _seed_memory_db(onto):
         "INSERT INTO purchase_orders (po_id) VALUES ('PO-1');"
         "INSERT INTO warehouses (warehouse_id) VALUES ('WH-1');"
         "INSERT INTO risk_events (risk_event_id, affected_so_line_ids, affected_sku_ids) "
-        "VALUES ('RSK-1','[\"L1\", \"L2\"]','[\"SKU-1\"]');")
+        "VALUES ('RSK-1','[\"L1\", \"L2\"]','[\"SKU-1\"]');"
+        # F1 判别式付款：PAY-3 故意与 PAY-1/2 同 ref_id='SO-1' 但 ref_type 不同（跨类型碰撞用例）
+        "INSERT INTO payments (payment_id, direction, ref_type, ref_id) VALUES ('PAY-1','in','sales_order','SO-1');"
+        "INSERT INTO payments (payment_id, direction, ref_type, ref_id) VALUES ('PAY-2','in','sales_order','SO-1');"
+        "INSERT INTO payments (payment_id, direction, ref_type, ref_id) VALUES ('PAY-3','out','supplier_invoice','SO-1');"
+        "INSERT INTO payments (payment_id, direction, ref_type, ref_id) VALUES ('PAY-4','out','invoice','INV-1');")
     con.commit()
     return con
 
 
 def _traverse_tests(onto):
     """traverse 单测：plan M3 点名覆盖——正向FK / reverse_json / column软命名 / N:M affected /
-    declared_only 拒绝 / 未知 link 拒绝（+ 双向 + 非端点拒绝 + 真库 smoke）。"""
-    print("== ⑨ traverse：四承载 + 双向 + 拒绝（内存合成库，覆盖 plan 点名 6 类）==")
+    declared_only 拒绝 / 未知 link 拒绝（+ 双向 + 非端点拒绝 + 真库 smoke）＋ F1 判别式关系正反向/隔离。"""
+    print("== ⑨ traverse：四承载 + 判别式 + 双向 + 拒绝（内存合成库，覆盖 plan 点名 6 类 + F1 判别式）==")
     con = _seed_memory_db(onto)
     try:
         # 正向外键（N:1 标准推导）+ 反向
@@ -238,6 +248,31 @@ def _traverse_tests(onto):
         check("⑨ N:M risk_affects_sku 反向(Sku→risks)",
               traverse(con, "Sku", "SKU-1", "risk_affects_sku") == ["RSK-1"],
               str(traverse(con, "Sku", "SKU-1", "risk_affects_sku")))
+        # ── F1 判别式关系（column + discriminator=ref_type）：正反向 + 判别过滤/隔离（本项修复核心）──
+        # 正向 payment_collects_order(Payment→SalesOrder)：从付款取其挂靠的销售订单
+        check("⑨ 判别式正向 payment_collects_order(Payment→SO)",
+              traverse(con, "Payment", "PAY-1", "payment_collects_order") == ["SO-1"],
+              str(traverse(con, "Payment", "PAY-1", "payment_collects_order")))
+        # 反向 payment_collects_order(SalesOrder→Payments)：判别过滤——只召 ref_type='sales_order'，
+        # PAY-3（同 ref_id='SO-1' 但 ref_type='supplier_invoice'）必须被排除（修复前"reverse 判别盲"会误召它）
+        check("⑨ 判别式反向 payment_collects_order(SO→Payments) 判别过滤(排除跨类型同 ref_id)",
+              traverse(con, "SalesOrder", "SO-1", "payment_collects_order") == ["PAY-1", "PAY-2"],
+              str(traverse(con, "SalesOrder", "SO-1", "payment_collects_order")))
+        # 判别隔离铁证：同一 source_id='SO-1' 走两条判别式关系返回**不相交**付款集（ref_type 各异）
+        check("⑨ 判别隔离：同 ref_id 'SO-1' 走 payment_settles_supplier_invoice 只召 PAY-3",
+              traverse(con, "SupplierInvoice", "SO-1", "payment_settles_supplier_invoice") == ["PAY-3"],
+              str(traverse(con, "SupplierInvoice", "SO-1", "payment_settles_supplier_invoice")))
+        # 正向判别：PAY-3 是 supplier_invoice 付款，走 payment_collects_order 正向应返回空（它不挂销售订单）
+        check("⑨ 正向判别：非本类型付款(PAY-3)走 payment_collects_order 返回空",
+              traverse(con, "Payment", "PAY-3", "payment_collects_order") == [],
+              str(traverse(con, "Payment", "PAY-3", "payment_collects_order")))
+        # 第三条 payment 关系 payment_settles_invoice 双向（ref_type='invoice'）
+        check("⑨ 判别式 payment_settles_invoice 正向(Payment→Invoice)",
+              traverse(con, "Payment", "PAY-4", "payment_settles_invoice") == ["INV-1"],
+              str(traverse(con, "Payment", "PAY-4", "payment_settles_invoice")))
+        check("⑨ 判别式 payment_settles_invoice 反向(Invoice→Payments)",
+              traverse(con, "Invoice", "INV-1", "payment_settles_invoice") == ["PAY-4"],
+              str(traverse(con, "Invoice", "INV-1", "payment_settles_invoice")))
         # 未知 link 拒绝
         try:
             traverse(con, "Shipment", "SHP-1", "not_a_real_link")

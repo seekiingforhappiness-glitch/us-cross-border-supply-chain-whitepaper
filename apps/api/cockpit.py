@@ -3,7 +3,8 @@
 """驾驶舱 API 聚合层（B1，V8 决议③授权）——三只读端点，服务首屏三区。
 
 规格源：docs/superpowers/specs/2026-07-14-cockpit-screen-narrative.md「画面复述·二稿」
-（七掌控区【直投】项 = 需求清单；【候批】资金流项不做，V8-② 另行推进）。
+（七掌控区【直投】项 = 需求清单；【候批】资金流项 V8-② 已获批并于 G2 补齐——见钱区
+receivables/payables/net_cash_14d 三指标，docs/finance-manual-v0.11.md）。
 
   · GET /cockpit/vitals    公司体征带——七区体征块（钱/履约/客户/供应商/库存/AI/待拍板）
   · GET /cockpit/panorama  小全景分层图数据（五层节点 + 本体关系投影边 + 异常标注 + 迷你指标）
@@ -48,6 +49,13 @@ X-Role 脱敏（沿既有两层，见各端点）：
                  WHERE rule_id='R4' AND status='resolved'
   准入毛利率分布 cost_scenarios.gross_margin_rate 分桶（<0 / 0-10% / 10-20% / ≥20%）；
                  simworld 无 cost_scenarios 表 → null+reason
+  应收水位       SELECT count(*),sum(amount_usd) FROM payments WHERE direction='in'
+                 AND status='scheduled'；overdue 子集加 AND due_date<clock AND 未 paid
+                 （V8-② payments 表；缺表/世界时钟不可推导 → null+reason）
+  应付水位       同构，direction='out'；overdue 同口径（要付未付、其中已逾期）
+  净流出预警     R20 同口径：窗口(clock,clock+cash_watch_window_days] 内
+                 Σout.scheduled.amount_usd − Σin.scheduled.amount_usd；阈值=config.finance.
+                 cash_watch_threshold_usd（不硬编码，同 engine/finance_rules.py 单一来源）
 【履约 fulfillment】
   OTD           fulfilled 行中 实际到达≤promised_delivery_date 的比例；实际到达=该行所有
                  已到货件的最迟到达日；到达=shipments.ata，空则回退该货件最后一条
@@ -104,8 +112,10 @@ import json
 import sqlite3
 from collections import defaultdict
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
+import yaml
 from fastapi import APIRouter, Depends, Header, Query
 
 from agent.mcp_server import SensitiveFieldMasker
@@ -118,6 +128,15 @@ _COST_RULES = ("R4", "R5", "R6")                                  # 费用稽核
 _DELAY_RULES = ("R1", "R2", "R3")                                 # 延误规则族
 _LAYER_CAP = 40                                                    # 单层实体数上限，超过即聚合
 _TASK_FLOW_ACTIONS = ("AssignTask", "ProposeMitigation", "ApproveMitigation", "RejectMitigation")
+
+# 资金流阈值/窗口（V8-② F1，engine/finance_rules.py 同源单一来源，见 config/datagen.yaml
+# finance 段）：钱区 net_cash_14d 与 R20 风险规则读同一份配置，阈值改一处两边同步，不平行
+# 硬编码。cockpit 不 import main（避免循环导入，见文件尾路由工厂注释），故独立加载，同
+# apps/api/main.py::_DATAGEN_CFG 加载方式但互不依赖，仅同源同一份 yaml 文件。
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parent.parent
+with open(_REPO_ROOT / "config" / "datagen.yaml", encoding="utf-8") as _fh:
+    _FINANCE_CFG = yaml.safe_load(_fh)["finance"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -204,8 +223,31 @@ def _shift_date(day: str, delta_days: int) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 # 体征带七区 builder（每区 docstring = 该区指标的完整 SQL 口径，Daniel 回查锚点）
 # ═══════════════════════════════════════════════════════════════════════════
-def _zone_money(con, tables: set[str]) -> dict:
-    """钱区。四指标口径：
+def _payment_flow(con, direction: str, clock: str | None) -> dict:
+    """钱区应收/应付水位共用（direction='in'→应收、'out'→应付，G2/V8-②）：
+    SELECT count(*), sum(amount_usd) FROM payments WHERE direction=? AND status='scheduled'
+    ——「在外/待付的钱」。overdue 子集：同条件再加 AND due_date < clock AND (paid_date IS NULL
+    OR paid_date='')（"未 paid" 防御性双查——scheduled 行理论上 paid_date 恒空，但不单信
+    status 字段，沿 R19 同款防御写法，见 engine/finance_rules.py detect_finance_risks）。
+    clock 不可推导（该世界 risk_events/action_log 等账本皆空）→ overdue 单列 null+reason，
+    基础水位不因此整体挂起——两者是独立可知程度（红线 3：能算多少就如实给多少，不因一个
+    子指标缺前提而连坐全部）。"""
+    row = _one(con, "SELECT count(*) c, sum(amount_usd) v FROM payments "
+                    "WHERE direction=? AND status='scheduled'", (direction,))
+    out: dict[str, Any] = {"count": row["c"], "amount_usd": round(row["v"] or 0.0, 2)}
+    if clock:
+        od = _one(con, "SELECT count(*) c, sum(amount_usd) v FROM payments "
+                       "WHERE direction=? AND status='scheduled' AND due_date < ? "
+                       "AND (paid_date IS NULL OR paid_date='')", (direction, clock))
+        out["overdue"] = {"count": od["c"], "amount_usd": round(od["v"] or 0.0, 2)}
+    else:
+        out["overdue"] = _missing("世界时钟不可推导（缺 risk_events/action_log 等账本），"
+                                  "无法判定 due_date 是否已过 clock")
+    return out
+
+
+def _zone_money(con, tables: set[str], clock: str | None) -> dict:
+    """钱区。七指标口径：
     · 费用异常敞口(headline)：SELECT count(*), sum(affected_value_usd) FROM risk_events
       WHERE rule_id IN ('R4','R5','R6') AND status='open'——open 的超收/计划外/重复计费合计。
     · 在途货值：SELECT sum(sa.allocated_qty * declared) FROM shipments s
@@ -219,7 +261,19 @@ def _zone_money(con, tables: set[str]) -> dict:
       "系统帮你拦下的钱"；验证世界风险全 open → 真实 0，非缺数。
     · 准入毛利率分布：SELECT bucket(gross_margin_rate), count(*) FROM cost_scenarios
       GROUP BY 1，桶=<0（亏损）/0-10%/10-20%/≥20%；simworld 无 cost_scenarios 表 → null。
-    alert_count = open R4-R6 计数。trend：无逐日敞口快照表 → null（两世界同，红线 3）。"""
+    · 应收水位(receivables/G2/V8-②)：见 _payment_flow(direction='in') docstring——payments
+      direction='in' AND status='scheduled' 的 count+Σamount_usd，overdue 子集加
+      due_date<clock 且未 paid。
+    · 应付水位(payables)：_payment_flow(direction='out')，同构——「要付的钱」。
+    · 14 天净流出预警(net_cash_14d)：R20 同口径（engine/finance_rules.py detect_finance_risks
+      的 R20 分支，config.finance.cash_watch_window_days/cash_watch_threshold_usd 单一来源，
+      不平行硬编码）——窗口 (clock, clock+window_days] 内分别 SELECT sum(amount_usd) FROM
+      payments WHERE status='scheduled' AND due_date>clock AND due_date<=win_hi，
+      按 direction='out'/'in' 各查一次，net=out−in；breach=net>threshold。
+      receivables/payables/net_cash_14d 三者缺 payments 表 → 整块 null+reason；
+      overdue/net_cash_14d 另需 clock，clock 不可推导时单独 null+reason（基础水位仍照给）。
+    alert_count = open R4-R6 计数（不含新三指标——保持费用敞口语义，任务书 G2 明示不改）。
+    trend：无逐日敞口快照表 → null（两世界同，红线 3）。"""
     ph = ",".join("?" * len(_COST_RULES))
     row = _one(con, f"SELECT count(*) c, sum(affected_value_usd) v FROM risk_events "
                     f"WHERE rule_id IN ({ph}) AND status='open'", _COST_RULES)
@@ -265,6 +319,34 @@ def _zone_money(con, tables: set[str]) -> dict:
     else:
         margin = _missing("缺 cost_scenarios 表，准入/成本域未灌")
 
+    if "payments" in tables:
+        receivables = _payment_flow(con, "in", clock)
+        payables = _payment_flow(con, "out", clock)
+        if clock:
+            window_days = _FINANCE_CFG["cash_watch_window_days"]
+            threshold = _FINANCE_CFG["cash_watch_threshold_usd"]
+            win_hi = _shift_date(clock, window_days)
+            out_win = _one(con, "SELECT sum(amount_usd) v FROM payments WHERE direction='out' "
+                                "AND status='scheduled' AND due_date > ? AND due_date <= ?",
+                           (clock, win_hi))["v"] or 0.0
+            in_win = _one(con, "SELECT sum(amount_usd) v FROM payments WHERE direction='in' "
+                               "AND status='scheduled' AND due_date > ? AND due_date <= ?",
+                          (clock, win_hi))["v"] or 0.0
+            net = round(out_win - in_win, 2)
+            net_cash_14d: dict[str, Any] = {
+                "value_usd": net, "window_days": window_days,
+                "out_scheduled_usd": round(out_win, 2), "in_scheduled_usd": round(in_win, 2),
+                "threshold_usd": threshold, "breach": net > threshold,
+                "window": f"({clock}, {win_hi}]"}
+        else:
+            net_cash_14d = _missing("世界时钟不可推导（缺 risk_events/action_log 等账本），"
+                                    "无法圈定未来窗口")
+    else:
+        reason = "缺 payments 表，资金流域未灌（V8-② F1，datagen/finance.py 未跑）"
+        receivables = _missing(reason)
+        payables = _missing(reason)
+        net_cash_14d = _missing(reason)
+
     return {
         "zone": "money", "headline_label": "费用异常敞口",
         "headline_value": exposure, "headline_unit": "usd",
@@ -276,6 +358,9 @@ def _zone_money(con, tables: set[str]) -> dict:
             "intercepted_overbilling": {"value_usd": round(blocked["v"] or 0.0, 2),
                                         "resolved_r4_risks": blocked["c"]},
             "margin_distribution": margin,
+            "receivables": receivables,
+            "payables": payables,
+            "net_cash_14d": net_cash_14d,
         },
     }
 
@@ -1128,7 +1213,7 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
         payload = {
             "world": world, "clock": clock, "role": x_role,
             "zones": [
-                _zone_money(con, tables),
+                _zone_money(con, tables, clock),
                 _zone_fulfillment(con, tables, clock, world_is_sim),
                 _zone_customers(con, tables),
                 _zone_suppliers(con, tables),

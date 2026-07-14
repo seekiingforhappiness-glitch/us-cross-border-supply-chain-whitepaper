@@ -1,7 +1,7 @@
 """知识图谱呈现层测试：python3 -m app.test_knowledge_graph
 
 锁定八项保证（+一条 trace 附加验证）：
-① 类型级本体地图：DOT 非空、含 digraph 声明；34 个 ontology 对象类型全为节点；
+① 类型级本体地图：DOT 非空、含 digraph 声明；35 个 ontology 对象类型全为节点（F1 增 Payment）；
    object_relationships 登记表中出现的全部类型/DISTINCT 关系三元组都入图（实线），计数与 DOT 同源
 ② 实例级邻域：以设计案例船 SHP-2026-0099 为中心，1/2 跳可达性正确（已知链路在、3 跳外不在）
 ②b 三刀之一「收起重复扇出」：同关系同类型邻居 >4 收成「类型 ×N」聚合节点（计数与库一致、
@@ -68,7 +68,7 @@ def main():
     onto_types = [o["type"] for o in onto["objects"]]
 
     # ===== ① 类型级本体地图 =====
-    print("== ① 本体地图（类型级）：34 类型全节点 + 登记表关系全入图 ==")
+    print("== ① 本体地图（类型级）：35 类型全节点 + 登记表关系全入图 ==")
     con = _conn()
     reg = con.execute("""SELECT DISTINCT source_type, target_type, relationship_type
                          FROM object_relationships""").fetchall()
@@ -76,9 +76,9 @@ def main():
     m = build_ontology_map_dot(con)
     dot = m["dot"]
     check("① DOT 非空且含 digraph 声明", bool(dot) and "digraph" in dot)
-    check(f"① 节点数 = 34 = ontology 对象类型数（登记表类型 {len(reg_types)} 类为其子集）",
-          m["nodes"] == len(onto_types) == 34, f"nodes={m['nodes']}")
-    check("① 34 个对象类型全部出现在 DOT 节点中",
+    check(f"① 节点数 = 35 = ontology 对象类型数（登记表类型 {len(reg_types)} 类为其子集，F1 增 Payment）",
+          m["nodes"] == len(onto_types) == 35, f"nodes={m['nodes']}")
+    check("① 35 个对象类型全部出现在 DOT 节点中",
           all(f'"{t}"' in dot for t in onto_types),
           str([t for t in onto_types if f'"{t}"' not in dot]))
     check("① object_relationships 中出现的类型全部为节点",
