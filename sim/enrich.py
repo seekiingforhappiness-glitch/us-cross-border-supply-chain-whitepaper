@@ -267,6 +267,10 @@ def _finance_ai(world, cfg, rng):
     overdue.sort(key=lambda cp: (cp[0], cp[1]["payment_id"]))
 
     for cross, p in overdue:
+        # G4 核实（未改值，如实留痕）：sim 写 "propose_collection"；真实 app.actions.propose_collection()
+        # 对同一 R19 催收场景写的是 "collect"（app/test_finance_loop.py:122 断言）。V11 判定本值"本就与
+        # 真实动作名一致"经核实不成立，但本任务范围内不改 app/actions.py、也未被要求改此值，故保留、
+        # 本体枚举同时收编 propose_collection 与 collect 两值——细节见 ontology Task.proposed_action 描述。
         _emit_finance_risk(world, "R19", "overdue_receivable", cross, p["amount_usd"],
                            f"逾期应收：客户 {p['counterparty_id']} 订单 {p['ref_id']} "
                            f"${round(p['amount_usd'], 2)} 逾期 {(as_of - _d(p['due_date'])).days} 天",
@@ -276,6 +280,8 @@ def _finance_ai(world, cfg, rng):
                            f"催收可回收 ${round(p['amount_usd'], 2)}", rng)
 
     for src, dup in world.get("_r21_dups", []):              # 重复付款 → R21，as_of 复核出
+        # G4 核实：R21 目前在 app/actions.py 无任何已实现的处置动作（有检测 engine/finance_rules.py，
+        # 无处置）——"reconcile_payment" 不与任何真实值冲突，是这条处置路径的首次实现，本体如实收编。
         _emit_finance_risk(world, "R21", "payment_anomaly", as_of, dup["amount_usd"],
                            f"付款异常：{dup['ref_type']} {dup['ref_id']} 出现重复付款"
                            f"（${round(dup['amount_usd'], 2)} 二次结清）",

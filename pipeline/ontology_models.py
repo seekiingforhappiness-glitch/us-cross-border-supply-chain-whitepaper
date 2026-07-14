@@ -1,4 +1,4 @@
-# GENERATED FROM ontology v0.11.1 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
+# GENERATED FROM ontology v0.11.2 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
 # -*- coding: utf-8 -*-
 """桥3 结构生成产物：本体 34 对象的 Pydantic 模型（数据契约校验用）。
 
@@ -201,7 +201,7 @@ class Task(_Base):
     task_id: str
     risk_event_id: str
     title: str
-    assignee_role: Literal['ops', 'cs', 'manager']
+    assignee_role: Literal['ops', 'cs', 'manager', 'finance']
     priority: Literal['P1', 'P2', 'P3']
     due_at: str
     assignee_user_id: Optional[str] = None
@@ -209,7 +209,7 @@ class Task(_Base):
     sla_state: Optional[Literal['open', 'due_today', 'overdue']] = None
     escalation_level: Optional[int] = None
     policy_version: Optional[str] = None
-    proposed_action: Optional[Literal['expedite', 'reschedule', 'accept_delay', 'dispute', 'accept_charge', 'rebill_customer', 'expedite_po', 'raise_supplier_claim', 'dispute_supplier_invoice', 'accept_receipt_variance']] = None
+    proposed_action: Optional[Literal['expedite', 'reschedule', 'accept_delay', 'dispute', 'accept_charge', 'rebill_customer', 'expedite_po', 'raise_supplier_claim', 'dispute_supplier_invoice', 'accept_receipt_variance', 'escalate_prepayment', 'hold_balance_payment', 'request_supplier_docs', 'suspend_supplier', 'suggest_substitution', 'adjust_inventory', 'escalate_replenishment', 'initiate_second_source', 'block_non_po_payment', 'backfill_po', 'collect', 'chase_docs', 'propose_collection', 'reconcile_payment', 'escalate']] = None
     proposal_params: Optional[str] = None
     approval_status: Optional[Literal['pending', 'approved', 'rejected']] = None
     approved_by_role: Optional[str] = None

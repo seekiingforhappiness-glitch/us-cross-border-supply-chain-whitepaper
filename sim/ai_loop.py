@@ -23,8 +23,8 @@ AI_ACTOR = "sim-ai"
 APPROVER = "sim-approver-01"
 PRIORITY = {"critical": "P1", "high": "P2", "medium": "P3"}
 RANK = {"adopted": 0, "modified": 1, "rejected": 2}
-ACTION_LABELS = {"expedite": "加急", "accept_delay": "接受延误", "dispute_invoice": "争议账单",
-                 "expedite_replenish": "紧急补货", "chase_docs": "补件催办", "escalate": "升级"}
+ACTION_LABELS = {"expedite": "加急", "accept_delay": "接受延误", "dispute": "争议账单",
+                 "escalate_replenishment": "紧急补货", "chase_docs": "补件催办", "escalate": "升级"}
 DECISION_LABELS = {"adopted": "采纳", "modified": "修改后采纳", "rejected": "拒绝"}
 QUALITY_ZH = {"effective": "有效", "partial": "部分有效", "ineffective": "无效"}
 
@@ -137,9 +137,14 @@ def _economics(world, c, rng):
                 {"verdict": f"接受延误：加急成本 ${expedite_cost} ≥ 收益 ${benefit}",
                  "expedite_cost_usd": expedite_cost, "benefit_usd": benefit,
                  "margin_at_risk_usd": margin_at_risk, "detention_avoided_usd": detention_avoid})
-    if rule in ("R4", "R5", "R6"):                      # 费用异常 → 争议账单（可追回）
-        return ("dispute_invoice", {"disputed_amount_usd": c["affected_value_usd"],
-                                    "invoice_id": c["anchor_id"]},
+    if rule in ("R4", "R5", "R6"):                      # 费用异常 → 争议账单（可追回；G4 核实：
+                                                          # 这三条锚 Invoice/物流费票，真实同域动作是
+                                                          # cost-manual v0.4 的 "dispute"（写 invoices.status），
+                                                          # 非 P1 采购域 "dispute_supplier_invoice"（写
+                                                          # supplier_invoices，锚 PoLine/Supplier，域不同）——
+                                                          # 沿用真实同域动作名，非 V11 原提案词）
+        return ("dispute", {"disputed_amount_usd": c["affected_value_usd"],
+                            "invoice_id": c["anchor_id"]},
                 {"verdict": f"争议可追回 ${c['affected_value_usd']}",
                  "recoverable_usd": c["affected_value_usd"], "cost_usd": 0})
     if rule == "R16":                                   # 断货 → 紧急补货 vs 升级
@@ -148,12 +153,15 @@ def _economics(world, c, rng):
         stockout_loss = round(max(gap, 0) * ec["stockout_penalty_per_unit_usd"], 2)
         expedite_cost = round(ec["expedite_cost_per_container_usd"] * 0.4, 2)  # 空派/调拨近似
         if stockout_loss > expedite_cost:
-            return ("expedite_replenish", {"units": max(gap, 0), "est_cost_usd": expedite_cost},
+            return ("escalate_replenishment", {"units": max(gap, 0), "est_cost_usd": expedite_cost},
                     {"verdict": f"紧急补货划算：断货损失 ${stockout_loss} > 成本 ${expedite_cost}",
                      "stockout_loss_usd": stockout_loss, "expedite_cost_usd": expedite_cost})
         return ("escalate", {}, {"verdict": f"升级人工：损失 ${stockout_loss} ≤ 成本 ${expedite_cost}",
                                  "stockout_loss_usd": stockout_loss, "expedite_cost_usd": expedite_cost})
-    # R2 单证 → 补件催办
+    # R2 单证 → 补件催办（G4 核实：清缺 shipment.missing_docs，锚 Shipment；真实 app.actions
+    # 无该域专属处置动作——R2 目前复用 reschedule/expedite/accept_delay 通用三选一（同 R1/R3），
+    # "request_supplier_docs" 是 P2 供应商资质域动作（写 supplier_qualifications，锚 Supplier，
+    # 域不同，勿借用）。无对应真实词可对齐，保留 sim 自有词，本体如实收编）
     return ("chase_docs", {"docs": world["shipments"][c["shipment_id"]]["missing_docs"]},
             {"verdict": f"补件避免清关滞留，涉险货值 ${c['affected_value_usd']}",
              "value_at_risk_usd": c["affected_value_usd"], "cost_usd": 0})
@@ -195,14 +203,14 @@ def _apply_disposition(world, task, c, day):
     if action == "expedite":                            # R1/R3：提前到港及后续（改计划，emit 前生效）
         pull = params.get("pull_in_days", 5)
         return _pull_in_shipment(world, c["shipment_id"], pull, day)
-    if action == "expedite_replenish":                  # R16：紧急补货，可用抬到安全库存之上
+    if action == "escalate_replenishment":               # R16：紧急补货，可用抬到安全库存之上
         pos = _position(world, c["anchor_id"])
         if pos:
             before = pos["available_qty"]
             pos["available_qty"] = pos["safety_stock"] + max(params.get("units", 0), 1)
             return f"库存 {pos['inventory_position_id']} 可用 {before}→{pos['available_qty']}（紧急补货）"
         return "position 不存在"
-    if action == "dispute_invoice":                     # R4/R5/R6：账单转 disputed
+    if action == "dispute":                              # R4/R5/R6：账单转 disputed
         for inv in world["invoices"]:
             if inv["invoice_id"] == c["anchor_id"]:
                 inv["status"] = "disputed"

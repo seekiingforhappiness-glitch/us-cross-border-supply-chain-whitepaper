@@ -331,6 +331,16 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V11 勘误（2026-07-14，G4 执行层对照代码路径证伪）**：V11 原文三个字面重命名目标中两个
+语义错误——①dispute_invoice 的真实对应是费用域 `dispute`（写 invoices.status，cost-manual
+v0.4），**非**采购域 dispute_supplier_invoice（写 supplier_invoices，P1 R7-R10，不同对象）；
+②chase_docs（R2 补单证）**无真实对应动作**（R2 现由通用改期/加急/接受三动作处置），诚实保留
+sim-only 词而不借错词；③escalate_replenishment 核验正确照改。枚举按 grep 全集收编 25 值+
+assignee_role 补 finance——后者顺带治愈真实世界预存 bug（seed_demo_ops 的 6 条 finance 任务
+一直静默校验失败，seed 路径绕过 build 校验门）。遗留小项：propose_collection（sim/本体）vs
+`collect`（app/actions.py:380 实写值，测试锁定）命名重复候后续统一。教训入账：**决议里的
+映射假设必须对照代码行为核验，名字相似≠语义等价**（规则5：自信的具体≠真实）。
+
 **V10 补记 — 走廊图升真地图 + AI 工作流用户视角重构（2026-07-14，Daniel 看 B4 后原话：
 "这个是不是用地图更合适？右边的工作流很难懂，没有从用户的角度进行优化"）。**
 裁断：①**采纳地图**——调研反对的是"地图当驾驶舱中央"，履约 tile 内视图恰是物流追踪场景

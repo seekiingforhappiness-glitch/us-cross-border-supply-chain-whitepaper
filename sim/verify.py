@@ -280,7 +280,7 @@ def main():
           f"{len(eta_advanced)}/{len(exped)} 加急船 ETA 已提前")
     disputed = [i for i in invs if i["status"] == "disputed"]
     check("争议处置真实改变世界（发票转 disputed）", len(disputed) >= 1, f"{len(disputed)} 张")
-    repl = [t for t in approved if t["proposed_action"] == "expedite_replenish"]
+    repl = [t for t in approved if t["proposed_action"] == "escalate_replenishment"]
     check("断货处置真实改变世界（紧急补货已批准执行）", len(repl) >= 1, f"{len(repl)} 例")
     # 抽 3 条已闭环先例：四件套（情境+提案+引用+决策人）+ 结果回填 + 质量标签
     closed = sorted([m for m in mem if m["closed_at"]], key=lambda m: m["memory_id"])
@@ -500,8 +500,8 @@ PORT_CN = {"CNYTN": "盐田", "CNSHK": "蛇口", "CNNGB": "宁波", "USLAX": "�
 EVT_CN = {"booking_confirmed": "订舱确认", "departed": "离港", "transshipment": "中转换船",
           "arrived": "到港", "customs_filed": "报关申报", "customs_hold": "查验滞留",
           "customs_released": "海关放行", "delivered": "妥投签收"}
-ACTION_CN = {"expedite": "加急", "accept_delay": "接受延误", "dispute_invoice": "争议账单",
-             "expedite_replenish": "紧急补货", "chase_docs": "补件催办", "escalate": "升级人工"}
+ACTION_CN = {"expedite": "加急", "accept_delay": "接受延误", "dispute": "争议账单",
+             "escalate_replenishment": "紧急补货", "chase_docs": "补件催办", "escalate": "升级人工"}
 FAMILY_CN = {"delay": "延误", "inspection": "查验", "fee": "费用", "document": "单证",
              "warehouse": "仓储", "chain": "连锁", "tail": "尾部"}
 
