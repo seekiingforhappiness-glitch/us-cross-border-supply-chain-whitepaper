@@ -52,6 +52,9 @@ ONTOLOGY_DB=data/simworld.sqlite uvicorn apps.api.main:app --port 8100
 | GET  | `/objects/{type}/{id}` | 单对象；经 M3 Pydantic 模型 (`pipeline.ontology_models.MODEL_BY_TYPE`) 校验语义；不存在返回 404 |
 | GET  | `/objects/{type}/{id}/links/{link}` | 调 `pipeline.ontology_runtime.traverse` 同源遍历；`declared_only` 关系或未知 `link` 返回 422（人话消息） |
 | POST | `/actions/{name}` | 仅 6 个 `exposed_as_tool=true` 动作可调（`AssignTask` / `ProposeMitigation` / `CreateAdmissionCase` / `RunCompliancePrecheck` / `BuildLogisticsPlan` / `CalculateCostScenario`，PascalCase 或 snake_case 均可）；其余（含冻结区 4 动作）404 |
+| GET  | `/cockpit/vitals` | 驾驶舱公司体征带（B1）：七掌控区体征块（钱/履约/客户/供应商/库存/AI/待拍板），每区 `{zone, headline_*, trend, alert_count, detail}`；缺域指标 `{"value": null, "reason": …}` 如实标注；trend 无历史支撑一律 null。逐指标 SQL 口径见 `apps/api/cockpit.py` 模块 docstring 总表 |
+| GET  | `/cockpit/panorama` | 小全景分层图数据：五层节点（customers/orders/shipments/suppliers/warehouses，单层 >40 实体自动聚合分组）+ 本体关系投影边 + open 风险锚定标注 + 迷你指标（航线在途货值、仓库击穿计数） |
+| GET  | `/cockpit/ai-flow` | AI 工作流时间线：`llm_calls` / `action_log` 中 `actor='ai-agent'` 行 / 提案状态流转 /（simworld）`sim_ai_activity` 留痕（带 `sim: true` 徽标）按时间倒序合并；`?limit=` 默认 50（1..500） |
 
 ## 鉴权（原型级）
 
@@ -69,10 +72,16 @@ ONTOLOGY_DB=data/simworld.sqlite uvicorn apps.api.main:app --port 8100
 - `POST /actions/{name}`：`app.actions.connect()` 的连接管理（该函数已 `row_factory=Row`，
   与各动作函数期望一致），写入/事务/审计全部沿用 app 层既有实现。
 
+`/cockpit/*` 三端点全部 `mode=ro` 只读；`X-Role` 脱敏两层——本体 `sensitiveFieldRules`
+具名字段（同五路由）+ 金额类聚合掩码（与 UI `COST_FIELDS` 同规：非 `finance`/`manager`
+角色看不到 `_usd` 后缀聚合金额与毛利分布，计数/比率照常可见）。双世界口径：`ONTOLOGY_DB`
+指向 `data/simworld.sqlite` 时，该世界未灌的域（采购收货/准入/`llm_calls` 审计等）逐指标
+返回 `null + reason`，端点不 500。
+
 ## 测试
 
 ```bash
-python3 -m pytest apps/api/test_api.py -v
+python3 -m pytest apps/api/ -v      # test_api.py（五路由 18 例）+ test_cockpit.py（驾驶舱 16 例）
 ```
 
 不需要起真 uvicorn 服务——`fastapi.testclient.TestClient` 直接驱动 ASGI app；数据库路径经
@@ -83,5 +92,6 @@ python3 -m pytest apps/api/test_api.py -v
 ## 边界
 
 不改 `agent/` / `pipeline/`（只 import）、不改 `app/` 既有动作函数（只 import 调用）、
-不碰真值数据/`ontology/*.json`/`poc/`。`apps/api/` 内仅本文件 + `main.py` + `test_api.py`
-三个文件，`apps/` 目录本身是既有目录，未新增顶层结构。
+不碰真值数据/`ontology/*.json`/`poc/`。`apps/api/` 内为本文件 + `main.py` + `test_api.py`
++ `cockpit.py`（B1 驾驶舱聚合层，`main.py` 尾部挂载，不反向 import）+ `test_cockpit.py`
+五个文件，`apps/` 目录本身是既有目录，未新增顶层结构。

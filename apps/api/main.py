@@ -326,3 +326,13 @@ def post_action(name: str, body: dict = Body(default={}),
         raise HTTPException(
             403, detail=result.get("error") or f"角色 '{x_role}' 无权执行 '{action['name']}'（已记录审计）")
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 驾驶舱聚合层（B1，V8 决议③）：GET /cockpit/{vitals,panorama,ai-flow} 三只读端点。
+# 文件尾挂载 + 工厂注入本模块 get_db_path/get_ro_connection/_infer_world——cockpit 不反向
+# import main（零循环导入），且测试对 get_db_path 的 dependency_overrides 对 /cockpit/* 同样生效。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.cockpit import build_cockpit_router                        # noqa: E402
+
+app.include_router(build_cockpit_router(get_db_path, get_ro_connection, _infer_world))
