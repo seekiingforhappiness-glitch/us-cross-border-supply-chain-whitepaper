@@ -15,7 +15,7 @@ from pathlib import Path
 OBJECT_DDL = {
     "suppliers": """(supplier_id TEXT PRIMARY KEY, supplier_name TEXT, city TEXT,
         lead_time_days INTEGER, factory_audit_status TEXT, compliance_docs_status TEXT,
-        uflpa_risk_flag TEXT, origin_evidence_status TEXT)""",
+        uflpa_risk_flag TEXT, origin_evidence_status TEXT, payment_terms_days INTEGER)""",
     "skus": """(sku_id TEXT PRIMARY KEY, sku_name TEXT, category TEXT, unit_price_usd REAL,
         supplier_id TEXT, sku_status TEXT, declared_value_usd TEXT, package_weight_kg TEXT,
         package_l_cm TEXT, package_w_cm TEXT, package_h_cm TEXT, battery_flag TEXT,
@@ -54,6 +54,30 @@ OBJECT_DDL = {
     "inventory_positions": """(inventory_position_id TEXT PRIMARY KEY, sku_id TEXT,
         warehouse_id TEXT, available_qty INTEGER, reserved_qty INTEGER, in_transit_qty INTEGER,
         quarantine_qty INTEGER, safety_stock INTEGER, as_of_date TEXT)""",
+    # F2 补灌域（列集严格对齐本体 0.11.0 / build_ontology 表——驾驶舱直接读点亮体征带）
+    "goods_receipts": """(grn_id TEXT PRIMARY KEY, po_id TEXT, received_date TEXT, status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "goods_receipt_lines": """(grn_line_id TEXT PRIMARY KEY, grn_id TEXT, po_line_id TEXT,
+        received_qty INTEGER, accepted_qty INTEGER, rejected_qty INTEGER, qc_status TEXT,
+        defect_ppm INTEGER, received_date TEXT, as_of_date TEXT, created_at TEXT)""",
+    "supplier_invoices": """(supplier_invoice_id TEXT PRIMARY KEY, supplier_id TEXT, po_id TEXT,
+        vendor_invoice_no TEXT, issue_date TEXT, currency TEXT, total_usd REAL, status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "admission_cases": """(admission_case_id TEXT PRIMARY KEY, case_title TEXT, customer_id TEXT,
+        sku_id TEXT, request_type TEXT, incoterm_candidate TEXT, target_launch_date TEXT,
+        monthly_order_estimate INTEGER, risk_level TEXT, status TEXT, decision TEXT,
+        decision_reason TEXT, conditions TEXT)""",
+    "cost_scenarios": """(cost_scenario_id TEXT PRIMARY KEY, logistics_plan_id TEXT,
+        scenario_type TEXT, quote_price_usd REAL, product_cost_usd REAL, first_mile_cost_usd REAL,
+        international_freight_usd REAL, duty_tax_usd REAL, customs_brokerage_usd REAL,
+        warehouse_cost_usd REAL, last_mile_cost_usd REAL, returns_allowance_usd REAL,
+        risk_buffer_usd REAL, gross_margin_usd REAL, gross_margin_rate REAL)""",
+    "cycle_counts": """(cycle_count_id TEXT PRIMARY KEY, inventory_position_id TEXT,
+        warehouse_id TEXT, system_qty INTEGER, counted_qty INTEGER, variance INTEGER, status TEXT,
+        as_of_date TEXT)""",
+    "payments": """(payment_id TEXT PRIMARY KEY, direction TEXT, counterparty_type TEXT,
+        counterparty_id TEXT, ref_type TEXT, ref_id TEXT, amount_usd REAL, due_date TEXT,
+        paid_date TEXT, status TEXT, as_of_date TEXT, created_at TEXT)""",
 }
 
 # sim 专属表：世界谱系参数 / 性格模型 / 货代-船绑定 / 自审计——不污染对象层
@@ -159,9 +183,11 @@ def _rows(world):
     t["suppliers"] = [{k: world["suppliers"][sid][k] for k in
                        ("supplier_id", "supplier_name", "city", "lead_time_days",
                         "factory_audit_status", "compliance_docs_status", "uflpa_risk_flag",
-                        "origin_evidence_status")} for sid in sorted(world["suppliers"])]
+                        "origin_evidence_status", "payment_terms_days")}
+                      for sid in sorted(world["suppliers"])]
     t["skus"] = [{"sku_id": s["sku_id"], "sku_name": s["sku_name"], "category": s["category"],
-                  "unit_price_usd": s["unit_price_usd"], "supplier_id": s["supplier_id"],
+                  "unit_price_usd": s["unit_price_usd"],
+                  "declared_value_usd": s["declared_value_usd"], "supplier_id": s["supplier_id"],
                   "sku_status": s["sku_status"]}
                  for s in (world["skus"][k] for k in sorted(world["skus"]))]
     t["customers"] = [{k: world["customers"][cid][k] for k in
@@ -214,6 +240,18 @@ def _rows(world):
                         "capacity_units": world["warehouses"][k]["capacity_units"],
                         "as_of_date": as_of} for k in sorted(world["warehouses"])]
     t["inventory_positions"] = _inventory_snapshot(world)
+    # F2 补灌域（enrich.py 派生填入 world[...]；确定性排序，列集对齐本体）
+    t["goods_receipts"] = sorted(world.get("goods_receipts", []), key=lambda r: r["grn_id"])
+    t["goods_receipt_lines"] = sorted(world.get("goods_receipt_lines", []),
+                                      key=lambda r: r["grn_line_id"])
+    t["supplier_invoices"] = sorted(world.get("supplier_invoices", []),
+                                    key=lambda r: r["supplier_invoice_id"])
+    t["admission_cases"] = sorted(world.get("admission_cases", []),
+                                  key=lambda r: r["admission_case_id"])
+    t["cost_scenarios"] = sorted(world.get("cost_scenarios", []),
+                                 key=lambda r: r["cost_scenario_id"])
+    t["cycle_counts"] = sorted(world.get("cycle_counts", []), key=lambda r: r["cycle_count_id"])
+    t["payments"] = sorted(world.get("payments", []), key=lambda r: r["payment_id"])
     return t
 
 

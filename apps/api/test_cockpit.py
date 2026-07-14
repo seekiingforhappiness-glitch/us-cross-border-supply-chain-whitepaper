@@ -369,19 +369,35 @@ def test_simworld_vitals_not_500_with_honest_reasons(sim_world):
     assert data["world"] == "simulation"
     assert [z["zone"] for z in data["zones"]] == ZONE_ORDER
     zones = {z["zone"]: z for z in data["zones"]}
-    # 缺域指标必须 value=null + reason 如实标注（采购/准入/审计域未灌）
-    for zone, path in [("money", "margin_distribution"),
-                       ("suppliers", "delivery_hit_rate"), ("suppliers", "defect_top"),
-                       ("inventory", "count_variance"), ("ai", "llm_calls"),
-                       ("decisions", "overdue_tasks")]:
+    # 缺域指标必须 value=null + reason 如实标注（F2 补灌后仍合法缺的域：llm_calls/任务 due_at）
+    for zone, path in [("ai", "llm_calls"), ("decisions", "overdue_tasks")]:
         metric = zones[zone]["detail"][path]
         assert metric["value"] is None and "该世界无此域数据" in metric["reason"], (zone, path, metric)
-    # 在途货值：simworld skus 申报价值全空（现查确认后断言 null + 如实 reason）
+    # F2 补灌域：数据在库 ⇒ 指标必须点亮（非 null 包装、直给数据体）且与现查一致
+    # （动态跟随库内现实，不硬编码补灌进度；点亮态形状=数据体，缺数态形状={value:null,reason}）
+    def lit(zone, path):
+        m = zones[zone]["detail"][path]
+        assert m.get("value", "LIT") is not None, (zone, path, "应点亮却是 null 包装", m)
+        return m
+    if scon.execute("SELECT count(*) FROM cost_scenarios").fetchone()[0] > 0:
+        md = lit("money", "margin_distribution")
+        assert md["scenarios_total"] == scon.execute(
+            "SELECT count(*) FROM cost_scenarios").fetchone()[0]
+    if scon.execute("SELECT count(*) FROM goods_receipts").fetchone()[0] > 0:
+        assert 0 < lit("suppliers", "delivery_hit_rate")["rate"] <= 1
+        assert len(lit("suppliers", "defect_top")["top"]) > 0
+    cc = scon.execute("SELECT count(*) FROM cycle_counts WHERE variance != 0").fetchone()[0]
+    if cc:
+        assert lit("inventory", "count_variance")["count"] == cc
+    # 在途货值：申报价值有值 ⇒ 点亮为正数；全空 ⇒ null + 如实 reason（双态都守）
     unvalued = scon.execute("SELECT count(*) FROM skus WHERE declared_value_usd IS NULL "
                             "OR declared_value_usd=''").fetchone()[0]
-    assert unvalued == scon.execute("SELECT count(*) FROM skus").fetchone()[0]
+    total_skus = scon.execute("SELECT count(*) FROM skus").fetchone()[0]
     itv = zones["money"]["detail"]["in_transit_value"]
-    assert itv["value"] is None and "申报价值" in itv["reason"]
+    if unvalued == total_skus:
+        assert itv["value"] is None and "申报价值" in itv["reason"]
+    else:
+        assert itv["value_usd"] > 0 and itv["rows_without_declared_value"] == 0
     # 有数指标照常计算并与 sim 副本现查一致
     row = scon.execute("SELECT count(*) c, round(sum(affected_value_usd),2) v FROM risk_events "
                        "WHERE rule_id IN ('R4','R5','R6') AND status='open'").fetchone()

@@ -17,12 +17,14 @@ import yaml
 from . import world_def as WD
 from . import generators as G
 from . import ai_loop as AI
+from . import enrich as EN
 from .clock import SimClock
 from .store import write_simworld
 
-# S2 追加 anomalies/ai 子流（附在末尾——既有 6 条子流 seed 不变，anomalies.enabled=false 时
-# 这两条不被抽取 → 正常世界逐字节等同 S1）。
-STREAMS = ("world", "orders", "booking", "transit", "invoice", "inventory", "anomalies", "ai")
+# S2 追加 anomalies/ai 子流；F2 追加 procurement/admission/finance 子流（均附在末尾——
+# 既有子流 seed 全不变，故 S1 世界（anomalies.enabled=false）与 S2 世界逐字节不受补灌扰动）。
+STREAMS = ("world", "orders", "booking", "transit", "invoice", "inventory", "anomalies", "ai",
+           "procurement", "admission", "finance")
 
 
 def make_streams(seed):
@@ -49,6 +51,7 @@ def build(cfg):
             AI.run_cadence(world, day, streams)
         ticks += 1
     world["_ticks"] = ticks
+    EN.enrich(world, cfg, streams)         # F2：回填后补灌采购/准入/盘点/资金流域（独立子流）
     return world
 
 
@@ -71,6 +74,14 @@ def volume_stats(world):
         "risk_events": len(world.get("risk_events", {})), "tasks": len(world.get("tasks", {})),
         "precedents": len(mem), "precedents_closed": sum(1 for m in mem if m["closed_at"]),
         "ai_activity": len(world.get("ai_activity", [])),
+        # F2 补灌域
+        "goods_receipts": len(world.get("goods_receipts", [])),
+        "goods_receipt_lines": len(world.get("goods_receipt_lines", [])),
+        "supplier_invoices": len(world.get("supplier_invoices", [])),
+        "admission_cases": len(world.get("admission_cases", [])),
+        "cost_scenarios": len(world.get("cost_scenarios", [])),
+        "cycle_counts": len(world.get("cycle_counts", [])),
+        "payments": len(world.get("payments", [])),
     }
 
 
@@ -121,6 +132,9 @@ def main():
           f"仓储{prim['warehouse']}）")
     print(f"   AI 回路：风险 {vs['risk_events']} / 提案 {vs['tasks']}（批{ft['approved']}/驳{ft['rejected']}）"
           f" / 先例 {vs['precedents']}（已闭环回填 {vs['precedents_closed']}）/ 活动流 {vs['ai_activity']}")
+    print(f"   F2 补灌：收货 {vs['goods_receipts']}/行 {vs['goods_receipt_lines']} / 供票 "
+          f"{vs['supplier_invoices']} / 准入 {vs['admission_cases']}/成本情景 {vs['cost_scenarios']} / "
+          f"盘点 {vs['cycle_counts']} / 付款 {vs['payments']}")
     print(f"   落库表：{len(counts)} 张（对象层 + sim 专属）；simworld.sqlite 大小 "
           f"{Path(cfg['output']['sqlite_path']).stat().st_size // 1024} KB")
 
