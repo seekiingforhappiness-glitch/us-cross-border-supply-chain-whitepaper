@@ -1,6 +1,6 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-14（V5 API 层收官：桥2+桥3+MCP 正式化五单全交付，两张皮 15→0）
+更新时间：2026-07-14（V8 三线交付：驾驶舱首屏 B1+B2 可看、资金流 F1 全链 P/R=1.000、候 Daniel 画面意见）
 
 ## 当前位置
 
@@ -57,8 +57,22 @@
 > 端到端实弹：模型查 RSK-0001→真实 assign_task→TSK 落库+审计尾行 ai-agent/ok+llm_calls +2，
 > 模型自述 maker-checker 边界。执行层于验收阶段 watchdog 停滞，主会话接手验收收口（改动无缺陷）。
 > **裁3=了解**：新通道维持默认，结案。
-> **驾驶舱已启动**：画面复述候 Daniel 对齐（docs/superpowers/specs/2026-07-14-cockpit-screen-
-> narrative.md，六段画面+有意不做清单——回"对"即开工画面级实现）。**地基已交付（51fd4b8）**：
+> **V8 三线交付（2026-07-14，画面二稿三裁决+资金流四问后）**：
+> **B1 聚合层（698228a）**：/cockpit/vitals 七区体征+panorama 分层图+ai-flow 时间线，指标 SQL
+> 口径全入 docstring，双世界如实缺数、趋势不编造；34 用例+抽查逐分一致。
+> **B2 首屏画面（ebd583d）**：体征带七枚真数字块+五层 SVG 活图（512 边/异常脉动/影响走廊 56 节点
+> 点亮）+AI 工作流 60 卡（SIM 徽标/质量标签/最新呼吸）+协作流预留 tab+manager/ops 切换掩码；
+> 零新依赖、控制台零报错、主会话浏览器亲验。**查看**：`ONTOLOGY_DB=data/simworld.sqlite uvicorn
+> apps.api.main:app --port 8100` + `cd apps/cockpit && npm run dev` → http://localhost:5174。
+> **F1 资金流（7a79c71）**：本体 0.11.0（35 对象/56 关系/32 动作/21 规则）——Payment 对象+
+> 3 判别式关系+RecordPayment 转正+A26 ProposeCollection（完整处置器 maker-checker）+R19-R21
+> 全 P/R=1.000+真值第 9 表；EXPECTED 基线仅追加两键；288 注入扩资金流工具全绿；三座桥自动跟随
+> （API 34 用例/MCP 暴露集 7 写零手改）。R20 阈值 $500K 代定候调。
+> **候 Daniel**：看驾驶舱首屏给画面意见（三稿或直接迭代）。**排队 F2/B3**：sim 补灌资金流+S3
+> 补灌采购/准入域（体征带"无数据"格点亮）+驾驶舱钱区应收应付回填+panorama 角色粒度参数+
+> traverse 判别式 reverse+RiskEvent 枚举清理。
+> 画面复述历史：一稿+二稿并存于 docs/superpowers/specs/2026-07-14-cockpit-screen-narrative.md。
+> **地基已交付（51fd4b8）**：
 > apps/cockpit React 骨架（Vite+React18+TS 照透视镜栈零新依赖，三占位视图，连接状态条全字段来自
 > /ontology）+ apps/api 双世界数据源（ONTOLOGY_DB 环境变量切 verification/simulation，18 用例）；
 > CORS 经 vite 同源反代解决（独立静态部署时需补 CORS 中间件，README 挂账）。
