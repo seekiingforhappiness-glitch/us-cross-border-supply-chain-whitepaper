@@ -15,21 +15,21 @@ import type { Lane } from "./views/corridorModel";
 import ImpactPanel, { type ImpactFocus } from "./views/ImpactPanel";
 import LaneQueue from "./views/LaneQueue";
 import ObjectCard from "./views/ObjectCard";
-import RouteCorridor from "./views/RouteCorridor";
+import RouteMap from "./views/RouteMap";
 import ZoneQueue from "./views/ZoneQueue";
 import type { DrillTarget } from "./views/zoneModel";
 
 // 驾驶舱首屏编排（V10 方案 C，Daniel 亲批）：顶栏 + 主舞台（中央 60% · 右栏 AI 工作流 40%）。
 // 中央四态（下钻四段式：总览→队列→详情→动作）：
-//   ① wall     七区指挥墙（默认首屏，体征带的放大态；顶部体征带已移除避免同信息两处）
-//   ② zone     某区工作队列（点区卡进入，面包屑返回）
-//   ③ corridor 航线走廊图（履约卡「航线视图」切入，SAP tile 内切换范式）
-//   ④ lane     某航线异常队列（点走廊弧线进入）
+//   ① wall  七区指挥墙（默认首屏，体征带的放大态；顶部体征带已移除避免同信息两处）
+//   ② zone  某区工作队列（点区卡进入，面包屑返回）
+//   ③ map   履约航线夜景地图（履约卡「航线视图」切入，SAP tile 内切换范式；V10 补记：走廊图升真地图）
+//   ④ lane  某航线异常队列（点地图弧线进入）
 // 队列条目 → 右栏滑出影响面板（风险类，含动作占位）/ 打开对象卡（对象类）——两资产直接复用。
 // 角色（X-Role）是唯一全局开关：切换即令 vitals/panorama/ai-flow 全部按新角色重取（脱敏+粒度），
 // 并回到指挥墙、收起详情与对象卡。
 
-type Stage = { view: "wall" } | { view: "zone"; zoneId: ZoneId } | { view: "corridor" } | { view: "lane"; lane: Lane };
+type Stage = { view: "wall" } | { view: "zone"; zoneId: ZoneId } | { view: "map" } | { view: "lane"; lane: Lane };
 
 export default function App() {
   const [role, setRole] = useState<Role>("manager");
@@ -87,8 +87,8 @@ export default function App() {
     setStage({ view: "zone", zoneId });
     closeDetail();
   };
-  const goCorridor = () => {
-    setStage({ view: "corridor" });
+  const goMap = () => {
+    setStage({ view: "map" });
     closeDetail();
   };
   const goLane = (lane: Lane) => {
@@ -125,16 +125,16 @@ export default function App() {
 
       <div className="cp-stage">
         <div className="cp-center">
-          {stage.view === "corridor" ? (
-            <RouteCorridor role={role} onLane={goLane} onBack={goWall} />
+          {stage.view === "map" ? (
+            <RouteMap role={role} onLane={goLane} onBack={goWall} />
           ) : stage.view === "lane" ? (
-            <LaneQueue lane={stage.lane} onWall={goWall} onCorridor={goCorridor} onDrill={handleDrill} activeKey={activeKey} />
+            <LaneQueue lane={stage.lane} onWall={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : !vitals ? (
             <div className="cp-fill-msg">{vitalsErr ? "体征带不可用——确认 API 已启动" : "指挥墙加载中…"}</div>
           ) : stage.view === "zone" && activeZone ? (
-            <ZoneQueue zone={activeZone} onBack={goWall} onCorridor={goCorridor} onDrill={handleDrill} activeKey={activeKey} />
+            <ZoneQueue zone={activeZone} onBack={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : (
-            <CommandWall zones={vitals.zones} onZone={goZone} onCorridor={goCorridor} />
+            <CommandWall zones={vitals.zones} onZone={goZone} onMap={goMap} />
           )}
         </div>
         <div className="cp-side">

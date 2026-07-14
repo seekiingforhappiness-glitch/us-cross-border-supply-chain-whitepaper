@@ -6,7 +6,7 @@ import { zoneQueue, ZONE_SHORT, type DrillTarget } from "./zoneModel";
 
 // 区工作队列（下钻第二段）——V10 方案 C。点指挥墙区卡进入：面包屑「指挥墙 > 区」+ 工作队列
 // （有队列的区）+ 聚合上下文（ZoneContext）。无队列的存量聚合区如实给出 emptyHint 并由上下文承接。
-// 履约区额外给「航线视图」入口（与卡上切换钮同去处），方便在区内也能切到走廊图。
+// 履约区额外给「航线视图」入口（与卡上切换钮同去处），方便在区内也能切到航线地图。
 
 const EMPTY_HINT: Partial<Record<ZoneId, string>> = {
   money: "钱区为存量聚合指标（敞口 / 在途 / 拦回 / 毛利），无逐条工作队列——见下方聚合。",
@@ -19,20 +19,20 @@ const EMPTY_HINT: Partial<Record<ZoneId, string>> = {
 interface Props {
   zone: Zone;
   onBack: () => void;
-  onCorridor?: () => void;
+  onMap?: () => void;
   onDrill: (t: DrillTarget, key: string) => void;
   activeKey: string | null;
 }
 
-export default function ZoneQueue({ zone, onBack, onCorridor, onDrill, activeKey }: Props) {
+export default function ZoneQueue({ zone, onBack, onMap, onDrill, activeKey }: Props) {
   return (
     <WorkQueue
       crumbs={[{ label: "指挥墙", onClick: onBack }, { label: ZONE_SHORT[zone.zone] }]}
       title={zone.headline_label}
       alertCount={zone.alert_count}
       headerActions={
-        zone.zone === "fulfillment" && onCorridor ? (
-          <button className="cp-switch-btn" onClick={onCorridor}>
+        zone.zone === "fulfillment" && onMap ? (
+          <button className="cp-switch-btn" onClick={onMap}>
             <Icon name="ship" size={14} /> 航线视图 <Icon name="arrow-right" size={12} />
           </button>
         ) : undefined

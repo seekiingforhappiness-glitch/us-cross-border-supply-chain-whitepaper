@@ -56,10 +56,10 @@ function SummaryRow({ line }: { line: SummaryLine }) {
 interface Props {
   zones: Zone[];
   onZone: (z: ZoneId) => void;
-  onCorridor: () => void;
+  onMap: () => void;
 }
 
-export default function CommandWall({ zones, onZone, onCorridor }: Props) {
+export default function CommandWall({ zones, onZone, onMap }: Props) {
   const ordered = sortZones(zones);
   return (
     <div className="cp-wall-wrap">
@@ -117,16 +117,16 @@ export default function CommandWall({ zones, onZone, onCorridor }: Props) {
                   className="cp-wall-card__switch"
                   role="button"
                   tabIndex={0}
-                  aria-label="切换到航线走廊图"
+                  aria-label="切换到航线地图"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onCorridor();
+                    onMap();
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
                       e.stopPropagation();
-                      onCorridor();
+                      onMap();
                     }
                   }}
                 >

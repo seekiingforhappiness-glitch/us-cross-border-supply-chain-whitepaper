@@ -1,4 +1,5 @@
-// 航线走廊图的纯数据层（无 React、无副作用）——V10 方案 C 的履约卡切换视图。
+// 航线（lane）的纯数据层（无 React、无副作用）——V10 补记：履约夜景真地图 RouteMap 的数据源，
+// LaneQueue 下钻亦复用同一 Lane 模型（走廊图形态已退役，此归组逻辑保留）。
 // 把 panorama 的 shipments 层归一为"航线（lane）"：无论 API 给的是实体粒度（≤40 票，逐票带
 // .lane 字段）还是分组粒度（>40 票，已按 lane 聚合），都产出统一的 Lane[]。
 //  · 粗细 = 该航线在途票数 count（两粒度都稳有；柜数 container_count 附注，勿编货值——V10 红线）
@@ -148,13 +149,6 @@ export const PORT_CN: Record<string, string> = {
   NLRTM: "鹿特丹",
 };
 export const portName = (locode: string): string => PORT_CN[locode] ?? "";
-
-// ── SVG 二次贝塞尔弧路径（起点右缘 → 终点左缘，控制点按纵向错位分束）──────────────
-export function arcPath(x1: number, y1: number, x2: number, y2: number, bend: number): string {
-  const mx = (x1 + x2) / 2;
-  const my = (y1 + y2) / 2 + bend;
-  return `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`;
-}
 
 /** 票数 → 弧线宽度（对数压缩，2..maxW，避免单条独大压死细线）。 */
 export function laneWidth(count: number, maxCount: number, maxW = 11): number {

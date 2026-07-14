@@ -1012,6 +1012,202 @@ body {
   text-align: center;
 }
 
+/* ── AI 工作流「用户故事卡」（V10 补记：一事一卡 + 人话主句 + 展开时间线）── */
+.cp-story {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 2%, var(--bg-1)), var(--bg-1));
+  padding: 9px 11px 8px;
+  animation: slidein 0.35s ease;
+}
+.cp-story.is-latest {
+  border-left-color: var(--beacon);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--beacon) 30%, transparent);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+.cp-story__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.cp-story__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--beacon-dim);
+  color: #cfe2ff;
+}
+.cp-story__state[data-kind="detect"] {
+  background: var(--beacon-dim);
+  color: #cfe2ff;
+}
+.cp-story__state[data-kind="propose"],
+.cp-story__state[data-kind="task_flow"] {
+  background: var(--sev-amber-dim);
+  color: #ffdfa3;
+}
+.cp-story__state[data-kind="approve"],
+.cp-story__state[data-kind="close"] {
+  background: var(--sev-green-dim);
+  color: #a7f0c9;
+}
+.cp-story__state[data-kind="reject"] {
+  background: var(--sev-red-dim);
+  color: #ffc3c9;
+}
+.cp-story__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.cp-story__line {
+  font-size: 12.5px;
+  color: var(--ink-0);
+  line-height: 1.5;
+}
+.cp-story__amount {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 13.5px;
+  margin: 0 1px;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--gold) 26%, transparent);
+}
+.cp-story__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 8px;
+}
+.cp-story__detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--beacon);
+}
+.cp-story__detail:hover {
+  text-decoration: underline;
+}
+.cp-story__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-1);
+}
+.cp-story__toggle:hover {
+  color: var(--ink-0);
+  background: var(--bg-3);
+}
+.cp-story__toggle svg {
+  transition: transform 0.15s;
+}
+.cp-story__toggle.is-open svg {
+  transform: rotate(90deg);
+}
+/* 展开时间线（原始事件序列保留） */
+.cp-story__timeline {
+  list-style: none;
+  margin: 9px 0 2px;
+  padding: 9px 0 2px 2px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.cp-tl {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 8px;
+  position: relative;
+}
+.cp-tl:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 20px;
+  bottom: -9px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.cp-tl__dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--beacon-dim);
+  color: #cfe2ff;
+  z-index: 1;
+}
+.cp-tl__dot[data-kind="approve"],
+.cp-tl__dot[data-kind="close"] {
+  background: var(--sev-green-dim);
+  color: #a7f0c9;
+}
+.cp-tl__dot[data-kind="propose"] {
+  background: var(--sev-amber-dim);
+  color: #ffdfa3;
+}
+.cp-tl__dot[data-kind="reject"] {
+  background: var(--sev-red-dim);
+  color: #ffc3c9;
+}
+.cp-tl__body {
+  min-width: 0;
+}
+.cp-tl__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cp-tl__kind {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.cp-tl__time {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+.cp-tl__text {
+  font-size: 11.5px;
+  color: var(--ink-1);
+  line-height: 1.45;
+  margin-top: 1px;
+}
+.cp-tl__ref {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--beacon);
+  cursor: pointer;
+}
+.cp-tl__ref:hover {
+  text-decoration: underline;
+}
+
 /* 协作流预留态 */
 .cp-collab {
   flex: 1;
@@ -1889,121 +2085,145 @@ body {
   line-height: 1.5;
 }
 
-/* ═══════════════════════════ 航线走廊图（SVG 手绘零依赖） ═══════════════════════════ */
-.cp-corridor-wrap {
+/* ═══════════════════════════ 履约航线夜景地图（SVG 手绘零依赖） ═══════════════════════════ */
+.cp-map-wrap {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
-.cp-corridor {
+/* 深海夜底：地图带正后方柔光衬托（聚焦） + 顶部极光 + 纵向海面渐变（经纬网格由 SVG 地理经纬线担当） */
+.cp-map {
   flex: 1;
   min-height: 0;
   position: relative;
-  background-color: var(--bg-0);
-  background-image: radial-gradient(120% 90% at 50% -12%, #0f1d30 0%, transparent 62%),
-    repeating-linear-gradient(0deg, color-mix(in srgb, var(--beacon) 3%, transparent) 0 1px, transparent 1px 46px);
+  background-color: #060c16;
+  background-image: radial-gradient(96% 78% at 58% 44%, #0f2136 0%, transparent 60%),
+    radial-gradient(80% 55% at 62% -16%, #12263f 0%, transparent 58%),
+    linear-gradient(180deg, #070e1a 0%, #05090f 100%);
 }
-.cp-corridor__svg {
+.cp-map__svg {
   width: 100%;
   height: 100%;
   display: block;
 }
-.cp-corridor__col {
-  fill: var(--ink-2);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  font-family: var(--font-ui);
+/* 经纬网格（极淡） */
+.cp-map__grid line {
+  stroke: color-mix(in srgb, var(--beacon) 8%, transparent);
+  stroke-width: 0.5;
 }
-/* 弧线：粗细=票数、颜色=异常状态；命中区透明加粗好点选 */
-.cp-arc__hit {
+/* 陆地：极淡填充 + 海岸线微光描边（描边略提亮确保三洲轮廓可辨） */
+.cp-map__land polygon {
+  fill: color-mix(in srgb, var(--beacon) 9%, #0c1927);
+  stroke: color-mix(in srgb, var(--beacon) 62%, transparent);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  paint-order: fill;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--beacon) 30%, transparent));
+}
+/* 航线弧：粗细=票数、颜色=异常状态；命中区透明加粗好点选 */
+.cp-lane__hit {
   fill: none;
   stroke: transparent;
   stroke-linecap: round;
   cursor: pointer;
 }
-.cp-arc__line {
+.cp-lane__line {
   fill: none;
   stroke-linecap: round;
   transition: opacity 0.14s, filter 0.14s;
   pointer-events: none;
 }
-.cp-arc--blue .cp-arc__line {
+.cp-lane--blue .cp-lane__line {
   stroke: var(--beacon);
-  opacity: 0.5;
+  opacity: 0.6;
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--beacon) 45%, transparent));
 }
-.cp-arc--amber .cp-arc__line {
+.cp-lane--amber .cp-lane__line {
   stroke: var(--sev-amber);
-  opacity: 0.82;
+  opacity: 0.88;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sev-amber) 55%, transparent));
 }
-.cp-arc--red .cp-arc__line {
+.cp-lane--red .cp-lane__line {
   stroke: var(--sev-red);
-  opacity: 0.9;
+  opacity: 0.95;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--sev-red) 60%, transparent));
 }
-.cp-arc.is-hover .cp-arc__line {
+.cp-lane.is-hover .cp-lane__line {
   opacity: 1;
-  filter: drop-shadow(0 0 5px currentColor);
 }
-.cp-arc--blue.is-hover .cp-arc__line {
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--beacon) 80%, transparent));
+.cp-lane--blue.is-hover .cp-lane__line {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--beacon) 85%, transparent));
 }
-.cp-arc--amber.is-hover .cp-arc__line {
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--sev-amber) 80%, transparent));
+.cp-lane--amber.is-hover .cp-lane__line {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--sev-amber) 85%, transparent));
 }
-.cp-arc--red.is-hover .cp-arc__line {
-  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--sev-red) 85%, transparent));
+.cp-lane--red.is-hover .cp-lane__line {
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--sev-red) 90%, transparent));
 }
-.cp-arc__dot {
-  fill: var(--bg-1);
-  stroke: var(--line-strong);
+.cp-lane__dot {
+  fill: color-mix(in srgb, var(--bg-0) 88%, #000);
+  stroke: color-mix(in srgb, var(--beacon) 70%, var(--line-strong));
   stroke-width: 1;
 }
-.cp-arc--amber .cp-arc__dot {
+.cp-lane--amber .cp-lane__dot {
   stroke: var(--sev-amber);
 }
-.cp-arc--red .cp-arc__dot {
+.cp-lane--red .cp-lane__dot {
   stroke: var(--sev-red);
 }
-.cp-arc--blue .cp-arc__dot {
-  stroke: color-mix(in srgb, var(--beacon) 70%, var(--line-strong));
-}
-.cp-arc__num {
+.cp-lane__num {
   fill: var(--ink-0);
   font-family: var(--font-num);
   font-size: 10px;
   font-weight: 600;
 }
-/* 港口节点 */
-.cp-port rect {
-  fill: var(--bg-2);
-  stroke: var(--line-strong);
+/* 港口发光点 + 标签 */
+.cp-portnode__halo {
+  fill: none;
   stroke-width: 1;
 }
-.cp-port--origin rect {
-  stroke: color-mix(in srgb, var(--sev-amber) 34%, var(--line-strong));
+.cp-portnode--origin .cp-portnode__halo {
+  stroke: color-mix(in srgb, var(--sev-amber) 55%, transparent);
 }
-.cp-port--dest rect {
-  stroke: color-mix(in srgb, var(--beacon) 40%, var(--line-strong));
+.cp-portnode--dest .cp-portnode__halo {
+  stroke: color-mix(in srgb, var(--beacon) 60%, transparent);
 }
-.cp-port__code {
+.cp-portnode__dot {
+  fill: #fff;
+}
+.cp-portnode--origin .cp-portnode__dot {
+  fill: color-mix(in srgb, var(--sev-amber) 88%, #fff);
+  filter: drop-shadow(0 0 4px var(--sev-amber));
+}
+.cp-portnode--dest .cp-portnode__dot {
+  fill: color-mix(in srgb, var(--beacon) 80%, #fff);
+  filter: drop-shadow(0 0 4px var(--beacon));
+}
+.cp-portnode__leader {
+  stroke: color-mix(in srgb, var(--ink-2) 60%, transparent);
+  stroke-width: 0.6;
+  stroke-dasharray: 2 2;
+}
+.cp-portnode__code {
   fill: var(--ink-0);
   font-family: var(--font-num);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  stroke-width: 2.4;
 }
-.cp-port__name {
-  fill: var(--ink-2);
-  font-size: 10px;
-  font-family: var(--font-ui);
-}
-.cp-port__tput {
+.cp-portnode__name {
   fill: var(--ink-1);
-  font-family: var(--font-num);
-  font-size: 10px;
+  font-size: 9.5px;
+  font-family: var(--font-ui);
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  stroke-width: 2.4;
 }
 /* 悬停明细 tooltip */
-.cp-corridor__tip {
+.cp-map__tip {
   position: absolute;
   top: 12px;
   right: 12px;
@@ -2015,36 +2235,41 @@ body {
   padding: 9px 11px;
   font-size: 11px;
 }
-.cp-corridor__tip-t {
+.cp-map__tip-t {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 13px;
   font-weight: 600;
   color: var(--ink-0);
+  margin-bottom: 2px;
+}
+.cp-map__tip-sub {
+  color: var(--ink-2);
+  font-size: 11px;
   margin-bottom: 6px;
 }
-.cp-corridor__tip-row {
+.cp-map__tip-row {
   display: flex;
   gap: 12px;
   color: var(--ink-1);
   font-family: var(--font-num);
 }
-.cp-corridor__tip-row .neg {
+.cp-map__tip-row .neg {
   color: var(--sev-amber);
 }
-.cp-corridor__tip-stat {
+.cp-map__tip-stat {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 7px;
 }
-.cp-corridor__tip-hint {
+.cp-map__tip-hint {
   margin-top: 8px;
   color: var(--beacon);
   font-size: 10.5px;
 }
-.cp-corridor__legend {
+.cp-map__legend {
   position: absolute;
   bottom: 10px;
   left: 12px;
@@ -2059,30 +2284,43 @@ body {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
 }
-.cp-corridor__legend span {
+.cp-map__legend span {
   display: inline-flex;
   align-items: center;
 }
-.cp-arc-lg {
+.cp-lane-lg {
   width: 16px;
   height: 3px;
   border-radius: 2px;
   display: inline-block;
   margin-right: 6px;
 }
-.cp-arc-lg--blue {
+.cp-lane-lg--blue {
   background: var(--beacon);
 }
-.cp-arc-lg--amber {
+.cp-lane-lg--amber {
   background: var(--sev-amber);
 }
-.cp-arc-lg--red {
+.cp-lane-lg--red {
   background: var(--sev-red);
 }
-.cp-corridor__legend-sep {
+.cp-map__legend-sep {
   color: var(--ink-2);
   border-left: 1px solid var(--line-strong);
   padding-left: 14px;
+}
+/* 表外港口近似定位标注（歧义如实） */
+.cp-map__ambig {
+  position: absolute;
+  bottom: 10px;
+  right: 12px;
+  font-size: 10px;
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+  backdrop-filter: blur(2px);
+  padding: 5px 10px;
+  border: 1px dashed var(--sev-amber-dim);
+  border-radius: var(--radius-sm);
 }
 
 /* ═══════════════════════════ 无障碍 / 减少动效 ═══════════════════════════ */
@@ -2091,6 +2329,8 @@ body {
   .pano-trunk.is-lit,
   .cp-flow-card,
   .cp-flow-card.is-latest,
+  .cp-story,
+  .cp-story.is-latest,
   .cp-drawer,
   .cp-drawer-scrim,
   .cp-impact,

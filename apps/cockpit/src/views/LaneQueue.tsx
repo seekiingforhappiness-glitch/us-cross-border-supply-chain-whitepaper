@@ -4,8 +4,8 @@ import { type Lane } from "./corridorModel";
 import WorkQueue from "./WorkQueue";
 import type { DrillTarget, QueueRow, QueueSpec } from "./zoneModel";
 
-// 航线异常队列（下钻第二段，走廊图点弧线进入）——V10 方案 C。
-// 面包屑「指挥墙 > 航线走廊 > 起→目」。主队列=该航线未闭环异常（按严重度降序），点条 → 风险详情面板；
+// 航线异常队列（下钻第二段，履约地图点弧线进入）——V10 补记。
+// 面包屑「指挥墙 > 航线地图 > 起→目」。主队列=该航线未闭环异常（按严重度降序），点条 → 风险详情面板；
 // 下方上下文=该航线全部在途货件（实体粒度世界才有），点条 → 货件对象卡。与区队列同一下钻语义。
 
 const SEV_CN: Record<string, string> = { critical: "紧急", high: "高", medium: "中", low: "低" };
@@ -30,12 +30,12 @@ function laneSpec(lane: Lane): QueueSpec {
 interface Props {
   lane: Lane;
   onWall: () => void;
-  onCorridor: () => void;
+  onMap: () => void;
   onDrill: (t: DrillTarget, key: string) => void;
   activeKey: string | null;
 }
 
-export default function LaneQueue({ lane, onWall, onCorridor, onDrill, activeKey }: Props) {
+export default function LaneQueue({ lane, onWall, onMap, onDrill, activeKey }: Props) {
   const spec = laneSpec(lane);
   // 上下文：该航线全部在途货件（实体粒度世界）——可点开货件对象卡。
   const context =
@@ -81,7 +81,7 @@ export default function LaneQueue({ lane, onWall, onCorridor, onDrill, activeKey
 
   return (
     <WorkQueue
-      crumbs={[{ label: "指挥墙", onClick: onWall }, { label: "航线走廊", onClick: onCorridor }, { label: `${lane.origin}→${lane.dest}` }]}
+      crumbs={[{ label: "指挥墙", onClick: onWall }, { label: "航线地图", onClick: onMap }, { label: `${lane.origin}→${lane.dest}` }]}
       title={`航线异常 · ${lane.origin}→${lane.dest}`}
       alertCount={lane.alertCount}
       spec={spec}
