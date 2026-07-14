@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,6 +113,41 @@ def test_ontology_structure(client):
 
     assert all(o.get("table") for o in data["objects"]), "每个对象摘要都应带派生表名"
     assert all(o.get("primaryKey") for o in data["objects"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# GET /ontology —— world 字段（数据源参数化：ONTOLOGY_DB 环境变量，驾驶舱地基单 A）
+# ═══════════════════════════════════════════════════════════════════════════
+def test_ontology_world_label_default(client):
+    """world 字段：client fixture 的 tmp_db_path 是 data/ontology.sqlite 的原名临时拷贝
+    （tmp_db_path fixture 用 shutil.copy 保留原文件名 'ontology.sqlite'），未做任何 ONTOLOGY_DB
+    覆盖时应推断为 'verification'——缺省世界标识。"""
+    resp = client.get("/ontology")
+    assert resp.status_code == 200
+    assert resp.json()["world"] == "verification"
+
+
+def test_ontology_world_label_follows_ontology_db_env_var(monkeypatch, tmp_db_path):
+    """ONTOLOGY_DB 环境变量指向文件名为 simworld.sqlite 的临时副本时，world 标识应从
+    'verification' 变为 'simulation'。刻意不复用 client fixture 的 dependency_overrides——
+    那条路径完全绕开 get_db_path 本体，测不到「环境变量真的被读取」这件事。这里先直接断言
+    裸函数 get_db_path() 读到该环境变量，再起一个独立 TestClient 验证「环境变量→
+    get_db_path()→/ontology 路由→world 字段」整条生产链路真实生效；用 try/finally 确保
+    不残留覆盖状态，不影响本模块其余用例（不论执行顺序）。"""
+    sim_copy = Path(tmp_db_path).with_name("simworld.sqlite")
+    shutil.copy(tmp_db_path, sim_copy)
+    monkeypatch.setenv("ONTOLOGY_DB", str(sim_copy))
+    assert get_db_path() == str(sim_copy), "get_db_path() 应原样读取 ONTOLOGY_DB 环境变量"
+
+    saved_override = app.dependency_overrides.pop(get_db_path, None)
+    try:
+        with TestClient(app) as fresh_client:
+            resp = fresh_client.get("/ontology")
+        assert resp.status_code == 200
+        assert resp.json()["world"] == "simulation"
+    finally:
+        if saved_override is not None:
+            app.dependency_overrides[get_db_path] = saved_override
 
 
 # ═══════════════════════════════════════════════════════════════════════════

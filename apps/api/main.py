@@ -142,8 +142,11 @@ def _require_known_type(object_type: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 def get_db_path() -> str:
     """默认仓库内 data/ontology.sqlite（绝对路径，不依赖 uvicorn 启动 cwd）。
-    可用 ONTOLOGY_DB_PATH 环境变量覆盖（与 agent/mcp_server.py 同名约定，保持全仓一致）。"""
-    return os.environ.get("ONTOLOGY_DB_PATH", str(DEFAULT_DB_PATH))
+    可用 ONTOLOGY_DB 环境变量覆盖——驾驶舱双世界切换的唯一开关（验证世界 data/ontology.sqlite
+    ⇄ 模拟世界 data/simworld.sqlite，见 apps/cockpit/README.md）。ONTOLOGY_DB_PATH（
+    agent/mcp_server.py 的既有同名环境变量，本函数原先也用这个名字）仍兼容识别、ONTOLOGY_DB
+    优先——只加不减，避免任何已经在用旧变量名的启动脚本/文档悄悄失效；两者都未设时落回默认路径。"""
+    return os.environ.get("ONTOLOGY_DB", os.environ.get("ONTOLOGY_DB_PATH", str(DEFAULT_DB_PATH)))
 
 
 def get_ro_connection(db_path: str = Depends(get_db_path)):
@@ -163,11 +166,22 @@ app = FastAPI(
 )
 
 
+# 所连库文件名 → 世界标识（驾驶舱地基单：双世界切换的可见锚点）：ontology.sqlite=验证世界
+# （datagen 种子库，规则档案 R/P=1.000 对照源）；simworld.sqlite=模拟世界（14 个月连续活世界，
+# 见 sim/store.py 头注）；其他文件名原样回退成自己——新库先诚实标注文件名，不强行归类成
+# 已知两个世界之一，避免误导。
+_WORLD_LABELS = {"ontology.sqlite": "verification", "simworld.sqlite": "simulation"}
+
+
+def _infer_world(db_path: str) -> str:
+    return _WORLD_LABELS.get(Path(db_path).name, Path(db_path).name)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # GET /ontology —— 本体自描述
 # ═══════════════════════════════════════════════════════════════════════════
 @app.get("/ontology")
-def get_ontology_summary() -> dict:
+def get_ontology_summary(db_path: str = Depends(get_db_path)) -> dict:
     onto = get_ontology_dict()
     objects = [{
         "type": o["type"], "primaryKey": o["primaryKey"], "titleKey": o.get("titleKey"),
@@ -189,6 +203,7 @@ def get_ontology_summary() -> dict:
     } for a in onto["actions"]]
     return {
         "version": onto["version"], "name": onto.get("name"), "displayName": onto.get("displayName"),
+        "world": _infer_world(db_path),
         "roles": onto.get("roles", []),
         "objects": objects, "links": links, "actions": actions,
         "summary": {

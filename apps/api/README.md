@@ -20,11 +20,20 @@ uvicorn apps.api.main:app --port 8100
 ```
 
 默认读取 `data/ontology.sqlite`（仓库内绝对路径解析，不依赖启动时的 cwd）。可用环境变量
-`ONTOLOGY_DB_PATH` 覆盖数据库路径（与 `agent/mcp_server.py` 的同名环境变量约定一致）：
+`ONTOLOGY_DB` 覆盖数据库路径——这是驾驶舱（`apps/cockpit`）双世界切换的唯一开关：
 
 ```bash
-ONTOLOGY_DB_PATH=/path/to/other.sqlite uvicorn apps.api.main:app --port 8100
+# 验证世界（缺省）：data/ontology.sqlite，datagen 种子库，规则档案 R/P=1.000 对照源
+uvicorn apps.api.main:app --port 8100
+
+# 模拟世界：data/simworld.sqlite，14 个月连续活世界（见 sim/store.py）
+ONTOLOGY_DB=data/simworld.sqlite uvicorn apps.api.main:app --port 8100
 ```
+
+`ONTOLOGY_DB_PATH`（`agent/mcp_server.py` 的既有同名环境变量约定）仍兼容识别，`ONTOLOGY_DB`
+优先——只加不减，旧变量名不会悄悄失效。`GET /ontology` 响应的 `world` 字段会如实反映当前连接的
+库文件名推断出的世界标识（`ontology.sqlite`→`"verification"`，`simworld.sqlite`→`"simulation"`，
+其他文件名原样回退）。
 
 启动后可访问 `http://127.0.0.1:8100/docs`（FastAPI 自带 OpenAPI 交互文档）。
 
@@ -38,7 +47,7 @@ ONTOLOGY_DB_PATH=/path/to/other.sqlite uvicorn apps.api.main:app --port 8100
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET  | `/ontology` | 本体自描述：version + 对象/关系/动作清单摘要（驾驶舱与透视镜 v3 的元数据源） |
+| GET  | `/ontology` | 本体自描述：version + world（当前连接库推断的世界标识）+ 对象/关系/动作清单摘要（驾驶舱与透视镜 v3 的元数据源） |
 | GET  | `/objects/{type}` | 列表 + 等值过滤（`?字段名=值`，任意本体属性列；`limit` 默认 100）。`type` 必须 ∈ 本体 34 类型，否则 422；过滤列名不在该类型属性白名单内也 422 |
 | GET  | `/objects/{type}/{id}` | 单对象；经 M3 Pydantic 模型 (`pipeline.ontology_models.MODEL_BY_TYPE`) 校验语义；不存在返回 404 |
 | GET  | `/objects/{type}/{id}/links/{link}` | 调 `pipeline.ontology_runtime.traverse` 同源遍历；`declared_only` 关系或未知 `link` 返回 422（人话消息） |
