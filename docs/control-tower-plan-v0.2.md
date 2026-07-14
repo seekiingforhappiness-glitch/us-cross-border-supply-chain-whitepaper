@@ -321,6 +321,16 @@ emoji 图标（廉价感）③命令中心质感 token 缺失（网格/辉光/�
 +质感 token，零依赖零假数据不变）∥ F2 补灌单（sim 资金流+采购/准入域）。**画面质感标准入账：
 "懂行者十分钟找不出破绽"（V4④）同样适用于视觉——截图对比验收，不达即再迭代。**
 
+**V11 — Task 动作词表对齐（2026-07-14，依 Daniel /goal"直接项目完成企业级交付"指令代行，
+先例=V6 裁1"图纸追平现实"+J4-v2 授权代行模式；Daniel 事后可改判）。**
+背景：G1 发现 sim 世界 Task.proposed_action 用六个词（dispute_invoice/chase_docs/
+propose_collection/expedite_replenish/escalate/reconcile_payment）超本体枚举
+[reschedule/expedite/accept_delay]，130 行校验警告。裁断：**治本双向对齐**——①sim 词表改用
+与真实动作名一致的命名（dispute_invoice→dispute_supplier_invoice、chase_docs→
+request_supplier_docs、expedite_replenish→escalate_replenishment，语义等价重命名）；
+②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
+reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
+
 **V10 补记 — 走廊图升真地图 + AI 工作流用户视角重构（2026-07-14，Daniel 看 B4 后原话：
 "这个是不是用地图更合适？右边的工作流很难懂，没有从用户的角度进行优化"）。**
 裁断：①**采纳地图**——调研反对的是"地图当驾驶舱中央"，履约 tile 内视图恰是物流追踪场景
