@@ -331,6 +331,14 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V12 — 对象卡用户语言化（2026-07-14，Daniel 贴驾驶舱 Supplier 对象卡截图："这里不容易懂"）。**
+诊断三层：①_validation_warnings 原始 JSON 直接呈现（如实暴露做对了、形态错了——V10 补记
+"用户语言非工程日志"教训在对象卡重演）②字段名/值全英文代码无人话 ③关系词条英文名+
+"正向/反向"图术语。附带暴露数据残留：G1 sim 枚举对齐漏了 Supplier（compliance_docs_status=
+'complete'/uflpa_risk_flag='low' 均枚举外）。处置两单并行：G5-sim（Supplier 字段值对齐——
+complete→provided、low→false/high→true，G1 同款模式）；B6-前端（字段名/枚举值中文映射表+
+warnings 折叠为"数据质量提示"徽标人话呈现+关系词条中文化去术语）。
+
 **V11 勘误（2026-07-14，G4 执行层对照代码路径证伪）**：V11 原文三个字面重命名目标中两个
 语义错误——①dispute_invoice 的真实对应是费用域 `dispute`（写 invoices.status，cost-manual
 v0.4），**非**采购域 dispute_supplier_invoice（写 supplier_invoices，P1 R7-R10，不同对象）；
