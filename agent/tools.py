@@ -12,7 +12,7 @@ import sqlite3
 
 import yaml
 
-from app.actions import assign_task, propose_mitigation, _log, ROLE_PERMS
+from app.actions import assign_task, propose_mitigation, propose_collection, _log, ROLE_PERMS
 from app.admission_actions import (ADM_PERMS, create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario)
 from engine.graph import explain_path
@@ -55,7 +55,10 @@ COST_READ_TOOLS = _read_tools_in_domain("cost")
 ADMISSION_READ_TOOLS = _read_tools_in_domain("admission")
 COST_READ_ROLES = {"ops", "finance", "manager"}
 ADMISSION_READ_ROLES = {"ops", "finance", "manager", "sales", "compliance"}
-WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation"}
+WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation",
+                   # F1（V8-②）：催收提案 maker 工具，按 ROLE_PERMS.ProposeCollection={cs,finance} gate，
+                   # 走既有 dispatch + app.actions.propose_collection（proposal-only，审批仍人做）。
+                   "propose_collection": "ProposeCollection"}
 # 准入准备动作 B1-B4（AdmissionCase 切片，同 RiskEvent 写工具模式：白名单由 ADM_PERMS gate，不复制权限）。
 # B5/B6（approve_quote_decision/reject_or_request_more_info）**永不**出现在此——它们在 FORBIDDEN_TOOLS，
 # agent 只做准备动作、不夺审批/拒接决策（maker-checker，原则2）。
@@ -598,6 +601,10 @@ class AgentSession:
         return propose_mitigation(self.con, task_id, proposed_action, proposal_params,
                                   actor=AI_ACTOR, role=self.role, as_of=self.as_of)
 
+    def _propose_collection(self, payment_id, note=None):
+        return propose_collection(self.con, payment_id, note=note,
+                                  actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+
     # 准入准备动作 B1-B4：role 随会话注入，动作层 ADM_PERMS + 门禁再校验一次（双闸）。
     def _create_admission_case(self, customer_id, sku_id, request_type, incoterm_candidate,
                                target_launch_date, monthly_order_estimate):
@@ -647,6 +654,7 @@ class AgentSession:
                     "explain_relationship_path": self.explain_relationship_path,
                     "assign_task": self._assign_task,
                     "propose_mitigation": self._propose_mitigation,
+                    "propose_collection": self._propose_collection,
                     "create_admission_case": self._create_admission_case,
                     "run_compliance_precheck": self._run_compliance_precheck,
                     "build_logistics_plan": self._build_logistics_plan,

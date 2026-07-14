@@ -279,7 +279,7 @@ def main():
                               "srm_supplier_qualifications",
                               "wms_warehouses", "wms_inventory_positions",
                               "wms_inventory_reservations", "wms_cycle_counts",
-                              "srm_rfqs", "srm_rfq_lines", "srm_quotes"]}
+                              "srm_rfqs", "srm_rfq_lines", "srm_quotes", "ap_payments"]}
     dq = {"input_rows": {k: len(v) for k, v in t.items()}}
     source_events = source_event_rows(t["tms_milestones"])
     _ensure_unique_source_events(source_events)
@@ -520,6 +520,8 @@ def main():
     # P2 采购富化两表：预付款（R12）+ 供应商资质（R13）；直通加载 + 引用完整性入 DQ
     table("purchase_payments", sorted(t["ap_purchase_payments"], key=lambda x: x["payment_id"]))
     table("supplier_qualifications", sorted(t["srm_supplier_qualifications"], key=lambda x: x["qualification_id"]))
+    # F1 资金流域（V8-②）：Payment 收付一本子（走 object_ddls 生成路径，有 build 期行数据）
+    table("payments", sorted(t["ap_payments"], key=lambda x: x["payment_id"]))
 
     # 采购侧 DQ（引用完整性——应全为 0；total 不平也应为 0）
     po_id_set = {r["po_id"] for r in t["srm_purchase_orders"]}

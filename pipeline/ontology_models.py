@@ -1,4 +1,4 @@
-# GENERATED FROM ontology v0.10.1 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
+# GENERATED FROM ontology v0.11.0 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
 # -*- coding: utf-8 -*-
 """桥3 结构生成产物：本体 34 对象的 Pydantic 模型（数据契约校验用）。
 
@@ -47,6 +47,7 @@ class Supplier(_Base):
     compliance_docs_status: Optional[Literal['missing', 'partial', 'provided', 'verified', 'rejected']] = None
     uflpa_risk_flag: Optional[bool] = None
     origin_evidence_status: Optional[Literal['missing', 'provided', 'verified', 'rejected']] = None
+    payment_terms_days: Optional[int] = None
 
 
 class Sku(_Base):
@@ -407,6 +408,22 @@ class PurchasePayment(_Base):
     created_at: str
 
 
+class Payment(_Base):
+    """Payment — GENERATED, 表 payments。"""
+    payment_id: str
+    direction: Literal['in', 'out']
+    counterparty_type: Literal['customer', 'supplier', 'vendor']
+    counterparty_id: str
+    ref_type: Literal['sales_order', 'supplier_invoice', 'invoice']
+    ref_id: str
+    amount_usd: float
+    due_date: str
+    paid_date: Optional[str] = None
+    status: Literal['scheduled', 'paid']
+    as_of_date: str
+    created_at: str
+
+
 class SupplierQualification(_Base):
     """SupplierQualification — GENERATED, 表 supplier_qualifications。"""
     qualification_id: str
@@ -539,6 +556,7 @@ MODEL_BY_TABLE = {
     'supplier_invoices': SupplierInvoice,
     'supplier_invoice_lines': SupplierInvoiceLine,
     'purchase_payments': PurchasePayment,
+    'payments': Payment,
     'supplier_qualifications': SupplierQualification,
     'warehouses': Warehouse,
     'inventory_positions': InventoryPosition,
@@ -576,6 +594,7 @@ MODEL_BY_TYPE = {
     'SupplierInvoice': SupplierInvoice,
     'SupplierInvoiceLine': SupplierInvoiceLine,
     'PurchasePayment': PurchasePayment,
+    'Payment': Payment,
     'SupplierQualification': SupplierQualification,
     'Warehouse': Warehouse,
     'InventoryPosition': InventoryPosition,

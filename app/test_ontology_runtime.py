@@ -145,6 +145,13 @@ LEGACY_TOOL_DEFS = [
      "input_schema": {"type": "object", "properties": {
          "logistics_plan_id": {"type": "string"}, "scenario": {"type": "object"}},
          "required": ["logistics_plan_id", "scenario"]}},
+    # F1 资金流（V8-②）：ProposeCollection 催收提案 maker 工具（exposed=true/auto）——本体新增动作
+    # 随 build_tool_defs 自动枚举为第 7 个写工具（第 18 个工具）。基线随之扩展（仅追加、既有不改）。
+    {"name": "propose_collection",
+     "description": "对逾期应收(overdue 派生的 in 向 Payment)提交催收任务提案(F1)，最终须人工审批。proposal-only 的体现(maker-checker)",
+     "input_schema": {"type": "object", "properties": {
+         "payment_id": {"type": "string"}, "note": {"type": "string"}},
+         "required": ["payment_id"]}},
 ]
 LEGACY_TOOL_ORDER = [t["name"] for t in LEGACY_TOOL_DEFS]
 
@@ -293,7 +300,8 @@ def main():
             check(f"① {label}_PERMS['{k}'] 生成 == 基线 {sorted(v)}", gen_perms.get(k) == v,
                   str(gen_perms.get(k)))
     # 键集完全一致（不多不少）：生成键集 == 5 字典并集，杜绝 role_dict 动作漏收/多收
-    check("① build_role_perms 键集 == 5 权限字典并集（17 键，不多不少）",
+    # F1（V8-②）：ROLE_PERMS 追加 RecordPayment/ProposeCollection 两键 → 并集 17→19。
+    check("① build_role_perms 键集 == 5 权限字典并集（19 键，不多不少）",
           set(gen_perms) == LEGACY_ROLE_PERMS_KEYS,
           f"多={sorted(set(gen_perms)-LEGACY_ROLE_PERMS_KEYS)} 少={sorted(LEGACY_ROLE_PERMS_KEYS-set(gen_perms))}")
 
@@ -301,13 +309,13 @@ def main():
     check("② build_forbidden_tools == 迁移前 FORBIDDEN_TOOLS（不多不少）",
           gen_forbidden == LEGACY_FORBIDDEN_TOOLS, str(sorted(gen_forbidden)))
 
-    print("== ③ build_tool_defs：工具名集合 + 顺序 == 迁移前 17 工具（原样搬家）==")
-    check("③ 工具名集合 == 迁移前 17 名（set 相等）",
+    print("== ③ build_tool_defs：工具名集合 + 顺序 == 基线 18 工具（11 读 + 7 写，含 F1 propose_collection）==")
+    check("③ 工具名集合 == 基线 18 名（set 相等）",
           set(gen_names) == set(LEGACY_TOOL_ORDER),
           f"多={sorted(set(gen_names)-set(LEGACY_TOOL_ORDER))} 少={sorted(set(LEGACY_TOOL_ORDER)-set(gen_names))}")
-    check("③ 工具名顺序 == 迁移前顺序（11 读 + 6 写，逐一对应）",
+    check("③ 工具名顺序 == 基线顺序（11 读 + 7 写，逐一对应）",
           gen_names == LEGACY_TOOL_ORDER, f"{gen_names}")
-    check("③ 工具数 == 17", len(gen_tools) == 17, str(len(gen_tools)))
+    check("③ 工具数 == 18", len(gen_tools) == 18, str(len(gen_tools)))
 
     print("== ④ build_tool_defs：逐工具 description + input_schema 深度相等（json 归一化）==")
     gen_by = {t["name"]: t for t in gen_tools}
@@ -343,12 +351,12 @@ def main():
           all_domain_tools == set().union(*LEGACY_READ_TOOLS_BY_DOMAIN.values()),
           str(sorted(all_domain_tools)))
 
-    print("== ⑦ 本体侧结构：6 个 exposed 动作均带 tool_description + tool_input_schema ==")
+    print("== ⑦ 本体侧结构：7 个 exposed 动作均带 tool_description + tool_input_schema（含 F1 ProposeCollection）==")
     exposed = [a for a in onto["actions"] if a.get("exposed_as_tool") is True]
-    check("⑦ exposed_as_tool=true 动作恰 6 个", len(exposed) == 6, str(len(exposed)))
+    check("⑦ exposed_as_tool=true 动作恰 7 个", len(exposed) == 7, str(len(exposed)))
     miss = [a["name"] for a in exposed
             if "tool_description" not in a or "tool_input_schema" not in a]
-    check("⑦ 6 个 exposed 动作都带 tool_description + tool_input_schema 字段", not miss, str(miss))
+    check("⑦ 7 个 exposed 动作都带 tool_description + tool_input_schema 字段", not miss, str(miss))
 
     print("== ⑧ 变异防线：冻结区动作声明腐化必须被生成层显式拒绝（主会话评审固化） ==")
     # 场景：把 frozen 动作误标 exposed 且补齐 tool_* 字段（绕过 KeyError 偶然防护的最强变异）——

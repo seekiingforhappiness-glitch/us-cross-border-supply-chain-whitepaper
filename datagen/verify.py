@@ -206,8 +206,10 @@ def main():
 
     check("案件数=40 / 候选+转正 SKU=15", len(adm_cases) == 40
           and sum(1 for k in skus if k.startswith("SKU-9")) == 15)
-    check("遗留 SKU 准入字段为空（迁移语义）",
-          skus["SKU-0001"]["declared_value_usd"] == "" and skus["SKU-0001"]["sku_status"] == "active")
+    check("遗留 SKU：declared_value_usd 已回填(F1 item4，2-20)、其余准入字段仍空（迁移语义）",
+          2.0 <= float(skus["SKU-0001"]["declared_value_usd"]) <= 20.0
+          and skus["SKU-0001"]["sku_status"] == "active"
+          and skus["SKU-0001"]["package_weight_kg"] == "")
     check("候选 SKU 不进控制塔（无 PO/订单行引用）",
           not any(r["sku_id"].startswith("SKU-9") for r in t["srm_purchase_orders"])
           and not any(r["sku_id"].startswith("SKU-9") for r in t["oms_so_lines"]))
@@ -819,6 +821,81 @@ def main():
     print(f"  询价: RFQ={len(rfqs)} RFQLine={len(rfq_lines)} Quote={len(quotes)}  "
           f"maverick 发票={len(mav_inv)}(灰区{len(roles['r15_gray_invoices'])})  "
           f"真值 R14={src_by_rule['R14']} R15={src_by_rule['R15']}  多源SKU={len(roles['multi_source_skus'])}")
+
+    print("== 9. 资金流域（F1，V8-②，第 8 段资金流断言）==")
+    fc = cfg["finance"]
+    finj = fc["inject"]
+    as_of_str = cfg["window"]["as_of"]
+    from datetime import date as _date, timedelta as _td
+    as_of_d = _date.fromisoformat(as_of_str)
+    pays = load(raw_dir, "ap_payments")
+    fin_gt = load(truth_dir, "expected_finance_risks")
+    sup_rows = {r["supplier_id"]: r for r in load(raw_dir, "srm_suppliers")}
+    si_ids = {r["supplier_invoice_id"] for r in load(raw_dir, "ap_supplier_invoices")}
+    inv_ids = {r["invoice_id"] for r in load(raw_dir, "ap_invoices")}
+    so_ids = {r["so_id"] for r in load(raw_dir, "oms_sales_orders")}
+    fin_by_rule = defaultdict(int)
+    for r in fin_gt:
+        fin_by_rule[r["rule_id"]] += 1
+
+    # 8.1 Payment 字段合法 + 状态机一致 + as_of 安全（paid_date<=as_of）
+    ref_tab = {"supplier_invoice": si_ids, "invoice": inv_ids, "sales_order": so_ids}
+    check("payment 字段合法（direction/counterparty_type/ref_type/status 枚举 + amount>=0）",
+          all(p["direction"] in ("in", "out") and p["counterparty_type"] in ("customer", "supplier", "vendor")
+              and p["ref_type"] in ("sales_order", "supplier_invoice", "invoice")
+              and p["status"] in ("scheduled", "paid") and float(p["amount_usd"]) >= 0 for p in pays))
+    check("payment 状态机：scheduled⟺paid_date空、paid⟺paid_date非空且<=as_of（D8）",
+          all(((p["status"] == "scheduled") == (not p["paid_date"]))
+              and (not p["paid_date"] or _date.fromisoformat(p["paid_date"]) <= as_of_d) for p in pays))
+    check("payment ref 引用完整（ref_id ∈ 对应表，按 ref_type 判别）",
+          all(p["ref_id"] in ref_tab[p["ref_type"]] for p in pays))
+    check("全部 supplier_invoice/invoice/sales_order 均有 Payment（收付一本子）",
+          {p["ref_id"] for p in pays if p["ref_type"] == "supplier_invoice"} >= si_ids
+          and {p["ref_id"] for p in pays if p["ref_type"] == "invoice"} >= inv_ids
+          and {p["ref_id"] for p in pays if p["ref_type"] == "sales_order"} >= so_ids)
+
+    # 8.2 账期（问3）：Supplier.payment_terms_days ∈ {30,45,60}；out-supplier due = issue + terms
+    check("Supplier.payment_terms_days ∈ {30,45,60}（全供应商已赋档）",
+          all(int(s["payment_terms_days"]) in (30, 45, 60) for s in sup_rows.values()))
+    si_issue = {r["supplier_invoice_id"]: r["issue_date"] for r in load(raw_dir, "ap_supplier_invoices")}
+    win_hi = as_of_d + _td(days=fc["cash_watch_window_days"])
+    # R20 cluster 覆写 due 落窗口 (as_of, as_of+window]；其余 out-supplier due = issue + 账期
+    out_sup = [p for p in pays if p["ref_type"] == "supplier_invoice" and p["ref_id"] in si_issue
+               and not (as_of_d < _date.fromisoformat(p["due_date"]) <= win_hi)]
+    check("out-supplier due = issue_date + Supplier.payment_terms_days（问3 自动推算，非 R20 cluster）",
+          all(_date.fromisoformat(p["due_date"])
+              == _date.fromisoformat(si_issue[p["ref_id"]])
+              + _td(days=int(sup_rows[p["counterparty_id"]]["payment_terms_days"])) for p in out_sup))
+
+    # 8.3 declared_value_usd 回填（item 4）：20 个基础目录 active SKU 全部回填、值域合法
+    base_active = [s for s in skus.values() if not s["sku_id"].startswith("SKU-9")
+                   and s["sku_status"] == "active"]
+    check("基础目录 20 个 active SKU 的 declared_value_usd 全回填(2-20)（B1 歧义#7）",
+          len(base_active) == 20
+          and all(s["declared_value_usd"] and 2.0 <= float(s["declared_value_usd"]) <= 20.0
+                  for s in base_active))
+
+    # 8.4 真值：规则齐、计数=配置、severity 合法、锚点可解
+    check("资金流真值 rule 仅 R19-R21", set(fin_by_rule) == {"R19", "R20", "R21"})
+    check(f"R19 真值计数 = 配置 {finj['r19']}", fin_by_rule["R19"] == finj["r19"], str(fin_by_rule["R19"]))
+    check("R20 真值 = 1（单窗单事件）", fin_by_rule["R20"] == 1, str(fin_by_rule["R20"]))
+    check(f"R21 真值计数 = 配置 dup+mismatch {finj['r21_dup'] + finj['r21_mismatch']}",
+          fin_by_rule["R21"] == finj["r21_dup"] + finj["r21_mismatch"], str(fin_by_rule["R21"]))
+    check("资金流真值 severity 合法（high/critical）",
+          all(r["severity"] in ("high", "critical") for r in fin_gt))
+    pay_ids = {p["payment_id"] for p in pays}
+    check("R19/R21 真值锚点 payment_id ∈ payments；R20 锚 CASH14D-<as_of>",
+          all(r["payment_id"] in pay_ids for r in fin_gt if r["rule_id"] in ("R19", "R21"))
+          and all(r["payment_id"] == f"CASH14D-{as_of_str}" for r in fin_gt if r["rule_id"] == "R20"))
+    # R19 真值确为 in 向 scheduled 且逾期 > 阈值；R21 确为 paid
+    p_by_id = {p["payment_id"]: p for p in pays}
+    check("R19 真值确为 in 向 scheduled 且逾期 > overdue_receivable_days",
+          all(p_by_id[r["payment_id"]]["direction"] == "in"
+              and p_by_id[r["payment_id"]]["status"] == "scheduled"
+              and (as_of_d - _date.fromisoformat(p_by_id[r["payment_id"]]["due_date"])).days
+              > fc["overdue_receivable_days"] for r in fin_gt if r["rule_id"] == "R19"))
+    print(f"  资金流: Payment={len(pays)}  真值 R19={fin_by_rule['R19']} R20={fin_by_rule['R20']} "
+          f"R21={fin_by_rule['R21']}  账期档={sorted({int(s['payment_terms_days']) for s in sup_rows.values()})}")
 
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)

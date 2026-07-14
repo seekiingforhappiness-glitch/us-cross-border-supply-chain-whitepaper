@@ -472,17 +472,27 @@ def assert_d_links_fks(onto: dict, schema: dict) -> tuple[list[Diff], list[str],
             exemptions.append((lt, s, t, card, carrier))
             continue
 
-        # M1 规则7：显式 storage 声明 → 核对声明列是否存在（不再靠派生"重建猜测"）
+        # M1 规则7：显式 storage 声明 → 核对声明列是否存在（不再靠派生"重建猜测"）。
+        # F1（V8-②）扩展：storage 可带 `discriminator` 判别式（ref_type+ref_id 单列承载多关系，
+        # 3 条 payment 结算/催收关系共用 payments.ref_id、由 ref_type 值区分）——此时 D 类除核对
+        # 值列(column=ref_id)存在，还须核对判别列(discriminator=ref_type)存在（"按 ref_type 分支"）。
+        # 无 discriminator 的既有 storage 声明行为不变（po_shipped_by/shipment_to_warehouse 全绿不动）。
         storage = link.get("storage")
         if storage:
             kind, stbl, scol = storage.get("kind"), storage.get("table"), storage.get("column")
-            if scol in {c[0] for c in schema.get(stbl, [])}:
+            tbl_cols = {c[0] for c in schema.get(stbl, [])}
+            disc = storage.get("discriminator")   # 判别列名（如 ref_type），可选
+            disc_val = storage.get("discriminator_value")
+            missing_cols = [c for c in (scol, disc) if c and c not in tbl_cols]
+            if not missing_cols:
+                disc_note = (f"，判别式 `{disc}`={disc_val!r}（列存在）" if disc else "")
                 notes.append(f"[storage 显式声明] {lt} ({s}→{t} {card}) 由 `{stbl}`.`{scol}` 承载"
-                             f"（kind={kind}），列存在，一致")
+                             f"（kind={kind}）{disc_note}，列存在，一致")
             else:
                 diffs.append(Diff("D", MISSING, lt,
-                                  f"关系 {lt} 的 storage 声明指向 `{stbl}`.`{scol}`（kind={kind}），"
-                                  f"但该列在表 `{stbl}` 中不存在"))
+                                  f"关系 {lt} 的 storage 声明指向 `{stbl}`（kind={kind}"
+                                  f"{f'，判别 {disc}' if disc else ''}），"
+                                  f"但列 {missing_cols} 在表 `{stbl}` 中不存在"))
             continue
 
         if card == "N:M":

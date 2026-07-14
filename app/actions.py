@@ -36,7 +36,11 @@ def _perm_slice(*keys):
     return {k: _ONTOLOGY_PERMS[k] for k in keys}
 
 
-ROLE_PERMS = _perm_slice("AssignTask", "ProposeMitigation", "ApproveMitigation", "CloseRiskEvent")
+# F1（V8-②）：资金流两动作随本体 enforcement=role_dict 自动进 build_role_perms，本模块追加分片
+# 取用——RecordPayment(记录收/付事实，AI 不可达)、ProposeCollection(催收提案，maker-checker)。
+# 人批口径守护见 app/test_agent_security.py EXPECTED_ROLE_PERMS（仅追加两键、既有键一字不改）。
+ROLE_PERMS = _perm_slice("AssignTask", "ProposeMitigation", "ApproveMitigation", "CloseRiskEvent",
+                         "RecordPayment", "ProposeCollection")
 PARAM_SCHEMAS = {
     "expedite": {"new_mode", "est_cost_usd", "expected_new_eta"},
     "reschedule": {"new_promise_date", "notify_customer"},
@@ -338,6 +342,45 @@ def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role
              as_of, "ok")
     return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged",
                             f"Task {tid} assigned to {assignment['assignee_user_id']}"])
+
+
+def propose_collection(con, payment_id, note=None, actor=None, role=None, as_of=None):
+    """A26（F1，V8-②）：对逾期应收（overdue 派生的 in 向 Payment）提交催收任务提案。
+    前置：payment 存在、direction='in'、overdue 派生成立（status=scheduled 未付 且 due_date < as_of）。
+    效果：生成催收 Task 提案（approval_status='pending'，maker-checker）候人批——审批仍由人做
+    （proposal-only，AI 只产提案不夺决策）。若该应收已检出 R19 风险事件则挂其上、复用现有闭环。"""
+    if role not in ROLE_PERMS["ProposeCollection"]:
+        return _denied(con, "ProposeCollection", payment_id, actor, role, as_of)
+    cur = con.cursor()
+    p = cur.execute("SELECT * FROM payments WHERE payment_id=?", (payment_id,)).fetchone()
+    if not p:
+        return _fail(con, "ProposeCollection", payment_id, actor, role, as_of, "Payment 不存在")
+    if p["direction"] != "in":
+        return _fail(con, "ProposeCollection", payment_id, actor, role, as_of,
+                     "仅 in 向应收可催收（direction≠in）")
+    overdue = (p["status"] == "scheduled" and not p["paid_date"]
+               and p["due_date"] and str(p["due_date"]) < str(as_of))
+    if not overdue:
+        return _fail(con, "ProposeCollection", payment_id, actor, role, as_of,
+                     "Payment 非 overdue（须 scheduled 未付且 due_date < as_of）")
+    # 若该逾期应收已检出 R19 风险事件（affected_so_line_ids 承载 payment_id），催收提案挂其上
+    risk = cur.execute("SELECT risk_event_id FROM risk_events WHERE rule_id='R19' "
+                       "AND affected_so_line_ids LIKE ?", (f'%"{payment_id}"%',)).fetchone()
+    rid = risk["risk_event_id"] if risk else None
+    params = {"payment_id": payment_id, "counterparty_id": p["counterparty_id"],
+              "amount_usd_ref": p["ref_id"], "note": note or ""}
+    _ensure_task_governance_columns(con, cur)
+    tid = _next_task_id(cur, rid or payment_id, as_of)
+    with transaction(con):
+        cur.execute("""INSERT INTO tasks (task_id, risk_event_id, title, assignee_role, priority,
+                       proposed_action, proposal_params, approval_status, status,
+                       assigned_by_actor_id, proposal_actor_id, proposal_actor_role)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (tid, rid, f"催收逾期应收 {payment_id}", role, "P2",
+                     "collect", json.dumps(params, ensure_ascii=False), "pending", "in_progress",
+                     actor, actor, role))
+        _log(cur, actor, role, "ProposeCollection", tid, params, as_of, "ok")
+    return _res(True, tid, [f"催收任务提案 {tid} 生成（approval_status=pending，候人批 maker-checker）"])
 
 
 def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, role, as_of):

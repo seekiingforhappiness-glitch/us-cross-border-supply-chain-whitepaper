@@ -10,9 +10,9 @@
      其余角色返回 MASK；掩码值 == agent.tools.MASK）；越域读被拒并审计。
   ③ 审计入库：每次工具调用经审计写连接落 llm_calls 一行 call_type='mcp_tool'；CHECK 迁移幂等可重跑；
      业务连接物理只读（mode=ro，写操作被 SQLite 拒）。
-  ④ 冻结区 + 6 写提案工具（V6 裁2）：暴露集 ∩ snake_case(frozen 动作) == ∅ 且 暴露集 ⊇ {6 个写工具名}；
+  ④ 冻结区 + 7 写提案工具（V6 裁2）：暴露集 ∩ snake_case(frozen 动作) == ∅ 且 暴露集 ⊇ {7 个写工具名}；
      input_schema 本体驱动（traverse 枚举 = 本体对象/关系；对象字段结构复用 M3 model_json_schema）。
-  ⑥ 写提案工具走既有 dispatch（V6 裁2）：a) 写工具集 == 6 exposed 动作 snake_case、冻结区仍 ∅；
+  ⑥ 写提案工具走既有 dispatch（V6 裁2）：a) 写工具集 == 7 exposed 动作 snake_case、冻结区仍 ∅；
      b) 可见性按角色矩阵（sales 仅见 create_admission_case；抽 2 角色断言）；c) 无权角色调写工具→拒绝且
      留 action_log denial；d) 有权角色真调一次（临时副本）→任务行新增 + action_log ok + llm_calls mcp_tool 留痕；
      e) MCP 通道诱导 approve_mitigation（冻结区、不在清单）→协议层拦截、**永不到达 dispatch**（action_log 零新增）。
@@ -36,8 +36,10 @@ import agent.mcp_server as M
 FAILS: list[str] = []
 SRC_DB = "data/ontology.sqlite"
 ALL_ROLES = ("ops", "cs", "finance", "manager", "sales", "compliance", "procurement")
-SIX_WRITE = {"assign_task", "propose_mitigation", "create_admission_case",
-             "run_compliance_precheck", "build_logistics_plan", "calculate_cost_scenario"}
+# V6 裁2 开 6 写；F1（V8-②）ProposeCollection exposed=true 随 build_tool_defs 自动成第 7 写工具。
+SEVEN_WRITE = {"assign_task", "propose_mitigation", "create_admission_case",
+               "run_compliance_precheck", "build_logistics_plan", "calculate_cost_scenario",
+               "propose_collection"}
 FOUR_FROZEN = {"approve_mitigation", "close_risk_event",
                "approve_quote_decision", "reject_or_request_more_info"}
 
@@ -121,9 +123,9 @@ def test_role_filter(db: Path) -> None:
     print("\n① 角色过滤（tools/list × 角色域矩阵 + 写工具权限矩阵，与 tools.py 同源）")
     onto = load_ontology()
     exposed = {t["name"] for t in M.build_exposed_tool_defs(onto)}          # 18=11 读+6 写+traverse
-    read_names = exposed - {"traverse"} - SIX_WRITE                        # 11
-    check(exposed == read_names | SIX_WRITE | {"traverse"} and len(exposed) == 18,
-          "暴露全集 = 11 读 + 6 写 + traverse = 18")
+    read_names = exposed - {"traverse"} - SEVEN_WRITE                        # 11
+    check(exposed == read_names | SEVEN_WRITE | {"traverse"} and len(exposed) == 19,
+          "暴露全集 = 11 读 + 7 写 + traverse = 19")
     vis_by_role = {}
     for role in ALL_ROLES:
         with M.OntologyMCPServer(role=role, db_path=db) as s:
@@ -134,7 +136,7 @@ def test_role_filter(db: Path) -> None:
               f"{role}: 可见集 == allowed_tools_for_role + traverse（读+写同源）")
         check("traverse" in vis, f"{role}: traverse 可见")
         # 可见写工具 == 该角色授权写工具（越权写工具不出现在 tools/list）
-        check(vis & SIX_WRITE == allowed_tools_for_role(role) & SIX_WRITE,
+        check(vis & SEVEN_WRITE == allowed_tools_for_role(role) & SEVEN_WRITE,
               f"{role}: 可见写工具 == 角色授权写工具")
         check(not (vis & FOUR_FROZEN), f"{role}: 不含任何冻结区工具")
     # 域矩阵具体校验：cs 无成本/准入域；ops 有；compliance 有准入无成本
@@ -226,18 +228,18 @@ def test_audit_and_readonly(db: Path) -> None:
 
 
 def test_frozen_and_schema(db: Path) -> None:
-    print("\n④ 冻结区机制化 + 6 写提案工具 exposed（V6 裁2）+ input_schema 本体驱动")
+    print("\n④ 冻结区机制化 + 7 写提案工具 exposed（V6 裁2）+ input_schema 本体驱动")
     onto = load_ontology()
     with M.OntologyMCPServer(role="ops", db_path=db) as s:
         exposed = s.exposed_names
         frozen_snake = {snake_case(a["name"]) for a in onto["actions"]
                         if a.get("ai_executable") == "frozen"}
         check(exposed & frozen_snake == set(), "暴露集 ∩ snake_case(frozen 动作) == ∅（冻结区永不暴露）")
-        # V6 裁2：写工具集 == 6 个 exposed 动作 snake_case（全部暴露），且冻结区仍 ∅（原"零写工具"断言改写）
-        check(s.write_names == SIX_WRITE and exposed & SIX_WRITE == SIX_WRITE,
-              "写工具集 == 6 个 exposed 动作 snake_case（全部随暴露集注册）")
+        # V6 裁2：写工具集 == 7 个 exposed 动作 snake_case（全部暴露），且冻结区仍 ∅（原"零写工具"断言改写）
+        check(s.write_names == SEVEN_WRITE and exposed & SEVEN_WRITE == SEVEN_WRITE,
+              "写工具集 == 7 个 exposed 动作 snake_case（全部随暴露集注册）")
         check(build_forbidden_tools(onto) == FOUR_FROZEN, "FORBIDDEN == 四个审批/关闭类")
-        check(len(exposed) == 18 and "traverse" in exposed, "暴露集 = 11 读 + 6 写 + traverse = 18")
+        check(len(exposed) == 19 and "traverse" in exposed, "暴露集 = 11 读 + 7 写 + traverse = 19")
         # 冻结区即便直接 call_tool 也被纵深防御拒（协议层，未向 AI 开放）——写工具不在此列（走 dispatch，见 ⑥）
         deep = all((lambda ed: ed[0] and "未向 AI 开放" in str(ed[1].get("error", "")))(
             _call(s, name, {})) for name in FOUR_FROZEN)
@@ -264,7 +266,7 @@ def test_write_tools(db: Path) -> None:
     # b) 可见性按角色矩阵——抽 2 角色（sales 仅见 create_admission_case；ops 见派单/提案/物流方案）
     def visible_writes(role):
         with M.OntologyMCPServer(role=role, db_path=db) as s:
-            return s.visible_tool_names() & SIX_WRITE
+            return s.visible_tool_names() & SEVEN_WRITE
     check(visible_writes("sales") == {"create_admission_case"},
           "b) sales 只见 create_admission_case（CreateAdmissionCase={sales}，越权写不入 tools/list）")
     check(visible_writes("ops") == {"assign_task", "propose_mitigation", "build_logistics_plan"},
@@ -350,7 +352,7 @@ def main() -> int:
         for f in FAILS:
             print("  -", f)
         return 1
-    print("PASS: MCP server 全绿（角色过滤/脱敏/审计/冻结区 + 6 写提案工具走既有 dispatch + 协议冒烟）")
+    print("PASS: MCP server 全绿（角色过滤/脱敏/审计/冻结区 + 7 写提案工具走既有 dispatch + 协议冒烟）")
     return 0
 
 

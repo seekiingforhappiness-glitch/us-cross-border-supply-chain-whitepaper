@@ -16,6 +16,7 @@ from .cost_rules import detect_cost_anomalies
 from .procurement_rules import detect_procurement_risks
 from .warehouse_rules import detect_warehouse_risks
 from .sourcing_rules import detect_sourcing_risks
+from .finance_rules import detect_finance_risks
 from .graph import upsert_relationship
 
 DB = "data/ontology.sqlite"
@@ -287,6 +288,40 @@ def apply_sourcing_candidates(con, cands, as_of):
     return created
 
 
+def apply_finance_candidates(con, cands, as_of):
+    """F1 资金流 RiskEvent 写库（R19-R21，V8-②）。与仓储/采购写库同构：不合并、不牵动订单行
+    （每 anchor 唯一 → 恒 create）。资金流 RiskEvent 无 shipment/po/supplier/warehouse 锚，用
+    affected_so_line_ids（承载受影响业务对象 id=payment_id 或合成窗口键 CASH14D-<as_of>）锚点
+    （沿仓储 RiskEvent 通用列先例）。RSK 序号续既有事件之后（append，不扰动 R1-R18 序号）。
+    审计时间戳用 as_of（D8）。返回 created。"""
+    cur = con.cursor()
+    ts = f"{as_of.isoformat()}T00:00:00Z"
+    seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
+    created = 0
+    for c in sorted(cands, key=lambda x: (x["rule_id"], x["anchor"])):
+        seq += 1
+        rid = f"RSK-{seq:04d}"
+        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                       root_cause, status, resolved_at, outcome, resolution_summary,
+                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
+                       warehouse_id, affected_sku_ids)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (rid, c["type"], c["rule_id"], c["severity"], None,
+                     json.dumps([c["anchor"]]), c["affected_value_usd"], c["detected_at"],
+                     c["root_cause"], "open", None, None, None, None, None, None, None,
+                     None, None))
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
+                       params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    ("engine", "system", "CreateRiskEvent", rid,
+                     json.dumps({"rule_id": c["rule_id"], "anchor": c["anchor"],
+                                 "severity": c["severity"]}, ensure_ascii=False),
+                     as_of.isoformat(), ts, "created"))
+        created += 1
+    con.commit()
+    return created
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/datagen.yaml")
@@ -312,13 +347,18 @@ def main():
     # P3 采购富化2 R14/R15（Build A）：须在 proc R7-R13 之后（R14 依赖 R7/R9 事件）。RSK 序号 append 末尾。
     src_cands = detect_sourcing_risks(con, as_of, cfg)
     src_created = apply_sourcing_candidates(con, src_cands, as_of)
+    # F1 资金流 R19-R21（V8-②）：独立检测与写库路径（payment/合成窗口键锚点，不合并、不牵动订单行）。
+    # RSK 序号 append 末尾（不扰动 R1-R18 序号）。
+    fin_cands = detect_finance_risks(con, as_of, cfg)
+    fin_created = apply_finance_candidates(con, fin_cands, as_of)
     by_rule = {}
-    for c in cands + cost_cands + proc_cands + wh_cands + src_cands:
+    for c in cands + cost_cands + proc_cands + wh_cands + src_cands + fin_cands:
         by_rule[c["rule_id"]] = by_rule.get(c["rule_id"], 0) + 1
     print(json.dumps({"as_of": as_of.isoformat(),
                       "candidates": len(cands) + len(cost_cands) + len(proc_cands)
-                      + len(wh_cands) + len(src_cands),
-                      "created": created + proc_created + wh_created + src_created, "merged": merged,
+                      + len(wh_cands) + len(src_cands) + len(fin_cands),
+                      "created": created + proc_created + wh_created + src_created + fin_created,
+                      "merged": merged,
                       "by_rule": by_rule, "invoice_status": inv_dist},
                      ensure_ascii=False))
 
