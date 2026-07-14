@@ -44,6 +44,23 @@ streamlit run app/streamlit_app.py          # 改代码后【完整重启】，�
 - [x] **费用 R4–R6** `engine.evaluate_cost` P/R=1.000
 - [x] **采购 R7–R15** `engine.evaluate_procurement` P/R=1.000、灰区 0 误报
 - [x] **仓储 R16–R18** `engine.evaluate_warehouse` P/R=1.000
+- [x] **资金流 R19–R21** `engine.evaluate_finance` P/R=1.000（F1，2026-07-14 起新增发版门）
+
+### A+. 本体运行时化与 AI 通道（V5-V6 API 层，2026-07-14 起新增发版门）
+- [x] **权限/工具单一权威源**：`app/test_ontology_runtime.py` 迁移一致性全绿（本体解释生成==
+      人批基线；含 frozen∩exposed 变异防线三用例、traverse 四承载+判别式正反向）
+- [x] **MCP server 四门槛**：`agent/test_mcp_server.py` 全绿（角色过滤/声明脱敏/审计入库
+      llm_calls/冻结区协议层拦截+7 写工具走既有 dispatch 无第二写路径）
+- [x] **对抗安全**：`app/test_agent_security.py` 288 注入全拒（扩资金流工具后）
+- [x] **API 聚合层**：`pytest apps/api/` 全绿（五路由本体驱动+驾驶舱三端点手工 SQL 对照+
+      双世界+脱敏；36 用例）
+- [x] **驾驶舱构建**：`cd apps/cockpit && npx tsc --noEmit && npm run build` 零错
+
+### A++. 待收口（本轮企业级交付前必须回填为 [x]）
+- [ ] 透视镜 v3 四板块交付+既有 12 视图零回归（V3a 单在途）
+- [ ] Task 动作词表对齐后 simworld 全对象 model_validate 零警告（G4 单在途）
+- [ ] 前端死样式清理后全交互回归（G3 单在途）
+- [ ] README/ONBOARDING 对齐 0.11.x 形态（对象 35/规则 21/驾驶舱/MCP/API/透视镜 v3）
 
 ### B. 五场景闭环（风险→派单→提案→审批 maker-checker→审计）
 - [x] 延误 `test_closed_loop` · 费用 `test_cost_loop` · 准入 `test_admission_loop`
