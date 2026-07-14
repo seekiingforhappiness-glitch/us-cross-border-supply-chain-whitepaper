@@ -6,7 +6,7 @@
 
 设计选型（V5 调研结论）：结构性低频（Pydantic 模型 / DDL）用**生成型**——产物文件入版本
 控制，改本体重跑生成器（区别于权限/工具的解释型）。本脚本产出 `pipeline/ontology_models.py`
-（34 个模型 + MODEL_BY_TABLE 注册表），供 build_ontology 插入前 `model_validate` 做数据契约校验。
+（逐对象模型 + MODEL_BY_TABLE 注册表），供 build_ontology 插入前 `model_validate` 做数据契约校验。
 
 类型映射（plan M3 唯一权威表 + 本体已有但表未列的类型按 SQLite 亲和/存量存储的最保守读法补全）：
     本体 type            Pydantic
@@ -82,7 +82,7 @@ def render_model(obj: dict) -> str:
 HEADER = '''\
 # GENERATED FROM ontology v{version} — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
 # -*- coding: utf-8 -*-
-"""桥3 结构生成产物：本体 34 对象的 Pydantic 模型（数据契约校验用）。
+"""桥3 结构生成产物：本体 {n_objects} 对象的 Pydantic 模型（数据契约校验用）。
 
 来源：ontology/control-tower-ontology.json（objects[].properties）。
 生成器：pipeline/generate_models.py。手改无效——改本体后重跑生成器覆盖本文件。
@@ -120,7 +120,7 @@ class _Base(BaseModel):
 
 
 def build_source(onto: dict) -> str:
-    parts = [HEADER.format(version=onto.get("version"))]
+    parts = [HEADER.format(version=onto.get("version"), n_objects=len(onto["objects"]))]
     for obj in onto["objects"]:
         parts.append("")
         parts.append("")

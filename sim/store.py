@@ -175,6 +175,14 @@ def _inventory_snapshot(world):
     return rows
 
 
+# G6 枚举清零（本体 PurchaseOrder.status 治本，V12 决策日志延伸；同 _TASK_STATUS_MAP 对象层投影法）：
+# sim 内部采购单生命周期用通用词 "open"（generators 建单起始态，全程不流转），但本体 PurchaseOrder.status
+# 枚举为 placed/ready/shipped/closed/cancelled——对象层投影时把起始态 open 映射为 placed（订单已下给供应商，
+# 语义最贴的本体初态；真实世界 datagen 的 PO 已流转到 ready/shipped/closed 故不含 placed，sim PO 恒停在
+# 初态故恒为 placed）。纯投影不改 world["pos"]（保 verify 复现性），不消费 rng。
+_PO_STATUS_MAP = {"open": "placed"}
+
+
 def _rows(world):
     """世界状态 → 对象层各表行（确定性排序；列集对齐本体，sim 专属字段不入此层）。"""
     as_of = world["_as_of"].isoformat()
@@ -208,7 +216,8 @@ def _rows(world):
         "po_id": p["po_id"], "supplier_id": p["supplier_id"],
         "sku_id": world["lines"][p["line_ids"][0]]["sku_id"], "qty": p["qty"],
         "po_date": p["po_date"].isoformat(),
-        "expected_ready_date": p["expected_ready_date"].isoformat(), "status": p["status"],
+        "expected_ready_date": p["expected_ready_date"].isoformat(),
+        "status": _PO_STATUS_MAP.get(p["status"], p["status"]),
     } for p in (world["pos"][k] for k in sorted(world["pos"]))]
     t["shipments"] = [{
         "shipment_id": s["shipment_id"], "booking_no": s["booking_no"], "mbl_no": s["mbl_no"],

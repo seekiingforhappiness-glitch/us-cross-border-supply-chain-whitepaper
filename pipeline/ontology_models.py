@@ -1,6 +1,6 @@
-# GENERATED FROM ontology v0.11.2 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
+# GENERATED FROM ontology v0.11.3 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
 # -*- coding: utf-8 -*-
-"""桥3 结构生成产物：本体 34 对象的 Pydantic 模型（数据契约校验用）。
+"""桥3 结构生成产物：本体 35 对象的 Pydantic 模型（数据契约校验用）。
 
 来源：ontology/control-tower-ontology.json（objects[].properties）。
 生成器：pipeline/generate_models.py。手改无效——改本体后重跑生成器覆盖本文件。
@@ -55,7 +55,7 @@ class Sku(_Base):
     sku_id: str
     sku_name: str
     supplier_id: Optional[str] = None
-    category: Literal['charger', 'cable', 'earbuds', 'phone_case']
+    category: Literal['charger', 'cable', 'earbuds', 'phone_case', 'seasonal_gift']
     unit_price_usd: float
     sku_status: Literal['candidate', 'active']
     declared_value_usd: Optional[float] = None
@@ -131,11 +131,11 @@ class Shipment(_Base):
     incoterm: Literal['FOB', 'CIF', 'DDP']
     vessel_voyage: Optional[str] = None
     carrier_name: Optional[str] = None
-    carrier_scac: Literal['COSU', 'OOLU', 'MATS', 'ZIMU', 'EGLV']
+    carrier_scac: Literal['COSU', 'OOLU', 'MATS', 'ZIMU', 'EGLV', 'ONEY', 'MAEU', 'MSCU', 'CMDU', 'HLCU']
     origin_port: Literal['yantian', 'shekou', 'ningbo']
     origin_port_locode: Literal['CNYTN', 'CNSHK', 'CNNGB']
-    destination_port: Literal['los_angeles', 'long_beach']
-    destination_port_locode: Literal['USLAX', 'USLGB']
+    destination_port: Literal['los_angeles', 'long_beach', 'new_york', 'savannah', 'rotterdam', 'hamburg']
+    destination_port_locode: Literal['USLAX', 'USLGB', 'USNYC', 'USSAV', 'NLRTM', 'DEHAM']
     destination_warehouse: str
     etd: str
     eta_initial: str
@@ -314,7 +314,7 @@ class InvoiceLine(_Base):
     """InvoiceLine — GENERATED, 表 invoice_lines。"""
     invoice_line_id: str
     invoice_id: str
-    charge_code: Literal['OFT', 'THC', 'DOC', 'FSC', 'CUS', 'DTY', 'WHS', 'STO', 'LMD', 'DET', 'DEM', 'CHS', 'ACC']
+    charge_code: Literal['OFT', 'THC', 'DOC', 'FSC', 'CUS', 'DTY', 'WHS', 'STO', 'LMD', 'DET', 'DEM', 'CHS', 'ACC', 'ISF', 'INSP', 'PSS']
     container_no: Optional[str] = None
     qty: int
     unit_price_usd: float

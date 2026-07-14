@@ -183,7 +183,10 @@ def _process_approvals(world, day, rng):
             effect = _apply_disposition(world, task, meta["cand"], day)
             task.update(approval_status="approved", status="done", approved_by_role="manager",
                         action_taken=f"{meta['action']} approved", decided_at=day.isoformat())
-            world["risk_events"][rid]["status"] = "mitigated"
+            # G6 枚举清零（本体 RiskEvent.status 治本）：批准即处置生效、但尚未到期关闭（_close_matured
+            # 会在 10-28 天后转 resolved+outcome）——此中间态"处置已施加、结果待兑现"，本体枚举 mitigating
+            # （处置进行中）最贴，非 resolved（那是关闭态）。改 mitigated→mitigating（无内部读者依赖此字面量）。
+            world["risk_events"][rid]["status"] = "mitigating"
             decision = "adopted"
             _log_ai(world, day, APPROVER, "approve", rid, tid, f"批准；处置生效：{effect}")
         else:
@@ -256,7 +259,10 @@ def _close_matured(world, day, rng):
             continue
         risk = world["risk_events"][rid]
         adopted = meta["decision"] == "adopted"
-        outcome = "mitigated" if adopted else "accepted"
+        # G6 枚举清零（本体 RiskEvent.outcome 治本）：sim 原产 accepted（提案未采纳→接受延误/现状），
+        # 本体 outcome 枚举为 [mitigated,accepted_delay,false_alarm,escalated]——accepted→accepted_delay
+        # （语义即"接受延误"，与真实 app close_risk_event 流一致）；mitigated 本就在枚举内，不动。
+        outcome = "mitigated" if adopted else "accepted_delay"
         ql = _sample_quality(world, rng)
         risk.update(status="resolved", outcome=outcome, resolved_at=meta["close_day"].isoformat(),
                     resolution_summary=f"{meta['action']} {'已执行' if adopted else '未采纳'}；"

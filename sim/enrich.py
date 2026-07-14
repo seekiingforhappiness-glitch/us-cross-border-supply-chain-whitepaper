@@ -100,15 +100,24 @@ def _admission(world, cfg, rng):
         cid = cust_ids[rng.randrange(len(cust_ids))]
         kid = sku_ids[rng.randrange(len(sku_ids))]
         case_id = G._nid(world, "adm", "ADM-SIM", 5)
-        decision = {"approved": "approved", "rejected": "rejected",
-                    "quote_with_conditions": "conditional"}.get(status, "")
+        # G6 枚举清零（本体 AdmissionCase.decision 治本，V12 决策日志延伸）：sim 原产
+        # approved/rejected/conditional，本体枚举为 approve/quote_with_conditions/reject/more_info——
+        # 逐值改到本体标准词（approved→approve、rejected→reject、conditional→quote_with_conditions，
+        # 仅时态/构词差异，语义等价，非语义变化）。纯字面量改不消费 rng → S1/S2 随机序列逐字节不变。
+        decision = {"approved": "approve", "rejected": "reject",
+                    "quote_with_conditions": "quote_with_conditions"}.get(status, "")
         reason = {"approved": "毛利达标、合规齐备", "rejected": "毛利为负或合规缺口",
                   "quote_with_conditions": "附条件报价（补件后放行）"}.get(status, "")
         cases.append({
             "admission_case_id": case_id,
             "case_title": f"{world['skus'][kid]['sku_name']} 上架申请",
             "customer_id": cid, "sku_id": kid, "request_type": "new_sku",
-            "incoterm_candidate": rng.choice(["FOB", "CIF", "DDP"]),
+            # G6 枚举清零（本体 AdmissionCase.incoterm_candidate 治本）：sim 原误用船运 incoterm 三元组
+            # ["FOB","CIF","DDP"]，但准入域本体枚举为 [FOB,DAP,DDP,tbd]——真实世界 datagen 恰用 DAP、
+            # 从不用 CIF（G6 实测：DAP×11/DDP×12/FOB×12/tbd×5，零 CIF）。CIF 是船运域端口交货术语，
+            # 准入域刻意选 DAP（门到门，对应 dap_quote 请求类型），故 sim 的 CIF 判为拷贝误写 → 映射到
+            # 位置同序的 DAP：rng.choice 抽签次数与被选下标均不变，仅该下标字面量 CIF→DAP，零 rng 扰动。
+            "incoterm_candidate": rng.choice(["FOB", "DAP", "DDP"]),
             "target_launch_date": (as_of + timedelta(days=rng.randint(20, 120))).isoformat(),
             "monthly_order_estimate": rng.randint(200, 5000),
             "risk_level": rng.choice(["low", "low", "medium", "high"]),
@@ -125,7 +134,9 @@ def _admission(world, cfg, rng):
                 return round(cost * f, 2)
             scenarios.append({
                 "cost_scenario_id": G._nid(world, "cs", "COST-SIM", 5),
-                "logistics_plan_id": f"LPLAN-SIM-{case_id[-5:]}", "scenario_type": "baseline",
+                # G6 枚举清零（本体 CostScenario.scenario_type 治本）：sim 原产 "baseline"，本体枚举为
+                # [conservative,base,optimistic]——baseline 即 base（基准场景），改到本体标准词（同义，非语义变化）。
+                "logistics_plan_id": f"LPLAN-SIM-{case_id[-5:]}", "scenario_type": "base",
                 "quote_price_usd": quote, "product_cost_usd": part(0.55),
                 "first_mile_cost_usd": part(0.05), "international_freight_usd": part(0.16),
                 "duty_tax_usd": part(0.09), "customs_brokerage_usd": part(0.03),
