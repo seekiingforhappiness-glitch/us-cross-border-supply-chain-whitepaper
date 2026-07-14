@@ -58,8 +58,13 @@
 > 模型自述 maker-checker 边界。执行层于验收阶段 watchdog 停滞，主会话接手验收收口（改动无缺陷）。
 > **裁3=了解**：新通道维持默认，结案。
 > **驾驶舱已启动**：画面复述候 Daniel 对齐（docs/superpowers/specs/2026-07-14-cockpit-screen-
-> narrative.md，六段画面+有意不做清单——回"对"即开工画面级实现）；地基单（apps/cockpit React
-> 骨架 + apps/api 双世界数据源参数化 ONTOLOGY_DB）执行中，不依赖画面确认。**遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
+> narrative.md，六段画面+有意不做清单——回"对"即开工画面级实现）。**地基已交付（51fd4b8）**：
+> apps/cockpit React 骨架（Vite+React18+TS 照透视镜栈零新依赖，三占位视图，连接状态条全字段来自
+> /ontology）+ apps/api 双世界数据源（ONTOLOGY_DB 环境变量切 verification/simulation，18 用例）；
+> CORS 经 vite 同源反代解决（独立静态部署时需补 CORS 中间件，README 挂账）。
+> **启动**：`uvicorn apps.api.main:app --port 8100` → `cd apps/cockpit && npm install && npm run dev`
+> （或 ./start.sh）；模拟世界：`ONTOLOGY_DB=data/simworld.sqlite uvicorn ...`（simworld 由
+> `python3 -m sim.backfill` 生成）。**下一步：Daniel 回画面复述 → 驾驶舱画面级实现 → 透视镜 v3**。**遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
 > 分叉、COST_FIELDS 等硬编码脱敏集全量声明化。
 > **Daniel 验收走查（5 分钟）**：完整重启 streamlit → 任意风险工作台点「询问」问一个问题
 > （预期 40-105 秒，回答头标"真实查库作答"，简报折叠区明示未被用作依据）→ 控制室审计视图查
