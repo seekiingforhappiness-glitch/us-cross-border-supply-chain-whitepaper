@@ -61,6 +61,23 @@ export interface ConstitutionData {
   source: string;
 }
 
+// ---- 动作作为 AI 工具（v3 板块③ · 直读本体 M1/M2 桥2 字段） ----
+export interface ToolInputSchema {
+  type?: string;
+  properties?: Record<string, { type?: string; enum?: string[] }>;
+  required?: string[];
+}
+export interface ActionToolView {
+  exposedAsTool: boolean;
+  aiExecutable: string | null;      // auto | confirm | never | frozen
+  aiExecutablePlain: string;
+  enforcement: string | null;
+  frozen: boolean;
+  toolName: string | null;          // snake_case（本体 signature 函数名）
+  toolDescription: string | null;
+  toolInputSchema: ToolInputSchema | null;
+}
+
 // ---- 关联织网 ----
 export interface WeaveRel {
   dir: "out" | "in"; linkType: string; other: string; otherPlain: string; cardinality: string; plain: string;
@@ -69,6 +86,7 @@ export interface WeaveAction {
   id: string; name: string; tier: string; plain: string; executors: string[]; frozen: boolean;
   primary: boolean; target: string; targetPlain: string; signature: string;
   preconditions: string[]; successEffects: string[]; failureHandling: string[]; audit: string[];
+  tool?: ActionToolView;
 }
 export interface WeaveRule { id: string; watch: string; plain: string; }
 export interface StateMachine {
@@ -132,14 +150,63 @@ export interface ActionRow {
   tier: string; tierMark: string; plain: string; executors: string[]; executorsPlain: string[];
   systemCan: boolean; frozen: boolean; perms: Record<string, boolean>;
   preconditions: string[]; successEffects: string[]; failureHandling: string[]; audit: string[];
-  paramsSchema?: unknown; domain: string;
+  paramsSchema?: unknown; tool: ActionToolView; domain: string;
 }
 export interface ActionsData {
   title: string; question: string; subtitle: string;
   roles: { id: string; plain: string }[];
   actions: ActionRow[];
   tiers: { key: string; mark: string; name: string; tone: string }[];
+  toolSummary: { exposed: number; frozen: number; total: number; note: string };
   frozenNote: string;
+}
+
+// ---- 影响分析专题（v3 板块② · impact.json） ----
+export interface StorageDecl {
+  kind: string; table: string; column: string;
+  discriminator?: string; discriminator_value?: string;
+}
+export interface ImpactLink {
+  linkType: string; dir: "out" | "in"; other: string; otherPlain: string;
+  cardinality: string; plain: string; storage: StorageDecl | null;
+}
+export interface ImpactRule { id: string; watch: string; plain: string; domain: string; }
+export interface ImpactAction {
+  id: string; name: string; tier: string; plain: string; primary: boolean;
+  frozen: boolean; exposedAsTool: boolean; toolName: string | null;
+}
+export interface ImpactQueryTool { name: string; domain: string; description: string; }
+export interface ImpactWriteTool {
+  actionId: string; name: string; toolName: string; description: string; primary: boolean;
+}
+export interface ImpactField {
+  name: string; type: string; desc: string; sensitive: string[] | null;
+  carriesLink: string | null; exposedByTools: string[];
+}
+export interface ImpactType {
+  type: string; plainName: string; why: string; domain: string; covered: boolean; count: number;
+  links: ImpactLink[]; rules: ImpactRule[]; actions: ImpactAction[];
+  queryTools: ImpactQueryTool[]; writeTools: ImpactWriteTool[];
+  sensitive: { field: string; visibleTo: string[] }[]; fields: ImpactField[];
+  counts: { links: number; rules: number; actions: number; tools: number; sensitive: number; instances: number };
+}
+export interface ImpactDomainRef {
+  id: string; name: string; plain: string; scene: string;
+  types: { type: string; plainName: string; impact: number; covered: boolean }[];
+}
+export interface ImpactData {
+  title: string; question: string; subtitle: string; hint: string; defaultType: string;
+  domains: ImpactDomainRef[]; types: Record<string, ImpactType>;
+}
+
+// ---- 全局搜索索引（v3 板块① · public/data/search.json 懒加载） ----
+export interface SearchItem { id: string; t: string; s: string; }
+export interface SearchIndex {
+  title: string;
+  types: Record<string, { plainName: string; domain: string; count: number }>;
+  items: SearchItem[];
+  total: number;
+  note: string;
 }
 
 // ---- 演进史 ----

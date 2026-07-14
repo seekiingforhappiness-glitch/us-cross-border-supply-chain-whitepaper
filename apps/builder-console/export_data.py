@@ -113,9 +113,9 @@ DOMAINS = {
         ],
     },
     "cost": {
-        "name": "运费对账", "scene": "invoice",
-        "plain": "货代开来的账单，逐条比对该收多少——多算的、没预算的、重复的，自动挑出来。",
-        "objects": ["Invoice", "InvoiceLine", "ExpectedCost"],
+        "name": "运费对账与资金流", "scene": "invoice",
+        "plain": "货代账单逐条比对该收多少（多算/没预算/重复挑出来）+ 收付款一本子（应收挂订单、应付结发票、现金流预警）。",
+        "objects": ["Invoice", "InvoiceLine", "ExpectedCost", "Payment"],
     },
     "admission": {
         "name": "SKU 准入闸门", "scene": "gate",
@@ -160,6 +160,7 @@ OBJECT_TABLE = {
     "Warehouse": "warehouses", "InventoryPosition": "inventory_positions",
     "InventoryReservation": "inventory_reservations", "CycleCount": "cycle_counts",
     "CoordinationThread": "coordination_threads",
+    "Payment": "payments",
 }
 
 # 对象白话名（关联织网/实体浏览的中文标签）
@@ -176,7 +177,7 @@ OBJECT_PLAIN = {
     "SupplierQualification": "供应商资质", "RFQ": "询价单", "RFQLine": "询价单行",
     "Quote": "报价", "Warehouse": "仓库", "InventoryPosition": "库存货位",
     "InventoryReservation": "库存预留", "CycleCount": "循环盘点",
-    "CoordinationThread": "协调线程",
+    "CoordinationThread": "协调线程", "Payment": "收付款",
 }
 
 # 每个对象一句话"它是什么/为什么存在"
@@ -195,6 +196,7 @@ OBJECT_WHY = {
     "Sku": "一个具体商品。合规属性（电池/食品接触/儿童品）决定能不能卖进美国。",
     "PurchaseOrder": "向工厂下的采购单（D2：采购侧不拆行，header 级；PoLine 在采购场景补行级）。",
     "SalesOrder": "客户下的一张销售订单，拆成若干订单行。",
+    "Payment": "一笔收付款（F1 资金流）：应收挂销售订单回款、应付结算货代/供应商发票；驱动应收逾期、现金流预警、付款异常检测。",
 }
 
 
@@ -255,6 +257,9 @@ LINK_PLAIN = {
     "rfq_line_for_sku": "询的哪个 SKU",
     "quote_from_supplier": "谁报的价",
     "risk_affects_sku": "牵连哪个 SKU",
+    "payment_settles_supplier_invoice": "结算哪张供应商发票",
+    "payment_settles_invoice": "结算哪张货代账单",
+    "payment_collects_order": "回收哪张销售订单款",
 }
 
 
@@ -297,6 +302,7 @@ ACTION_META = {
     "A23": {"target": "CoordinationThread", "tier": "human", "plain": "协调不动时升级。"},
     "A24": {"target": "CoordinationThread", "tier": "human", "plain": "协调达成，关闭线程。"},
     "A25": {"target": "CoordinationThread", "tier": "human", "plain": "协调谈崩，标记 dead-ended。"},
+    "A26": {"target": "Payment", "tier": "human", "plain": "发现付款异常（重复/不符）时起草对账追回提案，交财务审批。exposed 写工具，AI 可提案不可拍板。"},
 }
 TIER_LABEL = {
     "machine": {"mark": "🔵", "name": "机器/AI 自动", "tone": "cyan"},
@@ -322,6 +328,44 @@ ROLE_PLAIN = {
     "sales": "销售", "compliance": "合规", "manager": "经理", "system": "系统",
 }
 
+# ai_executable 四态白话（M1/M2 桥2 本体字段：auto/confirm/never/frozen）
+AI_EXEC_PLAIN = {
+    "auto": "AI 可自动执行（提案，走 maker-checker）",
+    "confirm": "AI 执行前需人确认",
+    "never": "不暴露给 AI（引擎/人内部动作）",
+    "frozen": "冻结区 · AI 永不可及（FORBIDDEN）",
+}
+
+
+def _tool_name_of(a: dict) -> str:
+    """AI 工具名（snake_case）：取本体 signature 的函数名（如 assign_task(...)→assign_task），
+    退化时由 PascalCase name 派生。零编造——直读本体声明。"""
+    sig = a.get("signature", "") or ""
+    if "(" in sig:
+        head = sig.split("(", 1)[0].strip()
+        if head:
+            return head
+    name = a.get("name", "") or ""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def action_tool_view(a: dict) -> dict:
+    """从本体 action 抽「作为 AI 工具」视图（板块③数据源，直读 M1/M2 桥2 字段）。
+    exposed_as_tool/ai_executable/enforcement/tool_description/tool_input_schema 均为本体声明。"""
+    exposed = bool(a.get("exposed_as_tool"))
+    ai_exec = a.get("ai_executable")
+    frozen = ai_exec == "frozen"
+    return {
+        "exposedAsTool": exposed,
+        "aiExecutable": ai_exec,
+        "aiExecutablePlain": AI_EXEC_PLAIN.get(ai_exec, ai_exec or "—"),
+        "enforcement": a.get("enforcement"),
+        "frozen": frozen,
+        "toolName": _tool_name_of(a) if exposed else None,
+        "toolDescription": a.get("tool_description"),
+        "toolInputSchema": a.get("tool_input_schema"),
+    }
+
 
 # =============================================================================
 # 规则元数据：盯哪个对象 + 白话逻辑（logic 原文实时取自 ontology，plain 作者写）
@@ -345,6 +389,9 @@ RULE_META = {
     "R16": {"target": "InventoryPosition", "watch": "断货", "plain": "可卖库存跌到安全库存以下，快断货。"},
     "R17": {"target": "InventoryPosition", "watch": "不可履约", "plain": "订单行还开着，但 ATP（可用+在途−占用）不够，履行不了。"},
     "R18": {"target": "CycleCount", "watch": "盘点差异", "plain": "盘点数与系统账差得超过容差（或 IRA 低于阈），账实不符。"},
+    "R19": {"target": "Payment", "watch": "应收逾期", "plain": "应收款过了约定回款日还没到账（direction=in、逾期未收），挂应收逾期。"},
+    "R20": {"target": "Payment", "watch": "现金流预警", "plain": "未来现金观察窗内预计净流出超阈值——现金流吃紧，提前预警（回款覆盖率跌破一半）。"},
+    "R21": {"target": "Payment", "watch": "付款异常", "plain": "已付款项里发现重复付款或与单据金额不符——付款异常，AI 提案对账追回。"},
 }
 
 
@@ -702,6 +749,7 @@ def build_weave(onto: dict, db: ReadOnlyDB) -> dict:
                 "successEffects": a.get("successEffects", []),
                 "failureHandling": a.get("failureHandling", []),
                 "audit": a.get("audit", []),
+                "tool": action_tool_view(a),
             })
         # 规则
         rls = []
@@ -736,7 +784,7 @@ def build_weave(onto: dict, db: ReadOnlyDB) -> dict:
         "domains": domain_order,
         "types": types_out,
         "defaultType": "Shipment",
-        "hint": "34 类型 · 53 关系 · 31 动作 · 18 规则——不是节点堆砌，是结构化的关联卡 + 穿梭导航。",
+        "hint": f"{len(onto['objects'])} 类型 · {len(onto['links'])} 关系 · {len(onto['actions'])} 动作 · {len(onto['riskRules'])} 规则——不是节点堆砌，是结构化的关联卡 + 穿梭导航。",
     }
 
 
@@ -784,6 +832,7 @@ INDEX_FIELDS = {
     "ShipmentMilestone": ["shipment_id", "event_type", "event_time"],
     "InventoryPosition": ["sku_id", "warehouse_id", "available_qty", "safety_stock"],
     "Warehouse": ["type", "operator", "region"],
+    "Payment": ["direction", "counterparty_type", "status", "due_date"],
 }
 
 # 详情/关系/时间线导出上限（控 JSON 体量 <15MB）
@@ -1099,16 +1148,17 @@ def build_rules(onto: dict, db: ReadOnlyDB, vdb: ReadOnlyDB | None) -> dict:
         })
     total_living = sum(c["living"]["total"] for c in cards)
     fired = [c["id"] for c in cards if c["living"]["total"] > 0]
+    n_cards = len(cards)
     return {
         "title": "规则在盯什么、战绩如何",
-        "question": "18 条规则在盯什么、战绩如何？",
+        "question": f"{n_cards} 条规则在盯什么、战绩如何？",
         "subtitle": "每条规则一卡：它盯哪个对象、怎么判（白话+引擎逻辑原文）、在活世界触发了多少次（严重度分布）、在验证世界的引擎精度。",
         "cards": cards,
         "twoWorlds": {
             "living": {"label": "活世界（simworld）", "source": "sim",
                        "plain": f"连续 14 个月模拟运转的真实触发。当前 {total_living} 条风险被检出，覆盖 {len(fired)} 条规则（{'、'.join(fired)}）——其余规则的采购/准入/寻源域实例尚未灌入活世界，规则本身已就绪。"},
             "verify": {"label": "验证世界（ontology + data/truth）", "source": "ontology",
-                       "plain": "带 ground-truth 注入的合成验证集，引擎逐条对真值打分。项目战绩：R1-R18 全部 Recall=1.000 / Precision=1.000（engine.evaluate 口径，见 STATUS）。这是「规则判得准不准」的裁判，与活世界「跑了多少次」是两回事，分开报。"},
+                       "plain": f"带 ground-truth 注入的合成验证集，引擎逐条对真值打分。项目战绩：R1-R{n_cards} 全部 Recall=1.000 / Precision=1.000（engine.evaluate 口径，见 STATUS）。这是「规则判得准不准」的裁判，与活世界「跑了多少次」是两回事，分开报。"},
         },
         "verifyPrecision": "R/P = 1.000",
     }
@@ -1141,16 +1191,21 @@ def build_actions(onto: dict, db: ReadOnlyDB) -> dict:
             "failureHandling": a.get("failureHandling", []),
             "audit": a.get("audit", []),
             "paramsSchema": a.get("paramsSchema"),
+            "tool": action_tool_view(a),
             "domain": next((k for k, d in DOMAINS.items() if meta["target"] in d["objects"]), "core"),
         })
+    n_exposed = sum(1 for x in action_list if x["tool"]["exposedAsTool"])
+    n_frozen = sum(1 for x in action_list if x["tool"]["frozen"])
     return {
         "title": "谁能对什么下什么手",
         "question": "谁能对什么下什么手？",
-        "subtitle": "31 个动作的五要素总表（执行角色/前置/成功效果/失败处理/审计）+ 7 角色×动作权限热力表。冻结区高亮：审批/关闭/合规裁决 AI 永不可及。",
+        "subtitle": f"{len(action_list)} 个动作的五要素总表（执行角色/前置/成功效果/失败处理/审计）+ 7 角色×动作权限热力表 + 「作为 AI 工具长什么样」联动板。点行看它的 JSON Schema；{n_exposed} 个 exposed 写工具、{n_frozen} 个冻结区。",
         "roles": [{"id": r, "plain": ROLE_PLAIN[r]} for r in HUMAN_ROLES],
         "actions": action_list,
         "tiers": [{"key": k, "mark": v["mark"], "name": v["name"], "tone": v["tone"]}
                   for k, v in TIER_LABEL.items()],
+        "toolSummary": {"exposed": n_exposed, "frozen": n_frozen, "total": len(action_list),
+                        "note": "「作为 AI 工具」列直读本体 M1/M2 桥2 字段：exposed_as_tool / ai_executable / tool_description / tool_input_schema——本体改一行，AI 工具暴露同步变。"},
         "frozenNote": "冻结区（🔴）= agent.tools.FORBIDDEN_TOOLS：approve_mitigation/close_risk_event 等审批·关闭·合规裁决类动作，工具函数从未注册给 AI——不是权限不够，是根本不存在。",
     }
 
@@ -1493,6 +1548,315 @@ def build_decision_lineage(onto: dict, db: ReadOnlyDB) -> dict:
 
 
 # =============================================================================
+# 视图 · 影响分析专题（NEW · v3 板块②）——「改它牵连什么」下游消费面
+# 全部从本体 JSON 静态推导（Atlan impact analysis 范式）：
+#   关系引用（links source/target）· 规则检测（riskRules 目标）· 动作读写（五要素目标）
+#   · AI 工具暴露（aiQueryTools + exposed 动作的 input_schema 字段）· 敏感规则约束
+# =============================================================================
+# aiQueryTools 无 id 入参的 list 型工具，锚到域主对象（避免过度声称 touches）
+AI_QUERY_DOMAIN_ANCHOR = {"risk": "RiskEvent", "cost": "Invoice", "admission": "AdmissionCase"}
+
+
+def _schema_prop_names(schema) -> set:
+    if not isinstance(schema, dict):
+        return set()
+    props = schema.get("properties")
+    return set(props.keys()) if isinstance(props, dict) else set()
+
+
+def build_impact(onto: dict, db: ReadOnlyDB) -> dict:
+    objs = obj_by_type(onto)
+    sens = build_sensitive_map(onto)
+    actions_by_id = {a["id"]: a for a in onto["actions"]}
+    pk_to_type = {o.get("primaryKey"): o["type"] for o in onto["objects"] if o.get("primaryKey")}
+
+    # 动作 → 类型 倒排（主 target + 次要触碰），规则 → 类型 倒排
+    actions_for_type: dict[str, list[str]] = {}
+    for aid, meta in ACTION_META.items():
+        actions_for_type.setdefault(meta["target"], []).append(aid)
+    for aid, extra in ACTION_SECONDARY.items():
+        for tp2 in extra:
+            actions_for_type.setdefault(tp2, [])
+            if aid not in actions_for_type[tp2]:
+                actions_for_type[tp2].append(aid)
+    rules_for_type: dict[str, list[str]] = {}
+    for rid, meta in RULE_META.items():
+        rules_for_type.setdefault(meta["target"], []).append(rid)
+
+    # aiQueryTools → 它触碰哪些类型（pk 精确匹配 + list 型锚域主对象）
+    query_tools = onto.get("aiQueryTools", [])
+    qtool_types: dict[str, set] = {}   # type -> {tool names}
+    qtool_field_hits: dict[tuple, set] = {}  # (type, field) -> {tool names}（input_schema 属性名==字段名）
+    for qt in query_tools:
+        props = _schema_prop_names(qt.get("input_schema"))
+        hit_types = set()
+        for pk in props:
+            if pk in pk_to_type:
+                hit_types.add(pk_to_type[pk])
+        if not hit_types:  # list 型无 pk → 锚域主对象
+            anchor = AI_QUERY_DOMAIN_ANCHOR.get(qt.get("domain"))
+            if anchor:
+                hit_types.add(anchor)
+        for tp in hit_types:
+            qtool_types.setdefault(tp, set()).add(qt["name"])
+        # 字段级：input_schema 属性名精确等于某类型字段名 → 该工具暴露该字段
+        for tp, obj in objs.items():
+            fnames = {p["name"] for p in obj.get("properties", [])}
+            for fn in props & fnames:
+                qtool_field_hits.setdefault((tp, fn), set()).add(qt["name"])
+
+    # exposed 写工具（动作）→ 它写哪些类型（主 target + 次要触碰）+ 字段级 input_schema 命中
+    wtool_field_hits: dict[tuple, set] = {}
+    for a in onto["actions"]:
+        if not a.get("exposed_as_tool"):
+            continue
+        tn = _tool_name_of(a)
+        props = _schema_prop_names(a.get("tool_input_schema"))
+        for tp, obj in objs.items():
+            fnames = {p["name"] for p in obj.get("properties", [])}
+            for fn in props & fnames:
+                wtool_field_hits.setdefault((tp, fn), set()).add(tn)
+
+    # links：出/入边 + storage 承载列
+    def links_for(tp: str) -> list[dict]:
+        out = []
+        for l in onto["links"]:
+            if l["source"] == tp:
+                out.append({"linkType": l["linkType"], "dir": "out", "other": l["target"],
+                            "otherPlain": OBJECT_PLAIN.get(l["target"], l["target"]),
+                            "cardinality": l.get("cardinality", ""),
+                            "plain": LINK_PLAIN.get(l["linkType"], l["linkType"]),
+                            "storage": l.get("storage")})
+            if l["target"] == tp:
+                out.append({"linkType": l["linkType"], "dir": "in", "other": l["source"],
+                            "otherPlain": OBJECT_PLAIN.get(l["source"], l["source"]),
+                            "cardinality": l.get("cardinality", ""),
+                            "plain": LINK_PLAIN.get(l["linkType"], l["linkType"]),
+                            "storage": l.get("storage")})
+        return out
+
+    types_out = {}
+    for tp, obj in objs.items():
+        tbl = OBJECT_TABLE.get(tp)
+        covered = bool(tbl and db.has_table(tbl))
+        count = db.count(tbl) if covered else -1
+
+        links = links_for(tp)
+        rules = [{"id": rid, "watch": RULE_META[rid]["watch"], "plain": RULE_META[rid]["plain"],
+                  "domain": next((k for k, d in DOMAINS.items() if RULE_META[rid]["target"] in d["objects"]), "core")}
+                 for rid in rules_for_type.get(tp, [])]
+        acts = []
+        for aid in actions_for_type.get(tp, []):
+            a = actions_by_id.get(aid, {})
+            m = ACTION_META[aid]
+            acts.append({"id": aid, "name": a.get("name", aid), "tier": m["tier"],
+                         "plain": m["plain"], "primary": m["target"] == tp,
+                         "frozen": aid in FROZEN_ACTION_IDS,
+                         "exposedAsTool": bool(a.get("exposed_as_tool")),
+                         "toolName": _tool_name_of(a) if a.get("exposed_as_tool") else None})
+        qtools = []
+        for qt in query_tools:
+            if qt["name"] in qtool_types.get(tp, set()):
+                qtools.append({"name": qt["name"], "domain": qt.get("domain", ""),
+                               "description": qt.get("description", "")})
+        wtools = []
+        for a in onto["actions"]:
+            if not a.get("exposed_as_tool"):
+                continue
+            m = ACTION_META.get(a["id"], {"target": ""})
+            touches = [m["target"]] + ACTION_SECONDARY.get(a["id"], [])
+            if tp in touches:
+                wtools.append({"actionId": a["id"], "name": a.get("name", a["id"]),
+                               "toolName": _tool_name_of(a),
+                               "description": a.get("tool_description", ""),
+                               "primary": m["target"] == tp})
+        sensitive = [{"field": f, "visibleTo": [ROLE_PLAIN.get(r, r) for r in vis]}
+                     for (so, f), vis in sens.items() if so == tp]
+
+        # 字段级消费面：敏感门控 / 承载哪条关系 / 被哪些 AI 工具的 input_schema 命中
+        carry = {}  # field(column) -> linkType（storage 承载列声明）
+        for l in onto["links"]:
+            st = l.get("storage")
+            if isinstance(st, dict) and st.get("column") and l["source"] == tp:
+                carry[st["column"]] = l["linkType"]
+        fields = []
+        for p in obj.get("properties", []):
+            fn = p["name"]
+            fsens = None
+            for (so, sf), vis in sens.items():
+                if so == tp and (sf == fn or sf.split(".")[0] == fn):
+                    fsens = [ROLE_PLAIN.get(r, r) for r in vis]
+                    break
+            exposed_by = sorted(qtool_field_hits.get((tp, fn), set()) | wtool_field_hits.get((tp, fn), set()))
+            fields.append({"name": fn, "type": p.get("type", ""), "desc": p.get("description", ""),
+                           "sensitive": fsens, "carriesLink": carry.get(fn),
+                           "exposedByTools": exposed_by})
+
+        tool_count = len(qtools) + len(wtools)
+        types_out[tp] = {
+            "type": tp, "plainName": OBJECT_PLAIN.get(tp, tp), "why": OBJECT_WHY.get(tp, ""),
+            "domain": next((k for k, d in DOMAINS.items() if tp in d["objects"]), "core"),
+            "covered": covered, "count": count,
+            "links": links, "rules": rules, "actions": acts,
+            "queryTools": qtools, "writeTools": wtools, "sensitive": sensitive, "fields": fields,
+            "counts": {"links": len(links), "rules": len(rules), "actions": len(acts),
+                       "tools": tool_count, "sensitive": len(sensitive), "instances": count},
+        }
+
+    domain_order = [
+        {"id": k, "name": d["name"], "plain": d["plain"], "scene": d.get("scene", "core"),
+         "types": [{"type": t, "plainName": OBJECT_PLAIN.get(t, t),
+                    "impact": (types_out[t]["counts"]["links"] + types_out[t]["counts"]["rules"]
+                               + types_out[t]["counts"]["actions"] + types_out[t]["counts"]["tools"]
+                               + types_out[t]["counts"]["sensitive"]),
+                    "covered": types_out[t]["covered"]}
+                   for t in d["objects"]]}
+        for k, d in DOMAINS.items()
+    ]
+    return {
+        "title": "改一处，牵连什么",
+        "question": "改一个对象/字段，会牵连什么？",
+        "subtitle": "选任一对象类型或字段，一键展开它的下游消费面：被哪些关系引用、哪些规则盯着、哪些动作读写、哪些 AI 工具暴露、哪些敏感规则约束。全部从本体 JSON 静态推导，改动半径一目了然（Atlan impact analysis 范式）。",
+        "defaultType": "Shipment",
+        "domains": domain_order,
+        "types": types_out,
+        "hint": "35 类型 · 每类型五维消费面（关系/规则/动作/AI 工具/敏感）——改动前先看牵连面。",
+    }
+
+
+# =============================================================================
+# 视图 · 全局跨类型搜索索引（NEW · v3 板块①）——Bloom search-first
+# 全部实例的紧凑索引（id + 类型 + 关键字段摘要），运行时懒加载（app 挂载即拉）。
+# 类型名/中文名搜索走前端已在主包的 weave；本索引负责「任意实例 id 即时命中」。
+# =============================================================================
+def build_search(onto: dict, db: ReadOnlyDB) -> dict:
+    table_pk = {o["type"]: o.get("primaryKey") for o in onto["objects"]}
+    type_meta = {}
+    items = []
+    for tp in OBJECT_TABLE:
+        tbl = OBJECT_TABLE.get(tp)
+        pk = table_pk.get(tp)
+        if not tbl or not pk or not db.has_table(tbl):
+            continue
+        idx_fields = INDEX_FIELDS.get(tp, [])
+        rows = db.rows(tbl)
+        if not rows:
+            continue
+        type_meta[tp] = {
+            "plainName": OBJECT_PLAIN.get(tp, tp),
+            "domain": next((k for k, d in DOMAINS.items() if tp in d["objects"]), "core"),
+            "count": len(rows),
+        }
+        for r in rows:
+            rid = r.get(pk)
+            if rid in (None, ""):
+                continue
+            parts = []
+            for f in idx_fields[:3]:
+                v = r.get(f)
+                if v not in (None, ""):
+                    parts.append(str(v))
+            summ = " · ".join(parts)[:60]
+            items.append({"id": str(rid), "t": tp, "s": summ})
+    return {
+        "title": "全局搜索",
+        "types": type_meta,
+        "items": items,
+        "total": len(items),
+        "note": "活世界全部实例的紧凑搜索索引（id + 类型 + 摘要），运行时懒加载。数字与摘要均来自活世界只读快照。",
+    }
+
+
+# =============================================================================
+# 生成 src/data/index.ts（数据 barrel）——与 JSON 快照同为导出产物，随本脚本重生成。
+# 修正历史脆弱点：index.ts 原为手写源文件但落在 src/data/（被仓库根 data/ 规则 gitignore），
+# clone/worktree 后缺失致 `python3 export_data.py && npm run build` 无法独立跑通。
+# 改由本脚本生成后，barrel 与 JSON 同源同生命周期，验收命令可在干净 checkout 独立执行。
+# =============================================================================
+INDEX_TS = '''// ⚙️ 本文件由 export_data.py 生成——请勿手改。改数据契约改 export_data.py 的生成模板。
+// 构建期消费 export_data.py 生成的静态快照。零后端。
+// 小 JSON 静态 import 进主包；大 JSON（entity / search）运行时 fetch 懒加载。
+import metaRaw from "./meta.json";
+import structureRaw from "./structure.json";
+import journeyRaw from "./journey.json";
+import constitutionRaw from "./constitution.json";
+import weaveRaw from "./weave.json";
+import rulesRaw from "./rules.json";
+import actionsRaw from "./actions.json";
+import evolutionRaw from "./evolution.json";
+import worldRaw from "./world.json";
+import flywheelRaw from "./flywheel.json";
+import aiActivityRaw from "./ai_activity.json";
+import decisionLineageRaw from "./decision_lineage.json";
+import impactRaw from "./impact.json";
+
+import type {
+  Meta, StructureData, JourneyData, ConstitutionData, WeaveData, RulesData,
+  ActionsData, EvolutionData, WorldData, FlywheelData, AIActivityData,
+  DecisionLineageData, EntityData, ImpactData, SearchIndex,
+} from "../types";
+
+export const meta = metaRaw as Meta;
+export const structure = structureRaw as unknown as StructureData;
+export const journey = journeyRaw as unknown as JourneyData;
+export const constitution = constitutionRaw as unknown as ConstitutionData;
+export const weave = weaveRaw as unknown as WeaveData;
+export const rules = rulesRaw as unknown as RulesData;
+export const actions = actionsRaw as unknown as ActionsData;
+export const evolution = evolutionRaw as unknown as EvolutionData;
+export const world = worldRaw as unknown as WorldData;
+export const flywheel = flywheelRaw as unknown as FlywheelData;
+export const aiActivity = aiActivityRaw as unknown as AIActivityData;
+export const decisionLineage = decisionLineageRaw as unknown as DecisionLineageData;
+export const impact = impactRaw as unknown as ImpactData;
+
+// 实体全量（约 9MB）运行时 fetch，只在打开「实体浏览」时加载一次。
+let entityCache: EntityData | null = null;
+let entityPromise: Promise<EntityData> | null = null;
+export function loadEntity(): Promise<EntityData> {
+  if (entityCache) return Promise.resolve(entityCache);
+  if (!entityPromise) {
+    const base = import.meta.env.BASE_URL || "/";
+    entityPromise = fetch(`${base}data/entity.json`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`entity.json ${r.status}`);
+        return r.json();
+      })
+      .then((j: EntityData) => {
+        entityCache = j;
+        return j;
+      });
+  }
+  return entityPromise;
+}
+
+// 全局搜索索引（约 1MB）运行时 fetch，app 挂载即后台预取，供顶部常驻搜索框即时命中。
+let searchCache: SearchIndex | null = null;
+let searchPromise: Promise<SearchIndex> | null = null;
+export function loadSearch(): Promise<SearchIndex> {
+  if (searchCache) return Promise.resolve(searchCache);
+  if (!searchPromise) {
+    const base = import.meta.env.BASE_URL || "/";
+    searchPromise = fetch(`${base}data/search.json`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`search.json ${r.status}`);
+        return r.json();
+      })
+      .then((j: SearchIndex) => {
+        searchCache = j;
+        return j;
+      });
+  }
+  return searchPromise;
+}
+'''
+
+
+def write_index_ts(out_dir: Path):
+    (out_dir / "index.ts").write_text(INDEX_TS, encoding="utf-8")
+
+
+# =============================================================================
 # 主流程
 # =============================================================================
 def main():
@@ -1550,10 +1914,14 @@ def main():
         "flywheel.json": build_flywheel(onto, db),
         "ai_activity.json": build_ai_activity(onto, db),
         "decision_lineage.json": build_decision_lineage(onto, db),
+        "impact.json": build_impact(onto, db),  # v3 板块②
     }
-    # 大 JSON（实体全量）走 public/data 运行时 fetch（懒加载，不进主包）
+    # 大 JSON（实体全量 + 搜索索引）走 public/data 运行时 fetch（懒加载，不进主包）
     public_out = SCRIPT_DIR / "public" / "data"
-    public_outputs = {"entity.json": build_entity(onto, db)}
+    public_outputs = {
+        "entity.json": build_entity(onto, db),
+        "search.json": build_search(onto, db),  # v3 板块①
+    }
 
     total_bytes = 0
     print("  —— 导出体量表 ——")
@@ -1572,6 +1940,9 @@ def main():
         sz = path.stat().st_size
         total_bytes += sz
         print(f"  public/data/{fname:17s} {sz:>10,} bytes  (运行时懒加载)")
+    # 数据 barrel（index.ts）与 JSON 同源生成——修正 gitignore 脆弱点，验收命令可独立跑通
+    write_index_ts(out_dir)
+    print(f"  src/data/index.ts    （数据 barrel · 生成产物）")
     print(f"  {'合计':28s} {total_bytes:>10,} bytes  ({total_bytes/1024/1024:.2f} MB)")
 
     db.close()

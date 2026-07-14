@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 import { actions } from "../data";
 import ViewHead from "../components/ViewHead";
-import type { ActionRow } from "../types";
+import type { ActionRow, ToolInputSchema } from "../types";
 
 const TIER_TONE: Record<string, string> = { machine: "cyan", human: "amber", frozen: "red" };
 
@@ -15,7 +15,76 @@ function FiveElements({ a }: { a: ActionRow }) {
       <div className="ac-five-row"><span className="ac-five-l">成功效果</span><span className="ac-five-v">{a.successEffects.join("；") || "—"}</span></div>
       <div className="ac-five-row"><span className="ac-five-l">失败处理</span><span className="ac-five-v">{a.failureHandling.join("；") || "—"}</span></div>
       <div className="ac-five-row"><span className="ac-five-l">审计留痕</span><span className="ac-five-v mono">{a.audit.join(" · ") || "—"}</span></div>
-      {a.frozen && <div className="wv-frozen-note">🔴 冻结区：FORBIDDEN_TOOLS，从未注册给 AI。</div>}
+    </div>
+  );
+}
+
+/* JSON Schema 语法高亮块（轻量·纯 CSS 着色，不引库） */
+function SchemaBlock({ schema }: { schema: ToolInputSchema }) {
+  const json = JSON.stringify(schema, null, 2);
+  return (
+    <pre className="ac-schema mono">
+      {json.split("\n").map((line, i) => {
+        // 高亮 "key":  和 枚举/类型值
+        const m = line.match(/^(\s*)"([^"]+)"(\s*:\s*)(.*)$/);
+        if (m) {
+          return (
+            <div key={i} className="ac-schema-line">
+              <span>{m[1]}</span>
+              <span className="ac-sk-key">"{m[2]}"</span>
+              <span>{m[3]}</span>
+              <span className="ac-sk-val">{m[4]}</span>
+            </div>
+          );
+        }
+        return <div key={i} className="ac-schema-line">{line}</div>;
+      })}
+    </pre>
+  );
+}
+
+/* 「作为 AI 工具长什么样」联动面板（板块③ · Stripe 概念↔代码联动） */
+function ToolPanel({ a }: { a: ActionRow }) {
+  const tool = a.tool;
+  if (a.frozen || tool.aiExecutable === "frozen") {
+    return (
+      <div className="ac-tool ac-tool--frozen">
+        <div className="ac-tool-head">
+          <span className="tag red">永不暴露给 AI · frozen</span>
+        </div>
+        <p className="ac-tool-forbidden">
+          🔴 <b>FORBIDDEN</b>——此动作的工具函数<b>从未注册</b>给 AI（agent.tools.FORBIDDEN_TOOLS）。
+          不是权限不够，是根本不存在：审批 / 关闭 / 合规裁决属冻结区，AI 提案后交人拍板（maker-checker）。
+        </p>
+        <div className="ac-tool-line"><span className="ac-tool-l">ai_executable</span><span className="mono">{tool.aiExecutable}</span></div>
+        <div className="ac-tool-line"><span className="ac-tool-l">enforcement</span><span className="mono">{tool.enforcement || "—"}</span></div>
+      </div>
+    );
+  }
+  if (!tool.exposedAsTool) {
+    return (
+      <div className="ac-tool ac-tool--internal">
+        <div className="ac-tool-head"><span className="tag" style={{ fontSize: 10 }}>不暴露 · {tool.aiExecutable}</span></div>
+        <p className="ac-tool-forbidden muted">
+          未暴露为 AI 工具——{tool.aiExecutablePlain}。引擎/人内部动作，不进 TOOL_DEFS。
+        </p>
+        <div className="ac-tool-line"><span className="ac-tool-l">enforcement</span><span className="mono">{tool.enforcement || "—"}</span></div>
+      </div>
+    );
+  }
+  return (
+    <div className="ac-tool ac-tool--exposed">
+      <div className="ac-tool-head">
+        <span className="tag green">exposed_as_tool</span>
+        <span className="tag cyan" style={{ fontSize: 10 }}>{tool.aiExecutable}</span>
+      </div>
+      <div className="ac-tool-line"><span className="ac-tool-l">工具名</span><span className="ac-tool-name mono">{tool.toolName}</span></div>
+      <div className="ac-tool-line"><span className="ac-tool-l">enforcement</span><span className="mono">{tool.enforcement || "—"}</span></div>
+      {tool.toolDescription && <p className="ac-tool-desc">{tool.toolDescription}</p>}
+      <div className="ac-tool-schema-label mono">tool_input_schema</div>
+      {tool.toolInputSchema
+        ? <SchemaBlock schema={tool.toolInputSchema} />
+        : <p className="muted" style={{ fontSize: 12 }}>（本体未声明 input_schema）</p>}
     </div>
   );
 }
@@ -39,7 +108,13 @@ export default function ViewActions() {
             <span className={`ac-leg-dot tone-${t.tone}`} />{t.mark} {t.name}
           </span>
         ))}
-        <span className="ac-leg-hint mono">点行看五要素 · 冻结区红条</span>
+        <span className="ac-leg-hint mono">点行看五要素 + 「作为 AI 工具」JSON Schema · 冻结区红条</span>
+      </div>
+
+      <div className="ac-toolsum">
+        <span className="ac-toolsum-seg"><span className="tag green" style={{ fontSize: 10 }}>exposed</span> {actions.toolSummary.exposed} 个写提案工具</span>
+        <span className="ac-toolsum-seg"><span className="tag red" style={{ fontSize: 10 }}>frozen</span> {actions.toolSummary.frozen} 个冻结区永不暴露</span>
+        <span className="ac-toolsum-note muted">{actions.toolSummary.note}</span>
       </div>
 
       <div className="ac-rolefilter">
@@ -85,7 +160,16 @@ export default function ViewActions() {
                   <tr className="ac-detail-row">
                     <td colSpan={roles.length + 2}>
                       <p className="ac-detail-plain">{a.plain}</p>
-                      <FiveElements a={a} />
+                      <div className="ac-detail-split">
+                        <div className="ac-detail-left">
+                          <div className="ac-detail-cap mono">五要素（本体动作定义）</div>
+                          <FiveElements a={a} />
+                        </div>
+                        <div className="ac-detail-right">
+                          <div className="ac-detail-cap mono">作为 AI 工具长什么样</div>
+                          <ToolPanel a={a} />
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 )}

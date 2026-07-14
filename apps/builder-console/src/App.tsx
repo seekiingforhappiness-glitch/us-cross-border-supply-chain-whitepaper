@@ -1,6 +1,7 @@
 import { TooltipProvider } from "./components/Tooltip";
 import { NavProvider, useNav } from "./components/Nav";
 import { LogoMark } from "./components/icons";
+import GlobalSearch from "./components/GlobalSearch";
 import { meta } from "./data";
 import ViewStructure from "./views/ViewStructure";
 import ViewJourney from "./views/ViewJourney";
@@ -14,6 +15,8 @@ import ViewEntity from "./views/ViewEntity";
 import ViewFlywheel from "./views/ViewFlywheel";
 import ViewAIActivity from "./views/ViewAIActivity";
 import ViewDecisionLineage from "./views/ViewDecisionLineage";
+import ViewImpact from "./views/ViewImpact";
+import ViewOntologyMap from "./views/ViewOntologyMap";
 
 interface NavDef {
   id: string;
@@ -51,6 +54,15 @@ const GROUPS: { key: string; name: string; hint: string; views: NavDef[] }[] = [
       { id: "lineage", num: "12", label: "决策回放", q: "决策怎么发生？", el: <ViewDecisionLineage /> },
     ],
   },
+  {
+    key: "v3",
+    name: "透视 v3 · 照真机器",
+    hint: "影响分析 · 本体地图（全局搜索见顶栏）",
+    views: [
+      { id: "impact", num: "13", label: "影响分析", q: "改一处牵连什么？", el: <ViewImpact /> },
+      { id: "ontology-map", num: "14", label: "本体地图", q: "对象类型怎么分层？", el: <ViewOntologyMap /> },
+    ],
+  },
 ];
 
 const ALL_VIEWS: NavDef[] = GROUPS.flatMap((g) => g.views);
@@ -74,7 +86,7 @@ function Shell() {
             <span className="rail-title">建造者透视镜</span>
           </div>
           <div className="rail-tagline">{meta.tagline}</div>
-          <div className="rail-ver">v2 · ontology {meta.ontologyVersion} · 活世界</div>
+          <div className="rail-ver">v3 · ontology {meta.ontologyVersion} · 活世界</div>
         </div>
 
         <nav className="nav" aria-label="视图导航">
@@ -112,6 +124,9 @@ function Shell() {
       </aside>
 
       <div className="main">
+        <div className="topbar">
+          <GlobalSearch />
+        </div>
         <div className="stage" key={view.id}>
           {view.el}
         </div>
@@ -141,7 +156,7 @@ function StatusBar({ viewLabel, viewNum }: { viewLabel: string; viewNum: string 
       </span>
       <span className="seg">
         <span className="k">VIEW</span>
-        <span className="v">{viewNum} / 12 · {viewLabel}</span>
+        <span className="v">{viewNum} / {String(ALL_VIEWS.length).padStart(2, "0")} · {viewLabel}</span>
       </span>
       <span className="seg">
         <span className="k">WORLD</span>

@@ -1,6 +1,6 @@
 export default function ViewHead({
   idx,
-  total = 12,
+  total = 14,
   question,
   subtitle,
   kicker = "每个视图回答一个问题",
