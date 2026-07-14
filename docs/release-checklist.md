@@ -56,11 +56,12 @@ streamlit run app/streamlit_app.py          # 改代码后【完整重启】，�
       双世界+脱敏；36 用例）
 - [x] **驾驶舱构建**：`cd apps/cockpit && npx tsc --noEmit && npm run build` 零错
 
-### A++. 待收口（本轮企业级交付前必须回填为 [x]）
-- [ ] 透视镜 v3 四板块交付+既有 12 视图零回归（V3a 单在途）
-- [ ] Task 动作词表对齐后 simworld 全对象 model_validate 零警告（G4 单在途）
-- [ ] 前端死样式清理后全交互回归（G3 单在途）
-- [ ] README/ONBOARDING 对齐 0.11.x 形态（对象 35/规则 21/驾驶舱/MCP/API/透视镜 v3）
+### A++. 企业级交付收口（2026-07-14 全部回填）
+- [x] 透视镜 v3 四板块交付+既有 12 视图零回归（50fe2ef：搜索/影响分析/动作工具联动/等距归位）
+- [x] Task 动作词表对齐后双世界全对象 model_validate 零警告（201af80：sim 207+real 20 全过，
+      顺带治愈 seed 路径 6 条 finance 任务静默失败的预存 bug）
+- [x] 前端死样式清理后全交互回归（e960d09：净减 486 行、268 类零残留、译名归一）
+- [x] README/ONBOARDING 对齐 0.11.2 形态（六场景/R1-R21/三座桥/MCP/双 React 应用/双世界）
 
 ### B. 五场景闭环（风险→派单→提案→审批 maker-checker→审计）
 - [x] 延误 `test_closed_loop` · 费用 `test_cost_loop` · 准入 `test_admission_loop`
