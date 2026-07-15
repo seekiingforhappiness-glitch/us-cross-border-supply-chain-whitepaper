@@ -1,0 +1,11 @@
+# 依赖与构建产物（不进版本库）
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 系统
+.DS_Store
+
+# 注意：src/data/*.json 是 export_data.py 的产物，且已被【仓库根 .gitignore 的 data/ 规则】
+# 一并忽略（生成物不进版本库，AGENTS.md §5）。因此 clone 后必须先跑 export_data.py 再构建，
+# 否则前端 import 不到数据。见 README「一条龙」。

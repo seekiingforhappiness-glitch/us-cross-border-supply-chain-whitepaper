@@ -1,0 +1,46 @@
+# Loop 迭代追踪器（自定步调，目标 15 次，交付可面客的完整控制塔）
+
+> **给循环里的每次自己**：每次醒来先读这个文件 → 做"下一项未完成" → controller 独立复核（不信报告只信输出）
+> → 更新本文件勾选 + git commit + push → ScheduleWakeup 续下一次。全部勾完 → 停 + PushNotification。
+>
+> **边界（§3 最高规则）**：本 loop 只做 §4「AI 主导人验收」的**完成/打磨/加固**，**绝不擅自开新业务域或新增对象/规则**
+> （关务/资金风控等需 Daniel AskUserQuestion 亲批；碰到就 AskUserQuestion 停下，不自己拍板）。
+> 每次迭代必须：既有 R1-R18 全 P/R=1.000 不扰动、agent 不越权、ground truth 不改、maker-checker/FORBIDDEN 不削弱。
+
+## 迭代清单（15 项，均为 §4 无需逐次批准）
+
+- [x] **1. Warehouse 富工作台 + permission-aware 对象级 agent**（补齐对象中心对称性；无新对象/规则）
+- [x] **2. 全局 Executive 一页视图**（跨 5 场景 KPI：各域风险数/SLA/追回额/精度；manager 落地页增强）
+- [x] **3. `docs/architecture.md` 刷新**到 5 场景全貌（对象图/场景连接/治理层）
+- [x] **4. `README.md` 重写**→ 全景导航（5 场景/R1-R18/对象工作台/复现命令/demo 台本指针）
+- [x] **5. demo-assertions 合并/新增**→ 5 场景统一验收清单（可勾选走查项）
+- [x] **6. 对抗测试加固**：5 域越权杀手统一测试 + 边界/负例用例补强
+- [x] **7. 代码质量 pass**：5 域 approve_mitigation 动作分支去重/共用 helper（不改行为，回归全绿）
+- [x] **8. 多区域 demo 数据**：让行级数据范围（region）可见地过滤（守真值 md5、engine R/P 不变）
+- [x] **9. agent eval 扩展**：覆盖采购/仓储问题（原则性加题，不放宽判定；同 scope_parity 口径）
+- [x] **10. `docs/field-gap-analysis.md` + retrospective 更新**到当前全貌
+- [x] **11. 一页纸（可视化 Artifact）** for 面客：五场景控制塔全景图
+- [x] **12. 接手/onboarding 文档**：新会话/新模型 5 分钟上手路径
+- [x] **13. 健壮性 pass**：streamlit 启动/空数据/边界输入的优雅处理 + 冒烟测试
+- [x] **14. 全链端到端验证 + release checklist**：一键复现全绿证据集
+- [x] **15. 最终整合**：release notes + STATUS 收官 + 全评估器全绿快照
+
+## 进度日志
+
+（每次迭代在此追加一行：`迭代 N — <做了什么> — <controller 复核结论> — <commit hash>`）
+
+- 迭代 1 — Warehouse 升第 6 富对象 + 富工作台（库存位/预留/盘点/锚定风险）+ permission-aware 对象级 agent — controller 独立复核全绿：wh-agent 三角色 approve 全被拒、ROLE_PERMS/FORBIDDEN/warehouse_actions diff=0、R1-R18 全 P/R=1.000、标准视图 28→27、全套回归绿 — 见 loop 提交
+- 迭代 2 — 全局 Executive 一页视图（manager 落地页 = 5 场景 KPI 一屏：延误/费用/采购/仓储/准入 + 全局健康横条）— controller 独立复核全绿：纯只读聚合、actions/rbac_nav/ontology diff=0、executive_view 测试全绿（数字与直查一致，152 总未结）、R1-R18 未动、三角色 UI 0 异常 — 见 loop 提交
+- 迭代 3 — docs/architecture.md 全面刷新到当前 5 场景（分层架构/对象图含跨场景连接/对象中心层/现货救延误时序/治理体系/关键数字）— controller 核对对象数字与代码一致（33 对象/6 富对象/27 标准视图）— 纯文档 — 见 loop 提交
+- 迭代 4 — README.md 全面重写到当前 5 场景 + 对象中心 + 全景导航（场景表/跨场景网/对象级 agent 三约束/完整复现链/架构六层/导航表/治理护城河）— 复现命令均为本会话已验证模块 — 纯文档 — 见 loop 提交
+- 迭代 5 — 新建 docs/demo-assertions-all.md 统一验收清单（A 检测精度/B 五场景闭环/C 对象中心+可信AI/D 治理/E 现场走查，每条附验证命令 + 诚实提醒）— controller 核对清单引用的 21 个测试模块全部真实存在 — 纯文档 — 见 loop 提交
+- 迭代 6 — 新建 app/test_agent_security.py 统一对抗安全 sweep（6 对象 agent × 6 角色 tool_defs 无审批类；6 agent × 3 关键角色 × 4 审批类 × 4 注入变体 = 288 次 dispatch 全 refused + 目标三态不变；manager 亦被拒；7 条边界/负例：未知工具/越域读/超角色写/动作层双闸/FORBIDDEN⊇四审批类；292 条 denied 全溯源 ai-agent）— controller 独立复核全绿：git tracked diff=0（只加测试）、test_agent_security 全通过、既有回归(object_workbench/warehouse/scope_parity/agent.evaluate)无退化、R1-R18 未动 — 见 loop 提交
+- 迭代 7 — app/actions.py 行为保持重构：抽 2 私有 helper（`_bulk_set_status` 合并 6 处等价单列批量回写、`_distinct_invoice_col` 合并 2 处 invoice_lines 父列去重），行数 595→594；子代理诚实标注不宜合并处（lazy-import 委派/多列 SET+outbox/JOIN 查询保持内联）— controller 独立复核全绿：只动 actions.py(净 -1 行)、ROLE_PERMS/ADM_PERMS/FORBIDDEN 0 改动、五场景闭环+test_agent_security+scope_parity 全通过(退出码 0；grep 的 error 命中系「无 error」断言假阳性)、R1-R18+agent.evaluate 未动 — 见 loop 提交
+- 迭代 8 — 新建 app/test_region_scope.py 证明多区域行级数据范围「可见过滤」（27 断言）：manager=Global 可见 20 含 US+CN 两区；CN 运营(u-ops-cn)只看 CN=2、exclude 全部 US；US 运营只看 US=18、exclude CN；分区干净无泄漏(US∩CN=∅、US∪CN=20=全集、两区均非空)；Python 谓词==SQL LIKE 口径一致(18==18/2==2)；region_of_locode 边界。**§5 铁律守住：根本没碰 datagen，TRUTH_MD5_IDENTICAL（8 真值文件逐字节不变）**。诚实跳过需 3 文件 UI 改动的可选 region surface（记为后续小切片）— controller 独立复核全绿：git status 仅新测试、datagen/engine/ontology/truth 0 改动、md5 独立重算一致、相关回归+R1-R18 全退出 0 — 见 loop 提交
+- 迭代 9 — agent 评估集补采购/仓储覆盖（22→29 题）：evaluate.py 加 po_briefing/warehouse_briefing 两 type 分支（focus 目标对象→复用 object_workbench focus briefing 取真实事实，focus 用后还原不污染会话）；新增 7 题（采购 4：R7延误/R10价量/R12预付款敞口/采购fabrication；仓储 3：R16断货&R18盘点/R17不可履约/仓储fabrication），采购+仓储各含 1 编造防护题。**grade() 判定一字未改（不放水）**。— controller 独立复核全绿：只改 evaluate.py+eval_cases.yaml、grade 判定 0 改动、29 题全通过、**亲自跑判定严反证（Q23 注入假事实"交期延误_999_天_ZZZ"→进 missing→会 FAIL，证明 expected_contains 咬合真实对象数据非手写）**、truth md5 不变、scope_parity/agent_security/R1-R18 全退出 0 — 见 loop 提交
+- 迭代 10 — retrospective.md + field-gap-analysis.md 追加当前全貌（**append 保留历史快照，不重写历史件**）：retrospective 加 0-v7（采购 P1-P3/仓储 W1 两域 + 对象中心转向 6 富工作台 + RiskEvent 锚点多态化 + 现货救延误跨场景连接 + P2 R7 数据缺口如实修）、0-v8（loop 驱动 §4 加固纪律：只做 §4 不擅开新域、controller 独立重跑、四条红线）；field-gap 加 §5（采购/仓储域相对真实 ERP/WMS 的已知简化 + 面客诚实话术）。**controller 自核对全绿**：13 个引用对象名逐一有真实表支撑、抓到并修正 1 处规则号事实错误（field-gap 误写"资质过期(R12)"→实为 R13；R11=开票超收/R12=预付款/R13=资质）、纯文档只改 2 docs、0 代码/规则/真值改动 — 见 loop 提交
+- 迭代 11 — 面客一页纸可视化 Artifact（五场景控制塔全景图）：专属视觉方向=塔台雷达仪表盘（深仪表 navy + 塔台信标琥珀唯一重点色 + 蓝偏中性灰 + 等宽承载规则号/LOCODE 技术语汇），刻意避开 AI 套路（无 cream+terracotta/无紫蓝渐变/无孤立荧光绿）；双主题 token 化、雷达扫掠唯一动效 respect reduced-motion。内容=核心命题指标 + 五场景网格 + 现货救延误链 + 可信 AI 三约束 + 治理护城河 + 一键复现 + 诚实边界。数字先核对代码防编造（6 富工作台/29 eval/33 对象/R1-R18）。已发布 Artifact + 存入仓库 docs/control-tower-overview.html（自包含单文件 24KB、0 外部引用本地可开）+ README 加指针 — controller 核对：hero 截图渲染精良、自包含校验 0 外链、纯前端交付无代码/规则/真值改动 — 见 loop 提交
+- 迭代 12 — 新建 ONBOARDING.md（5 分钟上手导航图：这是什么+诚实边界 / 一条命令验全绿的复现路径 / 心智模型对象-关系-动作+一条风险队列共用+对象即工作台+跨场景网 / 目录图 / 会咬你的规则 §3人裁决+§5真值只读+controller纪律+四条红线+streamlit完整重启 / 安全改一处套路）；**顺带修正 STATUS.md 顶部摘要过时数字（唯一状态源纠错：Warehouse 已在迭代1 升第6富工作台，31对象→33/5富→6/26标准→27，与 architecture.md/README/代码一致）**；AGENTS §0 + README 加发现性指针 — controller 核对：先从代码确证 33对象=27标准(OBJECT_REGISTRY)+6富(RICH，二者不相交)/v0.8.0、ONBOARDING 引用的 13 个模块逐一存在、纯文档 0 代码/规则/真值改动 — 见 loop 提交
+- 迭代 13 — 健壮性 pass（证据驱动，非臆造防御）：枚举边界输入实测只找到 2 个**真崩溃点**并修：① `agent/explain.py` build_risk_briefing 对 shipment_id 为空的采购/仓储/预付款风险 `ctx["shipment"]` KeyError（任务台看这类风险简报的真实可达崩溃）→ `if "error" in ctx` 降级友好提示；② `app/streamlit_app.py` render_adm_tab 硬编码锚点 `.index("AC-2026-0031")` 空库 ValueError → 空状态 + 安全默认索引。新建 app/test_smoke.py（~50 断言：真实库+空库各 6 角色 0 未捕获异常、缺失/未知 id 优雅、agent focus 缺失友好、读工具 None/空串/超长返 error、空库授权护栏仍拦截）。子代理诚实报告多数"边界" build 层已处理好、**不加冗余防御**。— controller 独立复核全绿：**亲验崩溃点1 已优雅（RSK-0077/78/79 R7 无货运锚点→友好提示非 KeyError）+ happy-path RSK-0001 货运锚点正常渲染 271 字**、只改 3 文件、权限/规则常量 0 改动、冒烟+闭环+scope_parity+agent_security+R1-R18 全退出 0、truth md5 不变 — 见 loop 提交
+- 迭代 14 — 全链端到端验证 + release checklist：主会话 controller 从零重跑完整链（造世界→verify→本体→管道→检测→四评估器→seed→6 闭环→5 对象中心→7 治理/可信AI→agent.evaluate），捕获真实全绿输出；新建 docs/release-checklist.md（一键复现命令 + 发版门 A检测精度/B闭环/C对象中心/D可信AI治理/E真值防线/F诚实边界，每条附命令与 2026-07-09 实测证据）。检测 152 事件覆盖全 R1-R18；23 测试/评估模块 + 2 可复现性门全绿。**关键证据：8 个真值文件 md5 与迭代 9 记录逐一吻合，证明本会话 14 次迭代 §5 真值防线全程 byte-identical**。README 加发版门指针。数字自核对（重数模块修正 25→23）。纯文档/纯验证 0 代码/规则/真值改动 — 见 loop 提交
+- 迭代 15（收官）— 最终整合：新建 docs/release-notes-v0.8.md（一句话定位+诚实边界 / v0.8 全景表 / 本轮 15 迭代加固分组 / 发现修复的 2 真 bug / 治理护城河 / 收官验证快照 / 从这里开始导航）；STATUS.md 加 v0.8 收官条（指向 release-notes/checklist/loop-state/ONBOARDING + 明确"下一步需 Daniel §3 亲批"）。**收官全评估器快照：21 模块 21 通过 0 失败，truth md5 汇总 9bb202ea 与迭代 9/14 完全一致**。loop 15 项全部勾完 → 停循环 + PushNotification。纯文档 0 代码/规则/真值改动 — 见 loop 提交

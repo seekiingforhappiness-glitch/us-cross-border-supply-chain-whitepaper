@@ -1,0 +1,210 @@
+# 模拟世界引擎配置（S1：世界骨架 + 时间引擎 + 14 个月历史回填）
+# 复现性铁律（继承 W2）：同 seed 逐字节一致——一切随机过程只用下方 seed 派生的显式流。
+# 本单只建"正常世界"：性格/画像参数全建，异常触发留 S2（各生成器已预留 anomaly 挂点）。
+seed: 20250501
+
+window:
+  start: "2025-05-01"          # 回填起点
+  end: "2026-07-14"            # 回填终点 = as_of（14+ 个月，覆盖一个完整旺季 + 一个春节）
+  as_of: "2026-07-14"          # D8 语义：一切事件带时间戳且 ≤ as_of，无未来泄漏
+
+# 公司画像（1 家货主，裁决点 Q1 默认参数）
+company:
+  name: "Cross-Pacific Trading Co."
+  annual_container_target: 450  # 年柜量目标（verify 按窗口年化 ±10% 核验）
+  team_size: 8
+  origin_hubs: ["shenzhen", "yiwu"]   # 双发货地
+  eu_share: 0.10                # 美线为主 + 10% 欧线
+
+counts:
+  suppliers: 25
+  skus: 300
+  customers: 40
+  forwarders: 6
+  chronic_delay_suppliers: 2    # 惯性延期（建 flag，S1 不触发）
+  qual_expiring_suppliers: 1    # 资质将过期（建 flag，S1 不触发）
+
+# SKU 五类目（含季节品）；daily_velocity 决定日销与补货节奏
+sku_categories:
+  charger:     {share: 0.26, price: [4.0, 22.0], seasonal: false, velocity: [3, 30]}
+  cable:       {share: 0.24, price: [1.8, 9.0],  seasonal: false, velocity: [5, 40]}
+  earbuds:     {share: 0.18, price: [8.0, 45.0], seasonal: false, velocity: [2, 18]}
+  phone_case:  {share: 0.18, price: [2.5, 15.0], seasonal: false, velocity: [4, 28]}
+  seasonal_gift: {share: 0.14, price: [6.0, 38.0], seasonal: true, velocity: [1, 22]}  # 季节品：旺季/节前放量
+
+# 客户三层（3 大 B 占 45% 量 / 12 中型 / 25 长尾），各有订单节奏与容忍度
+customer_tiers:
+  A: {count: 3,  volume_share: 0.45, order_interval_days: [3, 7],   tolerance_days: [2, 4],  lines_per_order: [2, 6]}
+  B: {count: 12, volume_share: 0.35, order_interval_days: [7, 16],  tolerance_days: [3, 6],  lines_per_order: [1, 4]}
+  C: {count: 25, volume_share: 0.20, order_interval_days: [18, 45], tolerance_days: [5, 10], lines_per_order: [1, 3]}
+
+# 6 家货代性格模型（每家一组参数——本单只建性格参数与正常行为；billing/泡重/口径矛盾触发留 S2）
+forwarders:
+  - {id: "FWD-01", name: "Orient Bridge Logistics",   quote_level: 1.00, volumetric_tendency: 0.10, notify_delay_days: [0, 1], billing_error_rate: 0.02, credibility: 0.97}
+  - {id: "FWD-02", name: "Pacific Gateway Forwarding", quote_level: 0.94, volumetric_tendency: 0.25, notify_delay_days: [1, 3], billing_error_rate: 0.06, credibility: 0.90}  # 报价低但通知慢、账单错率高
+  - {id: "FWD-03", name: "Silk Road Freight Intl.",    quote_level: 1.08, volumetric_tendency: 0.08, notify_delay_days: [0, 1], billing_error_rate: 0.03, credibility: 0.95}  # 涨价事件主角（见 events）
+  - {id: "FWD-04", name: "Golden Anchor Shipping",     quote_level: 0.98, volumetric_tendency: 0.15, notify_delay_days: [0, 2], billing_error_rate: 0.04, credibility: 0.93}
+  - {id: "FWD-05", name: "Transpac Consolidators",     quote_level: 1.02, volumetric_tendency: 0.30, notify_delay_days: [1, 2], billing_error_rate: 0.05, credibility: 0.88}  # 泡重倾向最高、口径可信度最低
+  - {id: "FWD-06", name: "Blue Meridian Logistics",    quote_level: 0.96, volumetric_tendency: 0.12, notify_delay_days: [0, 1], billing_error_rate: 0.03, credibility: 0.96}
+
+# 航线与船期（真实船名池按船司，周班节奏——继承 datagen/world 手法）
+routes:
+  USWC:  {origin: ["yantian", "shekou"],  dest: ["los_angeles", "long_beach"], transit_days: [14, 18], weekly: true, weight: 0.72}
+  USEC:  {origin: ["yantian", "ningbo"],   dest: ["new_york", "savannah"],      transit_days: [28, 33], weekly: true, weight: 0.18}
+  EU:    {origin: ["yantian", "ningbo"],   dest: ["rotterdam", "hamburg"],      transit_days: [30, 36], weekly: true, weight: 0.10}
+schedule_jitter_days: 1          # 周班相邻班期 = 7 ± jitter（→ 6-8 天，verify 核验）
+
+# 3 仓库（美西自营海外仓 / 美东三方仓 / FBA）
+warehouses:
+  - {id: "USWC-DC1", type: "overseas", operator: "self",  region: "US-West", capacity_units: 900000}
+  - {id: "USEC-3PL", type: "3PL",      operator: "3PL",   region: "US-East", capacity_units: 500000}
+  - {id: "FBA-US",   type: "FBA",      operator: "Amazon", region: "US-Nat", capacity_units: 700000}
+
+# 港口拥堵季节曲线 + 事件脚本（回填埋入的完整季节故事）
+seasonal:
+  # 需求月度乘子（订单量：旺季放量 / 节前 front-load / 春节低谷）
+  # 订单需求乘子（订舱/离港按 ~1 个月提前期滞后 → 柜量[etd]旺季峰值落在 8-10 月）
+  demand_multiplier:
+    "2025-05": 1.05
+    "2025-06": 1.32   # 旺季备货爬坡（→ 8 月离港）
+    "2025-07": 1.48   # 旺季下单峰值（→ 9 月离港）
+    "2025-08": 1.42   # 旺季（→ 10 月离港）
+    "2025-09": 1.18   # 回落
+    "2025-10": 1.02
+    "2025-11": 0.98
+    "2025-12": 0.95
+    "2026-01": 1.18   # 春节前 front-load（爆舱）
+    "2026-02": 0.52   # 春节停摆
+    "2026-03": 0.98
+    "2026-04": 1.02
+    "2026-05": 1.08
+    "2026-06": 1.15
+    "2026-07": 1.10
+  congestion:                    # 港口拥堵窗口（旺季运输时长上浮）
+    peak_2025: {from: "2025-08-01", to: "2025-10-31", transit_extra_days: [1, 4]}
+  cny_2026:                      # 春节：工厂/口岸停摆 → 该窗口近零离港（"春节周柜量显著低"）
+    shutdown: {from: "2026-02-09", to: "2026-03-01"}
+    prerush:  {from: "2026-01-05", to: "2026-02-08", booking_boost: 1.25}  # 节前爆舱
+
+events:                          # 尾部/脚本事件（正常版本；S2 可注入异常版本）
+  forwarder_rate_hike:           # 某货代 2025-11 涨价（正常版本：该货代此后报价上浮）
+    forwarder_id: "FWD-03"
+    effective: "2025-11-01"
+    hike_pct: 0.12
+
+# 采购与运输提前期
+lead_times:
+  booking_before_etd_days: [5, 10]   # 订舱提前期（离港前）
+  promise_after_order_days: [35, 60] # 客户承诺交期 = 下单 + 提前期
+  procurement_ready_days: [15, 35]   # PO 齐货提前期（供应商 lead_time 覆盖，此为兜底范围）
+  customs_clear_days: [1, 4]         # 到港到清关放行
+  lastmile_days: [2, 5]              # 清关到派送签收
+  invoice_after_delivery_days: [7, 14]  # 货代开票周期（妥投后）
+
+# 运费费率卡（USD，per 柜为主；forwarder.quote_level 与涨价事件在此基础上缩放）
+rate_card:
+  OFT: {scope: container, base: 2200, route_mult: {USWC: 1.0, USEC: 1.35, EU: 1.5}}  # 海运费
+  THC: {scope: container, base: 185}    # 码头操作费
+  FSC: {scope: container, base: 120}    # 燃油附加费
+  DOC: {scope: shipment,  base: 65}     # 单证费（挂 primary 柜）
+  ISF: {scope: shipment,  base: 35}     # 美国进口安全申报
+  CUS: {scope: shipment,  base: 150}    # 清关代理费
+
+# 订舱与装柜（消费 ready 池 → 挂船期表 → 生成柜）
+booking:
+  booking_lead_days: 6           # 订舱触发 = 该班次 etd 前 N 天（落在 lead_times 区间内）
+  container_capacity_units: 2900 # 单柜装载单位数（决定柜数 = ceil(单位/容量)）
+  max_containers_per_shipment: 3 # 单票最多柜数（超出的 ready 行等下一班）
+  min_fill_units: 2100           # 拼柜门槛：ready 池不足此量则等下一班（不发半空柜，真实拼柜）
+  max_wait_days: 12              # 但等待超此天数强制发运（避免积压/击穿承诺）
+  transshipment_rate: 0.30       # 中转比例（转船里程碑，正常版本）
+  qty_per_line: [55, 470]        # 单行基准数量（× 季节乘子）——校准年柜量的主杠杆
+  eu_share: 0.10                 # 欧线占比（美线为主 + 10% 欧线）
+
+# 库存模型（安全库存 + 日销消耗 + 到港补货，恒 ≥ 0）
+inventory:
+  safety_stock_range: [120, 600]
+  init_cover_days: [20, 45]      # 初始库存 = 安全库存 + 覆盖天数×日销
+  region_share: {US-West: 0.55, US-East: 0.25, US-Nat: 0.20}  # 日销按仓库区域分摊
+  consume_factor: 0.45           # 日消耗 = 日销 × 区域分摊 × 此因子（恒钳 ≥ 0）
+  reorder_cover_days: 12         # 例行补货（正常仓储行为）：可用跌破安全库存则补到 安全+此天数×日销；
+                                 # 连锁被延误标记的 position 在断货窗内豁免补货 → 断货只由连锁产生（非自然枯竭噪声）
+
+# ============================ S2：异常谱系 + 连锁 + AI 运转 ============================
+# 一切异常/AI 随机只用 backfill.STREAMS 里 seed 派生的 anomalies/ai 子流（复现性铁律）。
+# 密度真实档（裁决点 Q2：月 15-25 起）；关 anomalies.enabled 即退回 S1 正常世界（子流不占用→逐字节还原）。
+anomalies:
+  enabled: true
+  density_profile: "real"         # mild(月8-12) | real(月15-25，默认) | stress(月40+)
+  profiles:
+    mild:   {monthly_min: 8,  monthly_max: 12}
+    real:   {monthly_min: 15, monthly_max: 25}
+    stress: {monthly_min: 40, monthly_max: 60}
+  # 各族每事件注入概率（校准到真实档月 15-25；旺季自然涌现更多——密度不硬凑）
+  delay:                          # 延误族（作用于里程碑计划挂点）
+    per_shipment_rate: 0.30       # 每票延误基线概率
+    peak_amplify: 1.4             # 旺季拥堵窗内放大（季节曲线；控制在使旺季高于均值但不爆表）
+    type_weights: {congestion: 0.44, port_omission: 0.16, roll: 0.22, transship_miss: 0.18}
+    extra_days:                   # 各子型 ETA 顺延天数
+      congestion:      [3, 10]
+      port_omission:   [4, 9]
+      roll:            [7, 15]
+      transship_miss:  [5, 12]
+  inspection:                     # 查验族（作用于报关挂点）
+    per_shipment_rate: 0.17
+    hold_days: [2, 7]
+    inspection_fee_usd: [180, 650]
+    contradiction_rate: 0.55      # credibility<0.92 货代查验时口径与船司矛盾的概率（成对里程碑）
+  fee:                            # 费用族（按货代性格；作用于账单挂点）
+    billing_error_multiplier: 8.0 # p_fee ≈ forwarder.billing_error_rate × 此值（低报价货代错率高）
+    overbill_pct: [0.12, 0.35]    # 费率超收比例（→R4）
+    volumetric_extra_pct: [0.10, 0.30]  # 泡重虚加（THC 按泡重比例上浮，→R4）
+    duplicate_share: 0.35         # 命中费用异常里判为"重复计费"的占比（→R5）
+    peak_surcharge_usd: [200, 900]# 旺季计划外附加费（→R6，charge_code=PSS）
+  document:                       # 单证族（作用于里程碑计划/供应商挂点）
+    per_shipment_rate: 0.09
+    missing_docs_pool: ["commercial_invoice", "packing_list", "certificate_of_origin", "ISF_filing"]
+    qual_expiring_flare_rate: 0.5 # 资质将过期供应商(qual_expiring)在其 PO 上发难的概率
+  warehouse:                      # 仓储族（作用于库存挂点）
+    shrink_per_tick_positions: 3  # 每 tick 抽查的 position 数（盘点差异候选）
+    shrink_rate: 0.03             # 抽中后计入盘点差异的概率
+    shrink_ratio: [0.03, 0.12]    # 盘点差异幅度（|实盘−账面|/账面）
+    putaway_delay_rate: 0.10      # 到港上架延迟概率
+    putaway_delay_days: [2, 6]
+  chain:                          # 连锁引擎（延误→滞箱→库存倒计时→断货冲突升级）
+    detention_free_days: 7        # 免用箱期（超出计滞箱费）
+    detention_daily_usd: 150      # 滞箱费日费率（对齐 engine cost.detention_daily_usd）
+    stockout_promo_months: ["2025-07", "2025-08", "2025-11", "2026-01", "2026-06"]  # 大促窗（断货升级）
+    stockout_target_frac: [0.15, 0.40]  # 断货冲突升级：把靶 position 可用压到 安全库存×此比例（明确断货，R16 high）
+  detectors:                      # AI 检测阈值（镜像 config/datagen.yaml 引擎口径，单一来源在此复述）
+    buffers: {customs_days: 3, lastmile_days: 2}     # R1 缓冲（= datagen buffers）
+    stall_days: 5                 # R3（= datagen risk.stall_days）
+    docs_window_days: 7           # R2（= datagen risk.docs_window_days）
+    rate_tolerance: 0.05          # R4（= datagen cost.rate_tolerance）
+    unplanned_high_usd: 500       # R6 high 门槛（= datagen cost.unplanned_high_threshold_usd）
+    stockout_high_frac: 0.5       # R16（= datagen warehouse.stockout_high_frac）
+  tail_events:                    # 尾部脚本事件：只留手动触发接口，回填不自动发生（演示时手动注入）
+    forwarder_liquidity_rumor: {auto: false, forwarder_id: "FWD-05"}
+    overseas_wh_incident:        {auto: false, warehouse_id: "USWC-DC1"}
+
+ai_loop:                          # AI 同事在世界中运转：检测→分诊→提案(经济账)→模拟审批→处置生效→先例沉淀
+  enabled: true
+  cadence_days: 7                 # 每 7 天跑一次检测回路（回填时间线内交织运转）
+  propose_severities: ["critical", "high"]  # 达此定级即生成提案（medium 只建风险不提案，除非连锁升级）
+  approver:                       # 模拟审批人（显式标注，绝不冒充真人）
+    name: "sim-approver-01"
+    approve_rate: 0.82            # 批准倾向
+    decide_delay_days: [0, 6]     # 审批延迟分布（提案后 N 天才决定）
+  economics:                      # 提案经济账（加急成本 vs 断货损失，现算）
+    expedite_cost_per_container_usd: 3800   # 加急（优先舱位/空派）单柜成本
+    expedite_pull_in_days: [4, 9]           # 加急后 ETA 提前天数
+    stockout_penalty_per_unit_usd: 6.5      # 断货缺口单件损失（缺货销售损失+客户罚则近似）
+    detention_avoided_per_day_usd: 150      # 加急避免的滞箱费/天
+    margin_at_risk_frac: 0.20               # 迟交/断货边际损失 ≈ 涉险货值 × 此比例
+  quality_label_bias:             # 关闭时专员质量标签分布（模拟人打标；显式 sim）
+    effective: 0.62
+    partial: 0.28
+    ineffective: 0.10
+
+output:
+  sqlite_path: "data/simworld.sqlite"   # 与 data/ontology.sqlite 物理隔离

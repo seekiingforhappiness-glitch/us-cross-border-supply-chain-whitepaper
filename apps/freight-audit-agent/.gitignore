@@ -1,0 +1,14 @@
+# 真实企业数据绝不进版本库
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.pdf
+*_real/
+raw_real/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.DS_Store
