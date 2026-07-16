@@ -566,6 +566,198 @@ def test_simworld_panorama_and_ai_flow(sim_world):
     assert ts_list == sorted(ts_list, reverse=True)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 时间轴回放（as_of，A-2/V13②）：byte-identical 缺省 / 窗口 / 回放重算 / 存量诚实标注 /
+# 事件流过滤 / 脱敏在回放路径同样生效。现查现算对照，不誊抄具体数字。
+# ═══════════════════════════════════════════════════════════════════════════
+# 在途票时点复算的独立 SQL（与实现 _in_transit_as_of 同口径、另写一遍作对照）
+_IN_TRANSIT_AS_OF_SQL = """
+    SELECT count(*) FROM (
+      SELECT shipment_id,
+             max(CASE WHEN event_type='departed' AND date(event_time)<=? THEN 1 ELSE 0 END) dep,
+             max(CASE WHEN event_type IN ('arrived','delivered')
+                      AND date(event_time)<=? THEN 1 ELSE 0 END) arr
+      FROM shipment_milestones GROUP BY shipment_id) WHERE dep=1 AND arr=0"""
+
+
+def _mid_date(start: str, clock: str) -> str:
+    """窗口内严格居中的一天（start<mid<clock），不硬编码具体日期。"""
+    import datetime as _dt
+    s, c = _dt.date.fromisoformat(start), _dt.date.fromisoformat(clock)
+    return (s + (c - s) / 2).isoformat()
+
+
+def test_window_present_on_all_three(client):
+    """三端点均回传 window={start,end}，start≤end（滑条定义域）；带 clock 的端点 end=世界时钟。"""
+    for path in ("/cockpit/vitals", "/cockpit/panorama", "/cockpit/ai-flow"):
+        d = client.get(path, headers={"X-Role": "manager"}).json()
+        assert "window" in d, path
+        assert d["window"]["start"] <= d["window"]["end"], path
+        if "clock" in d:  # ai-flow 载荷向来无 clock 字段；vitals/panorama 有，end 应=世界时钟
+            assert d["window"]["end"] == d["clock"], path
+
+
+def test_as_of_default_byte_identical(client):
+    """缺省/≥世界时钟/非法 as_of → 不回放：无 as_of 信封、zones 与现状逐字一致（byte-identical）。"""
+    base = client.get("/cockpit/vitals", headers={"X-Role": "manager"}).json()
+    assert "as_of" not in base
+    for q in (base["clock"], "2099-12-31", "not-a-date"):
+        r = client.get("/cockpit/vitals", params={"as_of": q}, headers={"X-Role": "manager"}).json()
+        assert "as_of" not in r, q
+        assert r["zones"] == base["zones"], q
+        assert r["clock"] == base["clock"], q
+    # panorama / ai-flow 同样：缺省与 ≥clock 无信封、主体不变
+    for path, key in (("/cockpit/panorama", "meta"), ("/cockpit/ai-flow", "items")):
+        b = client.get(path, headers={"X-Role": "manager"}).json()
+        f = client.get(path, params={"as_of": "2099-01-01"}, headers={"X-Role": "manager"}).json()
+        assert "as_of" not in b and "as_of" not in f
+        assert b[key] == f[key], path
+
+
+def test_as_of_clamp_and_replay_gate(client):
+    """as_of<窗口起点 → 夹到 window_start；window_start≤as_of<clock → 回放态且 effective=as_of。"""
+    base = client.get("/cockpit/vitals", headers={"X-Role": "manager"}).json()
+    start, clock = base["window"]["start"], base["clock"]
+    clamped = client.get("/cockpit/vitals", params={"as_of": "2000-01-01"},
+                         headers={"X-Role": "manager"}).json()
+    assert clamped["as_of"]["is_replay"] and clamped["as_of"]["effective"] == start
+    inside = _mid_date(start, clock)
+    rep = client.get("/cockpit/vitals", params={"as_of": inside},
+                     headers={"X-Role": "manager"}).json()
+    assert rep["as_of"]["is_replay"] and rep["as_of"]["effective"] == inside
+    assert rep["as_of"]["world_clock"] == clock and rep["clock"] == clock  # clock 不随拖动改
+
+
+def test_verification_replay_snapshot_honesty(client, con):
+    """验证世界=静态快照：回放态风险类 headline 归 current 且值与现状一致（不重建、不造 0）；
+    唯里程碑复算的在途票数（in_transit_as_of）真回放，独立 SQL 对照。"""
+    base = client.get("/cockpit/vitals", headers={"X-Role": "manager"}).json()
+    start, clock = base["window"]["start"], base["clock"]
+    assert start < clock, "里程碑应给验证世界一个可拖窗口"
+    as_of = _mid_date(start, clock)
+    rep = client.get("/cockpit/vitals", params={"as_of": as_of},
+                     headers={"X-Role": "manager"}).json()
+    env = rep["as_of"]
+    assert env["is_replay"] and env["world_is_sim"] is False
+    bz = {z["zone"]: z for z in base["zones"]}
+    rz = {z["zone"]: z for z in rep["zones"]}
+    # 风险类/存量类 headline：current 标注 + 值不变（静态快照无逐日史，绝不造假历史）
+    for zn in ("money", "customers", "suppliers", "inventory", "fulfillment"):
+        assert rz[zn]["headline_as_of"] == "current", zn
+        assert rz[zn]["headline_value"] == bz[zn]["headline_value"], zn
+    # in_transit_as_of：里程碑事件流复算，独立 SQL 对照（验证世界也真回放这一项）
+    expect_it = con.execute(_IN_TRANSIT_AS_OF_SQL, (as_of, as_of)).fetchone()[0]
+    assert rz["money"]["detail"]["in_transit_as_of"]["count"] == expect_it
+    # AI 今日=事件流逐日复算（恒 replayed）；过去日检测=0 是 detected_at 批量单日的如实读数
+    assert rz["ai"]["headline_as_of"] == "replayed"
+    # 信封诚实枚举：验证世界风险类进 current_state_only（不谎称可回放）
+    assert "money.fee_exposure" in env["current_state_only"]
+    assert "money.in_transit_as_of" in env["replayable"]
+
+
+def test_verification_replay_masking_preserved(client):
+    """X-Role 脱敏在 as_of 路径同样生效：ops 请求回放态，钱区金额仍 MASK。"""
+    base = client.get("/cockpit/vitals", headers={"X-Role": "manager"}).json()
+    as_of = _mid_date(base["window"]["start"], base["clock"])
+    money = _zones(client.get("/cockpit/vitals", params={"as_of": as_of},
+                              headers={"X-Role": "ops"}))["money"]
+    assert money["headline_value"] == MASK
+    assert money["detail"]["fee_exposure"]["value_usd"] == MASK
+    assert isinstance(money["detail"]["fee_exposure"]["open_risks"], int)  # 计数不掩
+
+
+def test_simworld_vitals_replay(sim_world):
+    """模拟世界（真历史）：回放态风险类按 detected_at/resolved_at 时点重建、AI 今日逐日复算——
+    每项独立 SQL 现查对照（另写一遍口径，不誊抄数字）；存量类如实标 current。"""
+    c, scon = sim_world
+    base = c.get("/cockpit/vitals", headers={"X-Role": "manager"}).json()
+    clock = base["clock"]
+    # 取严格居于检测窗口内的一天（min<as_of<max detected day），保证两侧都有数据
+    as_of = scon.execute(
+        "SELECT date(detected_at) FROM risk_events "
+        "WHERE date(detected_at) > (SELECT min(date(detected_at)) FROM risk_events) "
+        "AND date(detected_at) < (SELECT max(date(detected_at)) FROM risk_events) "
+        "ORDER BY detected_at LIMIT 1 "
+        "OFFSET (SELECT count(DISTINCT date(detected_at))/2 FROM risk_events)").fetchone()[0]
+    assert base["window"]["start"] < as_of < clock
+    rep = c.get("/cockpit/vitals", params={"as_of": as_of},
+                headers={"X-Role": "manager"}).json()
+    env = rep["as_of"]
+    assert env["is_replay"] and env["world_is_sim"] and env["effective"] == as_of
+    rz = {z["zone"]: z for z in rep["zones"]}
+    # headline 归类：钱/客户/AI=replayed，供应商/履约/库存/待拍板=current
+    assert rz["money"]["headline_as_of"] == rz["customers"]["headline_as_of"] == "replayed"
+    assert rz["ai"]["headline_as_of"] == "replayed"
+    for zn in ("suppliers", "fulfillment", "inventory", "decisions"):
+        assert rz[zn]["headline_as_of"] == "current", zn
+    # 费用敞口 R4-R6：截至 as_of 仍未闭环（独立重写 detected_at/resolved_at 口径）
+    exp = scon.execute(
+        "SELECT count(*) c, round(sum(affected_value_usd),2) v FROM risk_events "
+        "WHERE rule_id IN ('R4','R5','R6') AND date(detected_at)<=? "
+        "AND (resolved_at IS NULL OR resolved_at='' OR date(resolved_at)>?)",
+        (as_of, as_of)).fetchone()
+    fe = rz["money"]["detail"]["fee_exposure"]
+    assert fe["open_risks"] == exp["c"]
+    assert rz["money"]["headline_value"] == exp["v"]
+    # 供应商单一依赖 R14 + 对账 R7-R13：同口径时点重建
+    r14 = scon.execute(
+        "SELECT count(*) FROM risk_events WHERE rule_id='R14' AND date(detected_at)<=? "
+        "AND (resolved_at IS NULL OR resolved_at='' OR date(resolved_at)>?)",
+        (as_of, as_of)).fetchone()[0]
+    assert rz["suppliers"]["detail"]["single_source_r14"]["value"] == r14
+    # 在途票时点复算
+    expect_it = scon.execute(_IN_TRANSIT_AS_OF_SQL, (as_of, as_of)).fetchone()[0]
+    assert rz["money"]["detail"]["in_transit_as_of"]["count"] == expect_it
+    # 待拍板超期任务：due_at<as_of 时点重算
+    od = scon.execute("SELECT count(*) FROM tasks WHERE status NOT IN ('done','cancelled') "
+                      "AND due_at IS NOT NULL AND due_at!='' AND date(due_at)<?",
+                      (as_of,)).fetchone()[0]
+    assert rz["decisions"]["detail"]["overdue_tasks"]["value"] == od
+    # AI 今日检测数：date(detected_at)=as_of（逐日复算）
+    det = scon.execute("SELECT count(*) FROM risk_events WHERE date(detected_at)=?",
+                       (as_of,)).fetchone()[0]
+    assert rz["ai"]["detail"]["today"]["detections"] == det
+
+
+def test_simworld_ai_flow_replay(sim_world):
+    """模拟世界 ai-flow 事件流：as_of 过滤后所有条目 ts≤as_of，条数=独立现查 min(limit, 截至当日)。"""
+    c, scon = sim_world
+    as_of = scon.execute(
+        "SELECT sim_date FROM sim_ai_activity "
+        "WHERE sim_date > (SELECT min(sim_date) FROM sim_ai_activity) "
+        "AND sim_date < (SELECT max(sim_date) FROM sim_ai_activity) "
+        "ORDER BY sim_date LIMIT 1 "
+        "OFFSET (SELECT count(DISTINCT sim_date)/2 FROM sim_ai_activity)").fetchone()[0]
+    rep = c.get("/cockpit/ai-flow", params={"limit": 500, "as_of": as_of},
+                headers={"X-Role": "manager"}).json()
+    assert rep["as_of"]["is_replay"]
+    assert all(i["ts"] <= as_of for i in rep["items"]), "回放态不得出现晚于 as_of 的事件"
+    expected = scon.execute("SELECT count(*) FROM sim_ai_activity WHERE sim_date<=?",
+                            (as_of,)).fetchone()[0]
+    assert rep["count"] == min(500, expected)
+
+
+def test_simworld_panorama_replay_anchoring(sim_world):
+    """模拟世界 panorama：回放态锚定的风险集按 _risk_active 时点重建，守恒仍成立、总数=独立现查。"""
+    c, scon = sim_world
+    as_of = scon.execute(
+        "SELECT date(detected_at) FROM risk_events "
+        "WHERE date(detected_at) > (SELECT min(date(detected_at)) FROM risk_events) "
+        "AND date(detected_at) < (SELECT max(date(detected_at)) FROM risk_events) "
+        "ORDER BY detected_at LIMIT 1 "
+        "OFFSET (SELECT count(DISTINCT date(detected_at))/2 FROM risk_events)").fetchone()[0]
+    d = c.get("/cockpit/panorama", params={"as_of": as_of},
+              headers={"X-Role": "manager"}).json()
+    assert d["as_of"]["is_replay"]
+    active = scon.execute(
+        "SELECT count(*) FROM risk_events WHERE date(detected_at)<=? "
+        "AND (resolved_at IS NULL OR resolved_at='' OR date(resolved_at)>?)",
+        (as_of, as_of)).fetchone()[0]
+    assert d["meta"]["open_risks_total"] == active
+    anchored = sum(n["alert_count"] for layer in d["layers"].values() for n in layer["nodes"])
+    assert anchored + d["meta"]["alerts_unanchored_total"] == active  # 守恒
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))

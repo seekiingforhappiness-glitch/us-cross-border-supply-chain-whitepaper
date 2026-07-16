@@ -32,7 +32,10 @@ export type IconName =
   | "warn"
   | "spark"
   | "x"
-  | "chevron-right";
+  | "chevron-right"
+  // 世界时钟时间轴回放（A-2）
+  | "play"
+  | "pause";
 
 // 每图标 = 24x24 viewBox 内的一组 path/线段（stroke=currentColor，fill=none 除非填充点）。
 const PATHS: Record<IconName, JSX.Element> = {
@@ -190,6 +193,17 @@ const PATHS: Record<IconName, JSX.Element> = {
   "chevron-right": (
     <>
       <path d="M9 5l7 7-7 7" />
+    </>
+  ),
+  play: (
+    <>
+      <path d="M7 5l12 7-12 7V5Z" fill="currentColor" stroke="none" />
+    </>
+  ),
+  pause: (
+    <>
+      <rect x="6.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none" />
+      <rect x="13.5" y="5" width="4" height="14" rx="1" fill="currentColor" stroke="none" />
     </>
   ),
 };

@@ -28,6 +28,32 @@ trend 字段：验证世界（静态快照）全 null。模拟世界仅两处有
   其余区块（钱/客户/供应商/库存/待拍板的 headline 均为"存量"指标）无逐日快照表——从事件流
   反推存量属推算而非测量，按红线 3 一律 null（docstring 留此说明供后续 sim 快照表落地再点亮）。
 
+「时间轴回放」口径（as_of，A-2/V13②；D8"日期滑条回放"落地。诚实边界=本节最重要的约束）：
+  三端点均接受可选 as_of=YYYY-MM-DD。缺省/≥世界时钟/非法串 → effective_clock=世界时钟、
+  replay=False，行为与现状 **byte-identical**（现有前端/测试零感知，无 as_of 信封键）。
+  window_start≤as_of<世界时钟 → effective_clock=as_of、replay=True，进入回放态：把 effective_clock
+  当"今天"喂给既有时窗口径，并对**真能按时点重算**的指标沿事件流回算，对**存量类**如实标注。
+  X-Role 脱敏在 as_of 路径同样生效（各端点末仍过 _apply_role_masks，不因回放绕过）。
+
+  ┌ 真可回放（有不可变事件流/时间戳支撑，回算是测量非推算）───────────────────────────
+  │ · 风险活跃度：risk_events.detected_at≤clock 且 (resolved_at 空 或 >clock)——"截至当日仍未
+  │   闭环"。**仅模拟世界**（detected_at 真跨 68 天）：钱区费用敞口/供应商单一依赖+对账差异/
+  │   客户敞口客户集/库存可救行的风险集、AI 今日检测数，回放态按此重建。验证世界 detected_at
+  │   是单日批量快照（全 = 世界时钟当天），回算=当日前恒 0 属误导→**验证世界不重建风险类**
+  │   （与既有"验证世界 trend 恒 null"同因同栈：静态快照无逐日史）。
+  │ · 在途票数（任务书点名口径）：有离港里程碑(event_time≤clock)且无到港/交付里程碑(≤clock)的
+  │   票。里程碑两世界都真分布 → **两世界都可回放**（钱区 in_transit_as_of）。
+  │ · 时窗类（喂 effective_clock 即回算，due_date/due_at 是真排期）：应收/应付逾期(due_date<clock)、
+  │   14 天净流出窗口(clock,clock+N]、待拍板超期任务(due_at<clock)、AI/履约 7 天趋势窗（sim）。
+  │ · AI 工作流事件流(ai-flow)：各来源按自身时间戳≤as_of 过滤——事件日志天然可回放。
+  ├ 不可回放（对象表只存当前态，无历史版本）→ 回放态如实标注，**绝不给假历史数字**─────────
+  │   履约 OTD 累计率/清关卡点/延误直方、钱区毛利率分布/在途货值(申报价值)、应收应付**存量水位**
+  │   (status='scheduled' 是现值)、供应商交期达成率/缺陷率(GRN 累计)、库存击穿/盘点差异(现货现值)、
+  │   客户准入漏斗/健康度/敞口金额(qty×现价)、待拍板存量件数/升级件、AI 累计提案、panorama 节点/边。
+  └ 回放态信息传达：payload 加 as_of 信封（requested/effective/world_clock/window/is_replay/
+    world_is_sim/replayable/current_state_only/note）；vitals 每区加 headline_as_of=replayed|current
+    供卡面显"显示当前值"小灰标。window={start,end} 始终随三端点回传（滑条定义域，纯附加键）。
+
 X-Role 脱敏（沿既有两层，见各端点）：
   a) 本体 sensitiveFieldRules 具名字段 → agent.mcp_server.SensitiveFieldMasker（与五路由同一实例
      逻辑）：如 Customer.tier（客户健康度交叉表对非 cs/manager 自动掩码）、
@@ -221,6 +247,119 @@ def _shift_date(day: str, delta_days: int) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 时间轴回放（as_of）基础件：数据窗口、as_of 解析、风险活跃度重建、在途票时点复算
+# （口径与诚实边界见模块 docstring「时间轴回放」节）
+# ═══════════════════════════════════════════════════════════════════════════
+def _world_window(con: sqlite3.Connection, tables: set[str]) -> tuple[str | None, str | None]:
+    """回放滑条的数据窗口 [start, end]。end = _world_clock（"今天"，口径不变，刻意不含未来 ETA）；
+    start = 同批事件账本 + shipment_milestones 的最早真实事件日——里程碑给验证世界一个可拖区间
+    （其 detected_at/action_log 是单日批量快照，只用它们 start=end 滑条退化）。全缺 → (None, None)。"""
+    end = _world_clock(con, tables)
+    mins: list[str] = []
+    for table, expr in (("risk_events", "min(date(detected_at))"),
+                        ("action_log", "min(date(timestamp))"),
+                        ("sim_event_log", "min(sim_date)"),
+                        ("shipment_milestones", "min(date(event_time))")):
+        if table in tables:
+            row = _one(con, f"SELECT {expr} FROM {table}")
+            if row and row[0]:
+                mins.append(row[0])
+    return (min(mins) if mins else None), end
+
+
+def _resolve_as_of(as_of: str | None, world_clock: str | None,
+                   window_start: str | None) -> tuple[str | None, bool]:
+    """请求 as_of → (effective_clock, replay)。缺省/≥world_clock/非法串/world_clock 不可推导 →
+    (world_clock, False)：现状不变、byte-identical。window_start≤as_of<world_clock → (as_of, True)：
+    回放态。as_of<window_start → 夹到 window_start（不早于数据窗口）。非法日期不 500，退现状。"""
+    if not as_of or not world_clock:
+        return world_clock, False
+    try:
+        date.fromisoformat(as_of)
+    except (ValueError, TypeError):
+        return world_clock, False
+    if as_of >= world_clock:
+        return world_clock, False
+    if window_start and as_of < window_start:
+        as_of = window_start
+    return as_of, True
+
+
+def _risk_active(replay_risk: bool, clock: str | None) -> tuple[str, tuple]:
+    """风险"活跃"过滤片段 + 参数。
+    · 非回放（含验证世界回放——replay_risk 已由调用方 and world_is_sim 收窄）→ ("status='open'", ())：
+      现状口径，拼出的 SQL 与改动前逐字等价 ⇒ 结果 byte-identical。
+    · 回放（仅模拟世界，detected_at 真跨天）→ 按 detected_at/resolved_at 重建"截至 clock 仍未闭环"：
+      detected_at≤clock 且 (resolved_at 空 或 >clock)。含当日仍 mitigating 的（当时确未闭环，诚实）。"""
+    if replay_risk and clock:
+        return ("date(detected_at) <= ? AND (resolved_at IS NULL OR resolved_at='' "
+                "OR date(resolved_at) > ?)", (clock, clock))
+    return ("status='open'", ())
+
+
+def _in_transit_as_of(con: sqlite3.Connection, tables: set[str], clock: str | None) -> dict | None:
+    """截至 clock 的在途票数（任务书点名的"真回放"口径）：有离港里程碑(event_time≤clock)且
+    无到港/交付里程碑(event_time≤clock)的票。里程碑是不可变事件流、两世界都真分布 → 诚实可回放。
+    缺 shipment_milestones 表或 clock 不可推导 → None（调用方不加此键）。"""
+    if "shipment_milestones" not in tables or not clock:
+        return None
+    row = _one(con, """
+        SELECT count(*) c FROM (
+          SELECT m.shipment_id,
+                 max(CASE WHEN m.event_type='departed' AND date(m.event_time)<=? THEN 1 ELSE 0 END) dep,
+                 max(CASE WHEN m.event_type IN ('arrived','delivered')
+                          AND date(m.event_time)<=? THEN 1 ELSE 0 END) arr
+          FROM shipment_milestones m GROUP BY m.shipment_id)
+        WHERE dep=1 AND arr=0""", (clock, clock))
+    return {"count": row["c"] if row else 0,
+            "basis": f"截至 {clock}：有离港里程碑、无到港/交付里程碑的票（里程碑事件流复算）"}
+
+
+def _headline_as_of(zone: str, replay_risk: bool) -> str:
+    """回放态每区 headline 的诚实归类（卡面小灰标据此显"显示当前值"）。replay_risk 已蕴含 world_is_sim。
+    · 钱/客户 headline = 风险活跃度重建，仅 sim（replay_risk）真回算，验证世界静态快照 → current。
+    · AI headline = 当日检测/提案数，两世界都按 effective_clock 逐日复算（detected_at/action_log 是真
+      事件流，验证世界批量单日故过去日恒 0，仍是测量非造假）→ 恒 replayed。
+    · 履约 OTD/供应商交期/库存击穿/待拍板存量件数 = 存量现值 → current。"""
+    if zone in ("money", "customers"):
+        return "replayed" if replay_risk else "current"
+    if zone == "ai":
+        return "replayed"
+    return "current"
+
+
+def _as_of_envelope(requested: str | None, effective: str | None, world_clock: str | None,
+                    window: tuple[str | None, str | None], world_is_sim: bool,
+                    replay_risk: bool) -> dict:
+    """回放信封（仅回放态加入 payload）：机器可读的重算/存量分类 + 人话边界说明，进决策日志。
+    replayable/current_state_only 按当前世界如实枚举（模拟世界才重建风险类；里程碑/时窗类两世界都算）。"""
+    always_replayable = ["ai.today", "money.in_transit_as_of", "money.receivables.overdue",
+                         "money.payables.overdue", "money.net_cash_14d", "decisions.overdue_tasks"]
+    sim_replayable = ["money.fee_exposure", "customers.risk_exposure_set",
+                      "suppliers.single_source_r14", "suppliers.recon_diff_r7_r13",
+                      "inventory.rescuable_risk_set", "ai.trend",
+                      "fulfillment.trend", "panorama.alert_anchoring"]
+    current_only = ["fulfillment.otd", "fulfillment.customs_blocked", "fulfillment.delay_histogram",
+                    "money.margin_distribution", "money.in_transit_value", "money.receivables.base",
+                    "money.payables.base", "suppliers.delivery_hit_rate", "suppliers.defect_top",
+                    "inventory.safety_breaches", "inventory.count_variance", "customers.exposure_usd",
+                    "customers.admission_funnel", "customers.health_cross", "decisions.pending_proposals",
+                    "decisions.escalated_tasks", "ai.all_time", "panorama.nodes", "panorama.edges"]
+    replayable = always_replayable + (sim_replayable if replay_risk else [])
+    if not replay_risk:      # 验证世界回放：风险类无逐日史，归入存量如实标注
+        current_only = sim_replayable + current_only
+    note = ("回放态：风险类按 detected_at/resolved_at 时点重建、在途按里程碑复算、逾期/净流出/趋势按"
+            "effective_clock 回算；存量类（对象表只存当前态、无历史版本）如实显示当前值并标注，绝不造假历史。")
+    if not world_is_sim:
+        note = ("验证世界是静态快照（风险/审计均单日批量、无逐日史）——除在途票(里程碑)与逾期(due_date)"
+                "等真事件流指标外，各区 headline 均显示当前值。真时点回放请切模拟世界。" )
+    return {"requested": requested, "effective": effective, "world_clock": world_clock,
+            "window": {"start": window[0], "end": window[1]}, "is_replay": True,
+            "world_is_sim": world_is_sim, "replayable": replayable,
+            "current_state_only": current_only, "note": note}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 体征带七区 builder（每区 docstring = 该区指标的完整 SQL 口径，Daniel 回查锚点）
 # ═══════════════════════════════════════════════════════════════════════════
 def _payment_flow(con, direction: str, clock: str | None) -> dict:
@@ -246,7 +385,8 @@ def _payment_flow(con, direction: str, clock: str | None) -> dict:
     return out
 
 
-def _zone_money(con, tables: set[str], clock: str | None) -> dict:
+def _zone_money(con, tables: set[str], clock: str | None,
+                replay_risk: bool = False, replay: bool = False) -> dict:
     """钱区。七指标口径：
     · 费用异常敞口(headline)：SELECT count(*), sum(affected_value_usd) FROM risk_events
       WHERE rule_id IN ('R4','R5','R6') AND status='open'——open 的超收/计划外/重复计费合计。
@@ -273,10 +413,14 @@ def _zone_money(con, tables: set[str], clock: str | None) -> dict:
       receivables/payables/net_cash_14d 三者缺 payments 表 → 整块 null+reason；
       overdue/net_cash_14d 另需 clock，clock 不可推导时单独 null+reason（基础水位仍照给）。
     alert_count = open R4-R6 计数（不含新三指标——保持费用敞口语义，任务书 G2 明示不改）。
-    trend：无逐日敞口快照表 → null（两世界同，红线 3）。"""
+    trend：无逐日敞口快照表 → null（两世界同，红线 3）。
+    回放（replay_risk，仅 sim）：费用敞口按风险活跃度(_risk_active)重建为"截至 clock 仍未闭环"的
+    R4-R6；affected_value_usd 是风险行检测时快照，对活跃集求和是测量非推算，诚实。另加 in_transit_as_of
+    （里程碑复算的截至当日在途票数，两世界都算）。存量项（毛利率/在途货值/应收应付水位）不动、如实标存量。"""
     ph = ",".join("?" * len(_COST_RULES))
+    rfrag, rp = _risk_active(replay_risk, clock)
     row = _one(con, f"SELECT count(*) c, sum(affected_value_usd) v FROM risk_events "
-                    f"WHERE rule_id IN ({ph}) AND status='open'", _COST_RULES)
+                    f"WHERE rule_id IN ({ph}) AND {rfrag}", (*_COST_RULES, *rp))
     exposure_count, exposure = row["c"], round(row["v"] or 0.0, 2)
 
     itv = _one(con, """
@@ -347,21 +491,25 @@ def _zone_money(con, tables: set[str], clock: str | None) -> dict:
         payables = _missing(reason)
         net_cash_14d = _missing(reason)
 
+    detail: dict[str, Any] = {
+        "fee_exposure": {"value_usd": exposure, "open_risks": exposure_count,
+                         "rules": list(_COST_RULES)},
+        "in_transit_value": in_transit,
+        "intercepted_overbilling": {"value_usd": round(blocked["v"] or 0.0, 2),
+                                    "resolved_r4_risks": blocked["c"]},
+        "margin_distribution": margin,
+        "receivables": receivables,
+        "payables": payables,
+        "net_cash_14d": net_cash_14d,
+    }
+    if replay:                       # 回放态才加：里程碑复算的截至当日在途票数（两世界都算，诚实测量）
+        it_as_of = _in_transit_as_of(con, tables, clock)
+        if it_as_of is not None:
+            detail["in_transit_as_of"] = it_as_of
     return {
         "zone": "money", "headline_label": "费用异常敞口",
         "headline_value": exposure, "headline_unit": "usd",
-        "trend": None, "alert_count": exposure_count,
-        "detail": {
-            "fee_exposure": {"value_usd": exposure, "open_risks": exposure_count,
-                             "rules": list(_COST_RULES)},
-            "in_transit_value": in_transit,
-            "intercepted_overbilling": {"value_usd": round(blocked["v"] or 0.0, 2),
-                                        "resolved_r4_risks": blocked["c"]},
-            "margin_distribution": margin,
-            "receivables": receivables,
-            "payables": payables,
-            "net_cash_14d": net_cash_14d,
-        },
+        "trend": None, "alert_count": exposure_count, "detail": detail,
     }
 
 
@@ -443,14 +591,18 @@ def _zone_fulfillment(con, tables: set[str], clock: str | None, world_is_sim: bo
     }
 
 
-def _customer_risk_map(con) -> tuple[dict[str, dict], int]:
+def _customer_risk_map(con, replay_risk: bool = False,
+                       clock: str | None = None) -> tuple[dict[str, dict], int]:
     """open 风险 → affected_so_line_ids → so → customer 的聚合中间层（客户区两指标共用）。
     返回 ({customer_id: {name, tier, exposure_usd, open_risks(set), line_ids(set)}}, 波及行数)。
     敞口=被波及订单行**去重后** Σ(qty×unit_price_usd)——行金额是可回查的一手数（qty、单价
-    都在 sales_order_lines），不做 risk.affected_value_usd 按客户均摊（歧义清单#3）。"""
+    都在 sales_order_lines），不做 risk.affected_value_usd 按客户均摊（歧义清单#3）。
+    回放（replay_risk，仅 sim）：风险集按 _risk_active 时点重建（活跃客户数=可回放）；但敞口金额
+    join 的是**当前**行(qty×现价)，属存量 → 信封 current_state_only 标 customers.exposure_usd。"""
+    rfrag, rp = _risk_active(replay_risk, clock)
     risk_lines: dict[str, list[str]] = {}
-    for r in con.execute("SELECT risk_event_id, affected_so_line_ids FROM risk_events "
-                         "WHERE status='open'"):
+    for r in con.execute(f"SELECT risk_event_id, affected_so_line_ids FROM risk_events "
+                         f"WHERE {rfrag}", rp):
         ids = _json_ids(r["affected_so_line_ids"])
         if ids:
             risk_lines[r["risk_event_id"]] = ids
@@ -483,7 +635,8 @@ def _customer_risk_map(con) -> tuple[dict[str, dict], int]:
     return agg, len(all_lines)
 
 
-def _zone_customers(con, tables: set[str]) -> dict:
+def _zone_customers(con, tables: set[str], replay_risk: bool = False,
+                    clock: str | None = None) -> dict:
     """客户区。三指标口径：
     · 风险敞口 Top 客户(headline=有敞口客户数)：见 _customer_risk_map docstring——
       open 风险沿 affected_so_line_ids→sales_order_lines→sales_orders→customers 聚合，
@@ -494,7 +647,7 @@ def _zone_customers(con, tables: set[str]) -> dict:
       被 open 风险波及客户数、open 风险数) 交叉。tier 是本体敏感字段（visibleTo cs/manager），
       经 SensitiveFieldMasker 对无权角色自动掩码——同一套权限不是两套。
     alert_count = 有风险敞口的客户数。trend：无逐日敞口快照 → null。"""
-    agg, lines_hit = _customer_risk_map(con)
+    agg, lines_hit = _customer_risk_map(con, replay_risk, clock)
     top = sorted(agg.items(), key=lambda kv: kv[1]["exposure_usd"], reverse=True)[:5]
     top_list = [{"customer_id": cid, "customer_name": v["customer_name"],
                  "exposure_usd": round(v["exposure_usd"], 2),
@@ -533,7 +686,8 @@ def _zone_customers(con, tables: set[str]) -> dict:
     }
 
 
-def _zone_suppliers(con, tables: set[str]) -> dict:
+def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
+                    clock: str | None = None) -> dict:
     """供应商区。四指标口径：
     · 交期达成率(headline)：SELECT po.supplier_id, count(*), sum(达成) FROM purchase_orders po
       JOIN (SELECT po_id, min(received_date) first_recv FROM goods_receipts GROUP BY po_id) g
@@ -547,7 +701,10 @@ def _zone_suppliers(con, tables: set[str]) -> dict:
     · 单一依赖：SELECT count(*) FROM risk_events WHERE rule_id='R14' AND status='open'。
     · 对账差异：SELECT count(*), sum(affected_value_usd) FROM risk_events
       WHERE rule_id IN ('R7','R8','R9','R10','R11','R12','R13') AND status='open'。
-    alert_count = open R7-R14 计数。trend：无逐日快照 → null。"""
+    alert_count = open R7-R14 计数。trend：无逐日快照 → null。
+    回放（replay_risk，仅 sim）：单一依赖 R14 + 对账差异 R7-R13 按 _risk_active 时点重建（活跃风险计数/
+    金额=可回放，affected_value_usd 是风险行快照）；交期达成率/缺陷率是 GRN 累计存量，不动、如实标存量。"""
+    rfrag, rp = _risk_active(replay_risk, clock)
     if "goods_receipts" in tables:
         per_supplier = [dict(r) for r in con.execute("""
             SELECT po.supplier_id, s.supplier_name, count(*) pos_measured,
@@ -586,11 +743,11 @@ def _zone_suppliers(con, tables: set[str]) -> dict:
     else:
         defect_top = _missing("缺 goods_receipt_lines 表，采购收货域未灌")
 
-    r14 = _one(con, "SELECT count(*) c FROM risk_events "
-                    "WHERE rule_id='R14' AND status='open'")["c"]
+    r14 = _one(con, f"SELECT count(*) c FROM risk_events "
+                    f"WHERE rule_id='R14' AND {rfrag}", rp)["c"]
     ph = ",".join("?" * len(_RECON_RULES))
     recon = _one(con, f"SELECT count(*) c, sum(affected_value_usd) v FROM risk_events "
-                      f"WHERE rule_id IN ({ph}) AND status='open'", _RECON_RULES)
+                      f"WHERE rule_id IN ({ph}) AND {rfrag}", (*_RECON_RULES, *rp))
 
     zone = {
         "zone": "suppliers", "headline_label": "交期达成率",
@@ -605,7 +762,8 @@ def _zone_suppliers(con, tables: set[str]) -> dict:
     return zone
 
 
-def _zone_inventory(con, tables: set[str]) -> dict:
+def _zone_inventory(con, tables: set[str], replay_risk: bool = False,
+                    clock: str | None = None) -> dict:
     """库存区。三指标口径：
     · 安全库存击穿(headline)：SELECT * FROM inventory_positions WHERE available_qty <
       safety_stock，计数 + 缺口(safety-available)降序清单（cap 20）。
@@ -617,7 +775,11 @@ def _zone_inventory(con, tables: set[str]) -> dict:
       risk.warehouse_id 或 shipment.destination_warehouse 的头寸优先；无头寸行回退全网
       available_qty 最大且>0 的头寸）：现货≥需求 → 可全救；0<现货<需求 → 可部分救。
       行独立判定，不模拟多行争抢同一头寸的先后耗减（歧义清单#6）。
-    alert_count = 击穿数 + 盘点差异数（差异缺数时按 0 计入 alert，detail 如实标 null）。"""
+    alert_count = 击穿数 + 盘点差异数（差异缺数时按 0 计入 alert，detail 如实标 null）。
+    回放（replay_risk，仅 sim）：可救性复算的**风险集**按 _risk_active 时点重建（截至当日活跃的 R1-R3）；
+    但可救性判定 join 的现货头寸/行状态是**当前**值（无库存历史版本）→ 属存量近似，信封标
+    inventory.rescuable_risk_set 为 sim 可回放、safety_breaches/count_variance 为 current。"""
+    rfrag, rp = _risk_active(replay_risk, clock)
     breaches = [dict(r) for r in con.execute("""
         SELECT inventory_position_id, sku_id, warehouse_id, available_qty, safety_stock,
                safety_stock - available_qty gap
@@ -640,7 +802,7 @@ def _zone_inventory(con, tables: set[str]) -> dict:
              "lines_partially_savable": 0, "lines_no_stock": 0}
     for risk in con.execute(f"SELECT risk_event_id, warehouse_id, shipment_id, "
                             f"affected_so_line_ids FROM risk_events "
-                            f"WHERE status='open' AND rule_id IN ({ph})", _DELAY_RULES):
+                            f"WHERE {rfrag} AND rule_id IN ({ph})", (*rp, *_DELAY_RULES)):
         line_ids = _json_ids(risk["affected_so_line_ids"])
         if not line_ids:
             continue
@@ -866,7 +1028,8 @@ def _group_nodes(rows: list[dict], layer: str, key_field: str, label_fmt: str) -
             for k, n in sorted(groups.items())]
 
 
-def _build_panorama(con, tables: set[str]) -> dict:
+def _build_panorama(con, tables: set[str], replay_risk: bool = False,
+                    clock: str | None = None) -> dict:
     """五层节点 + 本体关系投影边 + 异常锚定 + 迷你指标。全部口径：
     · customers 层：SELECT customer_id, customer_name, us_state FROM customers；>40 →
       按 us_state 分组（分组键选 us_state 而非 tier——tier 是敏感字段，不进分组标签）。
@@ -1051,12 +1214,15 @@ def _build_panorama(con, tables: set[str]) -> dict:
              for (s, t, via), c in sorted(edge_acc.items())]
 
     # —— 异常锚定（open 风险 → 节点；锚不在图内 → unanchored 如实列出）——
+    # 回放（replay_risk，仅 sim）：锚定的风险集按 _risk_active 时点重建为"截至 clock 仍活跃"；
+    # 节点/边是当前态拓扑（无历史版本），故仅重算 alert 集，节点存量如实（信封 panorama.nodes/edges）。
+    rfrag, rp = _risk_active(replay_risk, clock)
     nodes_by_id = {n["id"]: n for n in
                    (cust_nodes + list(order_nodes.values()) + ship_nodes + sup_nodes + wh_nodes)}
     unanchored: list[dict] = []
-    for r in con.execute("SELECT risk_event_id, rule_id, type, severity, shipment_id, "
-                         "warehouse_id, supplier_id, po_id FROM risk_events "
-                         "WHERE status='open' ORDER BY risk_event_id"):
+    for r in con.execute(f"SELECT risk_event_id, rule_id, type, severity, shipment_id, "
+                         f"warehouse_id, supplier_id, po_id FROM risk_events "
+                         f"WHERE {rfrag} ORDER BY risk_event_id", rp):
         alert = {"risk_event_id": r["risk_event_id"], "rule_id": r["rule_id"],
                  "type": r["type"], "severity": r["severity"]}
         node_id = None
@@ -1096,8 +1262,8 @@ def _build_panorama(con, tables: set[str]) -> dict:
         "meta": {"layer_cap": _LAYER_CAP, "aggregated_layers": aggregated,
                  "layer_counts": {k: len(v["nodes"]) for k, v in layers.items()},
                  "edge_count": len(edges),
-                 "open_risks_total": _one(con, "SELECT count(*) c FROM risk_events "
-                                               "WHERE status='open'")["c"],
+                 "open_risks_total": _one(con, f"SELECT count(*) c FROM risk_events "
+                                               f"WHERE {rfrag}", rp)["c"],
                  "alerts_unanchored_total": len(unanchored)},
     }
 
@@ -1105,7 +1271,7 @@ def _build_panorama(con, tables: set[str]) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 # AI 工作流时间线（ai-flow）builder
 # ═══════════════════════════════════════════════════════════════════════════
-def _build_ai_flow(con, tables: set[str], limit: int) -> list[dict]:
+def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) -> list[dict]:
     """四来源按时间倒序合并（规格 C），每条 {ts, kind, summary, ref_object, detail, sim}：
     · llm_calls（kind='llm_call'）：SELECT * ORDER BY created_at DESC——AI 调用遥测
       （call_type/provider/model/status/时长），ref=trace_id；缺表世界跳过该来源。
@@ -1118,14 +1284,23 @@ def _build_ai_flow(con, tables: set[str], limit: int) -> list[dict]:
     · sim_ai_activity（simworld 的 AI 闭环留痕，kind=activity 原值 detect/propose/approve/
       reject/close，带 sim=true 徽标字段）：SELECT * ORDER BY sim_date DESC, ai_event_id DESC。
     排序键 = (ts 字符串, 各来源内行序) 倒序；sim_date 为日期粒度（无时分秒），与带时间戳来源
-    同日混排时排在该日时间戳条目之前，docstring 如实声明不补造时刻。"""
+    同日混排时排在该日时间戳条目之前，docstring 如实声明不补造时刻。
+    回放（as_of，见模块 docstring）：各来源按自身时间戳 ≤ as_of 过滤——事件日志天然可回放（只看"截至
+    当日已发生"的留痕）；as_of=None（缺省）→ 无过滤，与改动前逐字等价 ⇒ byte-identical。"""
+    def _ts_filter(expr: str, has_where: bool) -> tuple[str, tuple]:
+        """ts≤as_of 过滤片段。as_of=None → ('',())：拼出的 SQL 与原句逐字相同。"""
+        if not as_of:
+            return "", ()
+        return (f"{'AND' if has_where else 'WHERE'} {expr} <= ? ", (as_of,))
+
     items: list[tuple[str, str, dict]] = []      # (ts, tiebreak, item)
 
     if "llm_calls" in tables:
+        f, p = _ts_filter("date(created_at)", False)
         for r in con.execute(
                 "SELECT call_id, trace_id, call_type, provider, model, status, duration_ms, "
                 "est_input_tokens, est_output_tokens, created_at FROM llm_calls "
-                "ORDER BY created_at DESC, call_id DESC LIMIT ?", (limit,)):
+                f"{f}ORDER BY created_at DESC, call_id DESC LIMIT ?", (*p, limit)):
             items.append((r["created_at"], f"llm:{r['call_id']:012d}", {
                 "ts": r["created_at"], "kind": "llm_call",
                 "summary": f"AI 调用 {r['call_type']} via {r['provider']}"
@@ -1144,10 +1319,11 @@ def _build_ai_flow(con, tables: set[str], limit: int) -> list[dict]:
             return {"unparsed": True}
 
     if "action_log" in tables:
+        f, p = _ts_filter("date(timestamp)", True)
         for r in con.execute(
                 "SELECT log_id, actor, role, action, target_object_id, params_json, "
                 "timestamp, result FROM action_log WHERE actor='ai-agent' "
-                "ORDER BY timestamp DESC, log_id DESC LIMIT ?", (limit,)):
+                f"{f}ORDER BY timestamp DESC, log_id DESC LIMIT ?", (*p, limit)):
             items.append((r["timestamp"], f"log:{r['log_id']:012d}", {
                 "ts": r["timestamp"], "kind": "ai_action",
                 "summary": f"AI（role={r['role']}）执行 {r['action']} → "
@@ -1157,12 +1333,13 @@ def _build_ai_flow(con, tables: set[str], limit: int) -> list[dict]:
                            "result": r["result"],
                            "proposal_params": _parse_params(r["params_json"])}}))
         ph = ",".join("?" * len(_TASK_FLOW_ACTIONS))
+        f2, p2 = _ts_filter("date(timestamp)", True)
         for r in con.execute(
                 f"SELECT log_id, actor, role, action, target_object_id, params_json, "
                 f"timestamp, result FROM action_log WHERE action IN ({ph}) "
                 f"AND result='ok' AND actor != 'ai-agent' "
-                f"ORDER BY timestamp DESC, log_id DESC LIMIT ?",
-                (*_TASK_FLOW_ACTIONS, limit)):
+                f"{f2}ORDER BY timestamp DESC, log_id DESC LIMIT ?",
+                (*_TASK_FLOW_ACTIONS, *p2, limit)):
             items.append((r["timestamp"], f"log:{r['log_id']:012d}", {
                 "ts": r["timestamp"], "kind": "task_flow",
                 "summary": f"{r['action']} → {r['target_object_id']}"
@@ -1173,10 +1350,11 @@ def _build_ai_flow(con, tables: set[str], limit: int) -> list[dict]:
                            "proposal_params": _parse_params(r["params_json"])}}))
 
     if "sim_ai_activity" in tables:
+        f, p = _ts_filter("sim_date", False)
         for r in con.execute(
                 "SELECT ai_event_id, sim_date, actor, activity, risk_event_id, task_id, "
-                "detail FROM sim_ai_activity ORDER BY sim_date DESC, ai_event_id DESC LIMIT ?",
-                (limit,)):
+                f"detail FROM sim_ai_activity {f}ORDER BY sim_date DESC, ai_event_id DESC LIMIT ?",
+                (*p, limit)):
             ref = r["task_id"] or r["risk_event_id"]
             items.append((r["sim_date"], f"sim:{r['ai_event_id']}", {
                 "ts": r["sim_date"], "kind": r["activity"],
@@ -1200,55 +1378,87 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
     router = APIRouter(prefix="/cockpit", tags=["cockpit"])
 
     @router.get("/vitals")
-    def cockpit_vitals(x_role: str = Header(default="ops", alias="X-Role"),
+    def cockpit_vitals(as_of: str | None = Query(
+                           default=None, description="回放时点 YYYY-MM-DD；缺省=世界时钟今天=现状不变"),
+                       x_role: str = Header(default="ops", alias="X-Role"),
                        con: sqlite3.Connection = Depends(get_ro_connection),
                        db_path: str = Depends(get_db_path)) -> dict:
         """公司体征带：七掌控区各一枚体征块（zone/headline/trend/alert_count/detail）。
-        指标 SQL 口径见模块 docstring 总表与各 _zone_* builder docstring；
-        脱敏两层见 _apply_role_masks；trend/世界无关性红线见模块 docstring。"""
+        指标 SQL 口径见模块 docstring 总表与各 _zone_* builder docstring；脱敏两层见 _apply_role_masks；
+        trend/世界无关性红线见模块 docstring。as_of 回放口径见模块 docstring「时间轴回放」节——缺省
+        byte-identical；回放态附 window/as_of 信封/每区 headline_as_of，clock 恒为世界今天不随拖动改。"""
         tables = _tables(con)
-        clock = _world_clock(con, tables)
+        window_start, world_clock = _world_window(con, tables)
+        effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
         world = infer_world(db_path)
-        world_is_sim = "sim_event_log" in tables      # 以库内证据判定，不信文件名
-        payload = {
-            "world": world, "clock": clock, "role": x_role,
-            "zones": [
-                _zone_money(con, tables, clock),
-                _zone_fulfillment(con, tables, clock, world_is_sim),
-                _zone_customers(con, tables),
-                _zone_suppliers(con, tables),
-                _zone_inventory(con, tables),
-                _zone_ai(con, tables, clock, world_is_sim),
-                _zone_decisions(con, tables, clock),
-            ],
-        }
+        world_is_sim = "sim_event_log" in tables       # 以库内证据判定，不信文件名
+        replay_risk = replay and world_is_sim          # 验证世界静态快照不重建风险类（见模块 docstring）
+        zones = [
+            _zone_money(con, tables, effective_clock, replay_risk, replay),
+            _zone_fulfillment(con, tables, effective_clock, world_is_sim),
+            _zone_customers(con, tables, replay_risk, effective_clock),
+            _zone_suppliers(con, tables, replay_risk, effective_clock),
+            _zone_inventory(con, tables, replay_risk, effective_clock),
+            _zone_ai(con, tables, effective_clock, world_is_sim),
+            _zone_decisions(con, tables, effective_clock),
+        ]
+        payload: dict[str, Any] = {
+            "world": world, "clock": world_clock, "role": x_role,
+            "window": {"start": window_start, "end": world_clock}, "zones": zones}
+        if replay:
+            for z in zones:
+                z["headline_as_of"] = _headline_as_of(z["zone"], replay_risk)
+            payload["as_of"] = _as_of_envelope(as_of, effective_clock, world_clock,
+                                               (window_start, world_clock), world_is_sim, replay_risk)
         return _apply_role_masks(payload, x_role)
 
     @router.get("/panorama")
-    def cockpit_panorama(x_role: str = Header(default="ops", alias="X-Role"),
+    def cockpit_panorama(as_of: str | None = Query(
+                             default=None, description="回放时点 YYYY-MM-DD；缺省=现状"),
+                         x_role: str = Header(default="ops", alias="X-Role"),
                          con: sqlite3.Connection = Depends(get_ro_connection),
                          db_path: str = Depends(get_db_path)) -> dict:
         """小全景分层图数据：五层节点+关系投影边+异常锚定+迷你指标。
-        口径与聚合规则（>40 分组）见 _build_panorama docstring。"""
+        口径与聚合规则（>40 分组）见 _build_panorama docstring。as_of 回放：仅异常锚定的风险集按时点
+        重建（sim），节点/边为当前态拓扑如实（无历史版本）；缺省 byte-identical。"""
         tables = _tables(con)
-        payload = {"world": infer_world(db_path), "clock": _world_clock(con, tables),
-                   "role": x_role} | _build_panorama(con, tables)
+        window_start, world_clock = _world_window(con, tables)
+        effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
+        world_is_sim = "sim_event_log" in tables
+        replay_risk = replay and world_is_sim
+        payload: dict[str, Any] = {
+            "world": infer_world(db_path), "clock": world_clock, "role": x_role,
+            "window": {"start": window_start, "end": world_clock}} \
+            | _build_panorama(con, tables, replay_risk, effective_clock)
+        if replay:
+            payload["as_of"] = _as_of_envelope(as_of, effective_clock, world_clock,
+                                               (window_start, world_clock), world_is_sim, replay_risk)
         return _apply_role_masks(payload, x_role)
 
     @router.get("/ai-flow")
     def cockpit_ai_flow(limit: int = Query(default=50, ge=1, le=500),
+                        as_of: str | None = Query(
+                            default=None, description="回放时点 YYYY-MM-DD；缺省=现状"),
                         x_role: str = Header(default="ops", alias="X-Role"),
                         con: sqlite3.Connection = Depends(get_ro_connection),
                         db_path: str = Depends(get_db_path)) -> dict:
         """AI 工作流时间线：llm_calls / ai-agent 审计 / 提案流转 / sim 留痕按 ts 倒序合并。
-        来源与排序口径见 _build_ai_flow docstring。limit 默认 50（1..500）。"""
+        来源与排序口径见 _build_ai_flow docstring。limit 默认 50（1..500）。as_of 回放：各来源按自身
+        时间戳≤as_of 过滤（事件日志天然可回放）；缺省 byte-identical。"""
         tables = _tables(con)
-        flow = _build_ai_flow(con, tables, limit)
-        payload = {"world": infer_world(db_path), "role": x_role, "limit": limit,
-                   "count": len(flow),
-                   "sources_present": sorted(
-                       {"llm_calls", "action_log", "sim_ai_activity"} & tables),
-                   "items": flow}
+        window_start, world_clock = _world_window(con, tables)
+        effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
+        world_is_sim = "sim_event_log" in tables
+        flow = _build_ai_flow(con, tables, limit, effective_clock if replay else None)
+        payload: dict[str, Any] = {
+            "world": infer_world(db_path), "role": x_role, "limit": limit, "count": len(flow),
+            "window": {"start": window_start, "end": world_clock},
+            "sources_present": sorted({"llm_calls", "action_log", "sim_ai_activity"} & tables),
+            "items": flow}
+        if replay:
+            payload["as_of"] = _as_of_envelope(as_of, effective_clock, world_clock,
+                                               (window_start, world_clock), world_is_sim,
+                                               replay and world_is_sim)
         return _apply_role_masks(payload, x_role)
 
     return router

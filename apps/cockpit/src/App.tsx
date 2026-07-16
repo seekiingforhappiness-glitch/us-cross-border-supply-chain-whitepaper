@@ -6,6 +6,7 @@ import {
   type OntologyLink,
   type Role,
   type Vitals,
+  type DataWindow,
   type ZoneId,
 } from "./api";
 import TopBar from "./components/TopBar";
@@ -36,6 +37,11 @@ export default function App() {
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [vitalsErr, setVitalsErr] = useState(false);
   const [links, setLinks] = useState<OntologyLink[]>([]);
+  // 世界时钟时间轴回放（A-2/V13②）：asOf=null 即"今天"（现状不变，不带 as_of 参数、byte-identical）；
+  // 拖到过去某天 → 三聚合端点带 as_of 重算（脱敏/回放都在服务端做）。windowRange 单独存，reload
+  // 期间（vitals 短暂置 null）滑条不丢定义域、不闪。
+  const [asOf, setAsOf] = useState<string | null>(null);
+  const [windowRange, setWindowRange] = useState<DataWindow | null>(null);
 
   const [stage, setStage] = useState<Stage>({ view: "wall" });
   const [detail, setDetail] = useState<ImpactFocus | null>(null); // 右栏影响面板（风险类下钻）
@@ -47,29 +53,45 @@ export default function App() {
     setActiveKey(null);
   };
 
+  // 角色切换：回今天（asOf=null）+ 重置导航。setAsOf 与 setRole 同批 → 下方数据 effect 单次跑
+  // (role, null)，不双取。
+  const changeRole = (r: Role) => {
+    setRole(r);
+    setAsOf(null);
+  };
+
   // 人类决策（批准/驳回）成功后：只重取体征数据（队列随 vitals 刷新，已拍板的提案自动移出待批），
-  // 不重置导航——用户停留在待拍板队列，仅收起右栏详情。与角色切换的整屏重置区分开。
+  // 不重置导航——用户停留在待拍板队列，仅收起右栏详情。与角色切换的整屏重置区分开。回放态保持当前 asOf。
   const refreshVitalsData = () => {
-    fetchVitals(role)
+    fetchVitals(role, asOf)
       .then((v) => setVitals(v))
       .catch(() => setVitalsErr(true));
   };
 
-  // 体征带数据（角色变即重取——脱敏在服务端做）；角色切换重置导航态。
+  // 体征带数据：角色或回放时点变即重取（脱敏 + 回放都在服务端做）。windowRange 只在有值时更新，
+  // reload 期间不丢。
   useEffect(() => {
     let cancelled = false;
     setVitals(null);
     setVitalsErr(false);
-    setStage({ view: "wall" });
-    setDetail(null);
-    setActiveKey(null);
-    setCard(null);
-    fetchVitals(role)
-      .then((v) => !cancelled && setVitals(v))
+    fetchVitals(role, asOf)
+      .then((v) => {
+        if (cancelled) return;
+        setVitals(v);
+        if (v.window) setWindowRange(v.window);
+      })
       .catch(() => !cancelled && setVitalsErr(true));
     return () => {
       cancelled = true;
     };
+  }, [role, asOf]);
+
+  // 角色切换重置导航（asOf 已由 changeRole 同批置 null，此处只管导航，不碰数据取回）。
+  useEffect(() => {
+    setStage({ view: "wall" });
+    setDetail(null);
+    setActiveKey(null);
+    setCard(null);
   }, [role]);
 
   // 本体关系清单（对象卡 links 列表来源，与角色无关，取一次）
@@ -130,12 +152,21 @@ export default function App() {
           （详见 apps/cockpit/README.md）
         </div>
       )}
-      <TopBar world={vitals?.world ?? null} clock={vitals?.clock ?? null} role={role} onRole={setRole} />
+      <TopBar
+        world={vitals?.world ?? null}
+        clock={vitals?.clock ?? windowRange?.end ?? null}
+        windowRange={windowRange}
+        asOf={asOf}
+        onAsOf={setAsOf}
+        replayNote={vitals?.as_of?.note ?? null}
+        role={role}
+        onRole={changeRole}
+      />
 
       <div className="cp-stage">
         <div className="cp-center">
           {stage.view === "map" ? (
-            <RouteMap role={role} onLane={goLane} onBack={goWall} />
+            <RouteMap role={role} asOf={asOf} onLane={goLane} onBack={goWall} />
           ) : stage.view === "lane" ? (
             <LaneQueue lane={stage.lane} onWall={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : !vitals ? (
@@ -159,7 +190,7 @@ export default function App() {
               }}
             />
           ) : (
-            <AiWorkflow role={role} onOpenObject={setCard} />
+            <AiWorkflow role={role} asOf={asOf} onOpenObject={setCard} />
           )}
         </div>
       </div>

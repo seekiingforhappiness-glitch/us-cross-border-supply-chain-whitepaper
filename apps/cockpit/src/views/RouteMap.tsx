@@ -51,6 +51,7 @@ function locatePort(locode: string): { coord: LonLat; approx: boolean } | null {
 
 interface Props {
   role: Role;
+  asOf?: string | null; // 世界时钟回放（A-2）：带上则 panorama 异常锚定按时点重建，地图与指挥墙一致
   onLane: (lane: Lane) => void;
   onBack: () => void;
 }
@@ -66,7 +67,7 @@ interface PortNode {
   labelDy: number; // 共位港标签下移错位（洛杉矶/长滩、蛇口/盐田经纬近乎重合，避免叠字）
 }
 
-export default function RouteMap({ role, onLane, onBack }: Props) {
+export default function RouteMap({ role, asOf, onLane, onBack }: Props) {
   const [data, setData] = useState<PanoData | null>(null);
   const [err, setErr] = useState(false);
   const [hover, setHover] = useState<string | null>(null);
@@ -75,13 +76,13 @@ export default function RouteMap({ role, onLane, onBack }: Props) {
     let cancelled = false;
     setData(null);
     setErr(false);
-    fetchPanorama(role)
+    fetchPanorama(role, asOf)
       .then((d) => !cancelled && setData(d))
       .catch(() => !cancelled && setErr(true));
     return () => {
       cancelled = true;
     };
-  }, [role]);
+  }, [role, asOf]);
 
   const model: CorridorModel | null = useMemo(() => (data ? buildCorridor(data) : null), [data]);
 

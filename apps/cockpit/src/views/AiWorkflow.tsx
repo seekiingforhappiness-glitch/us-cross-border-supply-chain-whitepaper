@@ -27,6 +27,30 @@ const TL_ICON: Record<string, IconName> = {
 
 function StoryCard({ story, latest, onOpenObject }: { story: Story; latest: boolean; onOpenObject: (r: ObjectRef) => void }) {
   const [open, setOpen] = useState(false);
+  // 思考轨迹「逐步点亮回放」（子任务一）：litCount=null → 静态全亮；数字 → 回放进度（已点亮步数），
+  // 从 1 递增到 steps，每 ~600ms 亮一步，最后一步定格。可"跳过"直接全亮。零新依赖、纯 CSS 过渡。
+  const steps = story.events.length;
+  const [litCount, setLitCount] = useState<number | null>(null);
+  const replaying = litCount !== null && litCount < steps;
+  const shownLit = litCount === null ? steps : litCount; // 静态时全亮
+
+  useEffect(() => {
+    if (litCount === null || litCount >= steps) return; // 静态 / 已放完 → 不再推进
+    const t = setTimeout(() => setLitCount((n) => (n === null ? null : n + 1)), 600);
+    return () => clearTimeout(t);
+  }, [litCount, steps]);
+
+  const startReplay = () => {
+    setOpen(true);
+    setLitCount(1); // 第一步立即亮，随后逐步点亮
+  };
+  const skipReplay = () => setLitCount(steps); // 跳过=直接全亮定格
+  const toggle = () =>
+    setOpen((v) => {
+      if (v) setLitCount(null); // 收起时复位回放态，下次展开为静态全亮
+      return !v;
+    });
+
   const meta = STATE_META[story.state];
   const infoLabel = story.state === "info" ? KIND_CN[story.events[story.events.length - 1]?.kind] ?? meta.label : meta.label;
   return (
@@ -53,42 +77,69 @@ function StoryCard({ story, latest, onOpenObject }: { story: Story; latest: bool
             <Icon name="arrow-right" size={11} />
           </button>
         ))}
-        {story.events.length > 1 && (
-          <button className={`cp-story__toggle ${open ? "is-open" : ""}`} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-            {open ? "收起" : "展开"}时间线 · {story.events.length} 步
-            <Icon name="chevron-right" size={12} />
-          </button>
+        {steps > 1 && (
+          <div className="cp-story__acts">
+            {replaying ? (
+              <button className="cp-story__replay is-active" onClick={skipReplay} title="直接看完整时间线">
+                跳过
+              </button>
+            ) : (
+              <button className="cp-story__replay" onClick={startReplay} title="逐步点亮 AI 的思考过程">
+                <Icon name="play" size={10} />
+                {litCount === null && !open ? "回放思考" : "重放"}
+              </button>
+            )}
+            <button className={`cp-story__toggle ${open ? "is-open" : ""}`} onClick={toggle} aria-expanded={open}>
+              {open ? "收起" : "展开"}时间线 · {steps} 步
+              <Icon name="chevron-right" size={12} />
+            </button>
+          </div>
         )}
       </div>
 
-      {open && story.events.length > 1 && (
+      {open && steps > 1 && (
         <ol className="cp-story__timeline">
-          {story.events.map((e, i) => (
-            <li key={`${e.ts}-${i}`} className="cp-tl">
-              <span className="cp-tl__dot" data-kind={e.kind}>
-                <Icon name={TL_ICON[e.kind] ?? "flow"} size={10} strokeWidth={2} />
-              </span>
-              <div className="cp-tl__body">
-                <div className="cp-tl__head">
-                  <span className="cp-tl__kind">{e.kindLabel}</span>
-                  <span className="cp-tl__time num">{e.ts}</span>
+          {story.events.map((e, i) => {
+            const lit = i < shownLit;
+            const activating = replaying && i === shownLit - 1; // 当前正点亮的一步：脉冲高亮
+            return (
+              <li
+                key={`${e.ts}-${i}`}
+                className={`cp-tl ${lit ? "is-lit" : "is-dim"} ${activating ? "is-activating" : ""}`}
+              >
+                <span className="cp-tl__dot" data-kind={e.kind}>
+                  <Icon name={TL_ICON[e.kind] ?? "flow"} size={10} strokeWidth={2} />
+                </span>
+                <div className="cp-tl__body">
+                  <div className="cp-tl__head">
+                    <span className="cp-tl__kind">{e.kindLabel}</span>
+                    <span className="cp-tl__time num">{e.ts}</span>
+                  </div>
+                  <div className="cp-tl__text">{e.text}</div>
+                  {e.ref && (
+                    <span className="cp-tl__ref num" onClick={() => onOpenObject(e.ref!)}>
+                      ▸ {e.ref.id}
+                    </span>
+                  )}
                 </div>
-                <div className="cp-tl__text">{e.text}</div>
-                {e.ref && (
-                  <span className="cp-tl__ref num" onClick={() => onOpenObject(e.ref!)}>
-                    ▸ {e.ref.id}
-                  </span>
-                )}
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ol>
       )}
     </div>
   );
 }
 
-export default function AiWorkflow({ role, onOpenObject }: { role: Role; onOpenObject: (r: ObjectRef) => void }) {
+export default function AiWorkflow({
+  role,
+  asOf,
+  onOpenObject,
+}: {
+  role: Role;
+  asOf?: string | null;
+  onOpenObject: (r: ObjectRef) => void;
+}) {
   const [data, setData] = useState<AiFlow | null>(null);
   const [err, setErr] = useState(false);
   const [tab, setTab] = useState<Tab>("ai");
@@ -99,13 +150,14 @@ export default function AiWorkflow({ role, onOpenObject }: { role: Role; onOpenO
     setErr(false);
     // 抓取窗口放大到 200：故事卡按 risk_event 链折叠，链首 detect/propose 可能早于结案数周，
     // 窗口过小会把老链截成只剩 approve/close（主句退化为泛称）——放大窗口让近期链完整重建。
-    fetchAiFlow(role, 200)
+    // asOf（世界时钟回放）：带上则各来源按时间戳≤asOf 过滤，故事卡只呈现"截至当日已发生"的留痕。
+    fetchAiFlow(role, 200, asOf)
       .then((d) => !cancelled && setData(d))
       .catch(() => !cancelled && setErr(true));
     return () => {
       cancelled = true;
     };
-  }, [role]);
+  }, [role, asOf]);
 
   const stories = useMemo(() => (data ? buildStories(data.items) : []), [data]);
 

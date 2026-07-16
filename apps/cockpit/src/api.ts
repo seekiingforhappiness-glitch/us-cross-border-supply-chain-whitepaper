@@ -109,16 +109,42 @@ export interface Zone {
   trend: Trend | null;
   alert_count: number;
   detail: Record<string, unknown>; // 各区形状不同，由 ZoneDetail 的分区渲染器按键取用
+  // 回放态（A-2/V13②）：该区 headline 是"按时点重算"还是"存量现值"。仅当请求带 as_of 且落在回放
+  // 区间时后端下发；"current" → 卡面显"显示当前值"小灰标（诚实边界：无历史版本不造假数字）。
+  headline_as_of?: "replayed" | "current";
+}
+
+// 数据窗口（回放滑条定义域）：start=最早真实事件日、end=世界时钟今天。三端点恒回传（纯附加键）。
+export interface DataWindow {
+  start: string | null;
+  end: string | null;
+}
+
+// 回放信封（仅当 as_of 落在 [window.start, world_clock) 时下发）：机器可读的重算/存量分类 + 人话边界。
+export interface AsOfEnvelope {
+  requested: string | null;
+  effective: string | null; // 实际生效时点（可能因夹取而 ≠ requested）
+  world_clock: string | null;
+  window: DataWindow;
+  is_replay: boolean;
+  world_is_sim: boolean; // 验证世界=静态快照（多数指标只能显当前值）；模拟世界=真历史可回放
+  replayable: string[]; // 真按时点重算的指标键
+  current_state_only: string[]; // 无历史版本、显示当前值的指标键
+  note: string; // 人话边界说明
 }
 
 export interface Vitals {
   world: string;
-  clock: string | null;
+  clock: string | null; // 世界今天（右端锚，不随拖动改）
   role: string;
+  window?: DataWindow;
+  as_of?: AsOfEnvelope; // 仅回放态出现
   zones: Zone[];
 }
 
-export const fetchVitals = (role: Role) => apiGet<Vitals>("/cockpit/vitals", role);
+// asOf 缺省（null/undefined）=世界时钟今天=现状不变（byte-identical，不带 as_of 查询参数）。
+export const fetchVitals = (role: Role, asOf?: string | null) =>
+  apiGet<Vitals>(`/cockpit/vitals${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""}`, role);
 
 // ═══════════════════════════════ /cockpit/panorama ═══════════════════════════════
 export interface PanoAlert {
@@ -179,6 +205,8 @@ export interface Panorama {
   world: string;
   clock: string | null;
   role: string;
+  window?: DataWindow;
+  as_of?: AsOfEnvelope; // 仅回放态出现（异常锚定的风险集按时点重建）
   layers: Record<PanoLayerName, PanoLayer>;
   edges: PanoEdge[];
   alerts_unanchored: (PanoAlert & { anchor: string })[];
@@ -192,7 +220,8 @@ export interface Panorama {
   };
 }
 
-export const fetchPanorama = (role: Role) => apiGet<Panorama>("/cockpit/panorama", role);
+export const fetchPanorama = (role: Role, asOf?: string | null) =>
+  apiGet<Panorama>(`/cockpit/panorama${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""}`, role);
 
 // ═══════════════════════════════ /cockpit/ai-flow ═══════════════════════════════
 export interface AiFlowItem {
@@ -209,12 +238,14 @@ export interface AiFlow {
   role: string;
   limit: number;
   count: number;
+  window?: DataWindow;
+  as_of?: AsOfEnvelope; // 仅回放态出现（各来源按自身时间戳≤as_of 过滤）
   sources_present: string[];
   items: AiFlowItem[];
 }
 
-export const fetchAiFlow = (role: Role, limit = 60) =>
-  apiGet<AiFlow>(`/cockpit/ai-flow?limit=${limit}`, role);
+export const fetchAiFlow = (role: Role, limit = 60, asOf?: string | null) =>
+  apiGet<AiFlow>(`/cockpit/ai-flow?limit=${limit}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ""}`, role);
 
 // ═══════════════════════════ 对象卡：/objects/{Type}/{id}（+ links traverse）═══════════════════════════
 // 全景节点 id 用小写前缀（customer:/shipment:/supplier:/warehouse:/orders:/lane:…），

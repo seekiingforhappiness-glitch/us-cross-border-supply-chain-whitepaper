@@ -104,7 +104,17 @@ export default function CommandWall({ zones, onZone, onMap }: Props) {
                   <span className="cp-trend cp-trend--none">静态快照</span>
                 )}
               </div>
-              <div className="cp-wall-card__hllabel">{z.headline_label}</div>
+              <div className="cp-wall-card__hllabel">
+                {z.headline_label}
+                {/* 回放态诚实标注：headline_as_of 仅回放时下发。current=该指标无时点历史→显当前值（不造假），
+                    replayed=真按时点重算。存量类的小灰标是本任务"诚实边界"的画面兑现。 */}
+                {z.headline_as_of === "current" && (
+                  <span className="cp-asof-tag is-current" title="该指标无时点历史·回放时显示当前值">显示当前值</span>
+                )}
+                {z.headline_as_of === "replayed" && (
+                  <span className="cp-asof-tag is-replayed" title="按所选时点重算">回放</span>
+                )}
+              </div>
 
               <div className="cp-wall-card__sum">
                 {summaryLines(z).map((line, i) => (
