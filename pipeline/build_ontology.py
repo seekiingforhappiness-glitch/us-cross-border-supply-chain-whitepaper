@@ -704,6 +704,17 @@ def main():
     # llm_calls 结构化日志表（spec v3.0 §9）：空表，运行期由 agent.llm_agent 每次外部 LLM 调用
     #   （含失败/降级）落行；重建对象库=日志随库清空（合成世界可接受，同 resolution_memory）。
     ensure_llm_calls_table(con)
+    # rule_run_ledger（G-Ledger 规则执行台账，治理证据包规格）：空表，运行期由 engine.detect 每次
+    #   跑完 R1-R21 各 append 一行。DDL 单一事实源在 engine.detect（同 resolution_memory/llm_calls
+    #   先例）。此处用**函数内延迟 import**（非模块顶部）——engine.detect 经
+    #   `from .rules import detect_risks` 反向 import engine.rules，而 engine.rules 顶部又
+    #   `from pipeline.build_ontology import derive_shipment_state`：若在本模块顶部 import
+    #   engine.detect，会在本模块自身尚处于"正在 import"阶段（derive_shipment_state 还未定义）
+    #   时被 engine.rules 回头请求，触发循环导入 ImportError。延迟到 main() 调用时才 import，
+    #   此时本模块已完整加载完毕，规避循环（纯旁路表：不进 34 对象计数/ontology_lint 断言域/
+    #   真值 md5 基线）。
+    from engine.detect import ensure_rule_run_ledger_table
+    ensure_rule_run_ledger_table(con)
     ensure_integration_outbox(con)
     cur.execute("""CREATE TABLE dq_issues (
         dq_issue_id TEXT PRIMARY KEY,
