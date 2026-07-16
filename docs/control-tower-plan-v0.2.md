@@ -331,6 +331,15 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V15 — Monday 对标提升路线裁决：路线丙「三波纵向切片」（2026-07-16，Daniel 裁"C"）。**
+依据：docs/research/2026-07-16-monday-uplift-gap-diagnosis.md（五维度诊断+三路线候选）。
+波1 AI 可信度可测可放权（放权门禁引擎+G-Shadow 勘误修复+prompt 版本机+eval 升级）；
+波2 Command 写总线+持久 Agent runtime（含 tenant_id/审批绑指纹/API 契约硬化，接缝①②）；
+波3 用户可定义（Recipe 自动化+ViewConfig，接缝③）。欠账映射见诊断文档§四（无一遗漏）。
+**保护条款**：放权阶梯阈值数字（85%/95%/98%/1000 次）仍候 Daniel 正式裁决——波1 引擎先以
+"草案默认值+版本化配置"实现且**只展示不改权**（display-only），把档位判定接到真实工具授权
+生成的开关必须等阈值裁决后才打开；当前样本量下任何域也够不到 auto 档，无越权风险。
+
 **V14 — 终局定位元裁决：路 C「单租户打底，为多租户留接缝」（2026-07-16，Daniel 一字裁决"C"）。**
 背景：Daniel 严正要求基于 Monday 研究对本应用做底层逻辑/架构/页面/能力/AI 五维度实质性提升；
 方向分水岭=终局定位（此前 STATUS 挂账的单租户 FDE vs 多租户 SaaS 元裁决，就此结清）。
