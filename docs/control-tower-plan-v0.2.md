@@ -331,6 +331,17 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V18 — U7 裁决 + 波2 开工（2026-07-16 晚，Daniel 原话"你来决定"授权主会话裁决）。**
+①U7 采纳评估书推荐（specs/2026-07-16-u7-console-migration-assessment.md §四）：**C 为主 + B-1**
+——补齐 3 个冻结动作按钮（CloseRiskEvent/ApproveQuoteDecision/RejectOrRequestMoreInfo，零新写路，
+复用 /decisions+DecisionButtons 已验证模式）；其余迁移候波2 Command 总线一次做对；kg 图谱/对象
+问答维持三工具分工。裁决依据=评估书证据：action_log 真查无法支撑"高频"判据（479 行中真人写
+动作仅 1 条）+V14"不再新增第三条写路"红线。②**波2 第一批即刻开工**：Command 写总线核心
+（commands 台账/幂等键/参数指纹/审批绑提案指纹，贯通 MCP·HTTP·Streamlit 三门，**不动 35 对象
+表结构**）+API 契约硬化（错误信封/_StateConflict→409/Idempotency-Key/游标分页）+B-1 三按钮。
+③排第二批：2b 乐观锁 version 列+tenant_id 预留（涉本体/DDL/真值 md5 新基线，**须主会话贴身
+执行不入并行 workflow**）、2c 持久 Agent runtime（依赖 2a）。
+
 **V17 — 波U 用户正脸全量开工（2026-07-16，Daniel 原话"启动workflows模式，按任务分层用不同的模型执行所有任务"）。**
 U1-U6 全量实现+U7 出评估方案（specs/2026-07-16-waveU-user-facing.md）；执行形态=Workflow 编排，
 Opus 扛复杂件（后端契约层/前端整装）、Sonnet 扛常规件（三态底座/对象卡白话/协作流/U7 文档/回归），
