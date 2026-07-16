@@ -57,6 +57,20 @@
 > 端到端实弹：模型查 RSK-0001→真实 assign_task→TSK 落库+审计尾行 ai-agent/ok+llm_calls +2，
 > 模型自述 maker-checker 边界。执行层于验收阶段 watchdog 停滞，主会话接手验收收口（改动无缺陷）。
 > **裁3=了解**：新通道维持默认，结案。
+> **Monday 审计→治理证据包（2026-07-16，Monday研究3900行深度更新吸收后）**：以 monday.com
+> 方法论+产品实证为镜做七维交叉审计（报告 docs/research/2026-07-16-monday-cross-audit.md）——
+> 架构 DNA 同源、多处我方更强（认账3条措辞更正），逼出三真洞已修（原子性/幂等/并发窗口，
+> 21c5ac5，主会话独立验证幂等铁证）。Monday深度研究增量吸收（docs/research/
+> 2026-07-16-monday-deep-research-absorb.md）递三螺丝：放权阶梯/贯穿追踪号/指令版本机。
+> **治理证据包四件套全交付**（规格 docs/superpowers/specs/2026-07-16-governance-evidence-package.md，
+> 主题=把治理从文档承诺变成看得见的证据，纯测量零线上行为改变）：
+> G-Ledger 规则执行台账（af180e1，每次detect落账可diff重放）+ G-Shadow 影子测量台（5a6c9d9，
+> AI建议对人决定/金标双档比一致率，真AI一致率待专门长跑，诚实纪律范本绝不编假数）+ G-Trace
+> 贯穿追踪号（4ba6cfb，action_log加trace_id与llm_calls血缘可拼）+ G-Dashboard 治理控制室
+> （eee0149，透视镜第15视图六本账+护栏铁证+覆盖度卡+七问，空账如实暂无）。每件主会话复核
+> 检测不变性/真值md5/命根子。**待Daniel四道方向裁决**（放权阶梯数字/WAIVED豁免通道/执行者纪律
+> 入宪法/单租户vs多租户）+真AI影子一致率专门长跑（主会话采样3题每题~180s，需数小时后台专跑）。
+
 > **V12 对象卡用户语言化闭环（2026-07-14，Daniel"这里不容易懂"后治本+治表双线）**：
 > G5 sim Supplier 枚举清零+全对象扫描（55f8b00）→ G6 sim 全对象 3950 行违例→0、双世界 0/0
 > （839ad64，A类映射/B类收编 0.11.3，执行层反驳式核验纠正任务书 3 处计数+CIF 改判有据）→
