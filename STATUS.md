@@ -1,8 +1,28 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-14（企业级交付收官：透视镜 v3+全部挂账清零+发版门全绿）
+更新时间：2026-07-16（Monday 对标提升：V14 路C/V15 路线丙定盘；波1+A-1+A-2 三单收官亲验；档1 长跑重启）
 
 ## 当前位置
+
+> **Monday 对标全面提升·波1 收官 + V13 两单落地（2026-07-16 下午，Fable 编排 + Opus×3 执行，逐单浏览器亲验）**：
+> Daniel 严正要求五维度实质性提升 → 两路只读探查交叉成**五维度差距诊断**（docs/research/
+> 2026-07-16-monday-uplift-gap-diagnosis.md）→ **V14 终局定位裁"路 C"**（单租户打底留三接缝：tenant_id
+> 预留/写路径归一/视图配置化，89afceb）→ **V15 提升路线裁"丙"三波纵向切片**（9afc6ea）。
+> **V13① A-1 审批搬回驾驶舱**（750991d）：POST /decisions/{name} 人类专用通道（frozen 四动作声明驱动
+> 白名单+X-Actor 必填+maker-checker 透传+MCP 零感知不变量测试）+Z7 批准/驳回按钮；亲验 manager 批准
+> →队列移出+action_log 留痕 trace_id=NULL，ops 灰态+金额脱敏。**V13② A-2 两处回放**（9681686）：世界
+> 时钟可拖时间轴+播放回放（as_of 串三聚合端点，诚实边界：可回放真重算/不可回放灰标"显示当前值"，
+> 清单存档 specs/2026-07-16-a2-replay-boundary.md）+AI 故事卡思考轨迹逐步点亮。
+> **波1「AI 可信度可测可放权」**（spec eaae5ca，交付 7977e2f）：G-Shadow 六项修复（透传副本路径——
+> 真通道实证业务库 md5 全程不变，勘误"全程只读"缺陷根除；shadow_llm_calls 拷回/tier+resume 断点续跑/
+> 退避重试/escalation recall/Wilson CI）+prompt 版本机（llm_calls.prompt_version，p1）+**放权门禁引擎
+> display-only**（agent/gating.py，17 域判档全 shadow，透视镜 15 视图新卡「放权阶梯」亲验；静态隔离
+> 测试钉死不接工具授权=V15 保护条款）。**影子首轮真数字**：金标 scripted 29/29=100%，真 AI 9/25=36%
+> （上下文/审计类通、简报/越权类挂——键词判分偏严+真差距并存，如实记录）；档1 一致率首轮因 CLI 通道
+> 连续失败**未测**（180 例可比底数已清点），修复后长跑已重启。陈旧基线补齐：test_ux_p0_fixes
+> ROLE_PERMS 4→6 键（F1 漏补，只增不改）。**候 Daniel**：放权阈值数字（gating_config draft-1）、
+> escalation recall 操作化定义（"更保守"={escalate,accept_delay}，业务语义候确认）、WAIVED 豁免通道、
+> 执行者纪律入宪法。
 
 > **V5 本体运行时化·第一批交付（2026-07-13，Daniel 三项全批后执行）**：缘起 Daniel 照透视镜 v2 后
 > "感觉不托底"——诊断证实本体 JSON 只被展示层引用（引擎/动作/AI 层零引用，两张皮），主通道 claude_cli
