@@ -306,10 +306,14 @@ python3 -m pytest apps/api/test_api.py -v
 
 ## 收尾（主会话执行）
 
-- [ ] 桥1 `--strict` 接入 `docs/release-checklist.md` 发布门
-- [ ] STATUS.md 更新 + 复盘补记（每 Milestone 一行进度，收官一段）
-- [ ] 决策日志追加候选：裁1-裁3 的 Daniel 裁决结果（人批后才写入）
-- [ ] 透视镜 v3 排队提醒（V5 决议③：镜子照真机器）
+- [x] 桥1 `--strict` 接入 `docs/release-checklist.md` 发布门（M3 起，release-checklist.md §A）
+- [x] STATUS.md 更新 + 复盘补记（每 Milestone 一行进度；docs/retrospective.md §6/§7 收官段）
+- [x] 决策日志追加候选：裁1-裁3 的 Daniel 裁决结果（V6 条目，Daniel 原话"1.补；2.可以；3.了解"）
+- [x] 透视镜 v3 排队提醒（V5 决议③已交付，commit 50fe2ef：四板块+等距图归位）
+
+> 勘误（2026-07-14，实施计划状态审计发现）：以上四项工作本身早已完成并在别处记录
+> （release-checklist.md / STATUS.md / 决策日志 V6 / 透视镜 v3 交付），仅本文件自己的
+> checkbox 字面从未回填勾选——纯文档滞后，非工程遗漏。
 
 ## Self-Review 记录（writing-plans 清单）
 
