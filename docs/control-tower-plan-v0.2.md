@@ -331,6 +331,17 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V14 — 终局定位元裁决：路 C「单租户打底，为多租户留接缝」（2026-07-16，Daniel 一字裁决"C"）。**
+背景：Daniel 严正要求基于 Monday 研究对本应用做底层逻辑/架构/页面/能力/AI 五维度实质性提升；
+方向分水岭=终局定位（此前 STATUS 挂账的单租户 FDE vs 多租户 SaaS 元裁决，就此结清）。
+决议：先按单租户深用把"智能与闭环"做深做出价值；架构上留三处多租户接缝，验证值钱后长成
+SaaS 不推倒重来。**接缝清单（后续升级工程的硬约束，实施单必须逐条对照）**：
+① 数据接缝——核心表预留/可平滑补 tenant_id（单租户期恒为默认值，不做隔离逻辑）；
+② 写路径接缝——所有写操作收敛到单一 Command 通道（dispatch/decisions 双门归一的演进方向），
+   不再新增第三条写路；③ 视图接缝——驾驶舱/透视镜的视图定义走配置化（ViewConfig 数据结构）
+   而非硬编码组件。显式不做（单租户期）：租户隔离执行逻辑、计费、自助注册、跨租户权限。
+Monday 多租户重器（Policy 引擎全量/Outbox 真队列/配额）不搬，搬"精神"不搬"税"。
+
 **V13 — monday 审计裁决三项（2026-07-16，Daniel 原话"A：1.搬回；2.继续做；3.补全"）。**
 ①**搬回**：驾驶舱"批准/驳回"按钮从"去 Streamlit 处置"占位搬回驾驶舱本身（追认审计发现的
 画面承诺）——需新开人类专用决策通道（frozen 动作的 HTTP 端点，X-Role+maker-checker 原封，
