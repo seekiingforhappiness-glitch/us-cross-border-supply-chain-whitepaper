@@ -18,7 +18,8 @@ import sys
 import time
 
 from .egress_gate import (FailureTracker, apply_context_budget, budget_for, empty_report,
-                          load_llm_config, log_llm_call, merge_reports, sanitize_for_egress)
+                          load_llm_config, log_llm_call, merge_reports, new_trace_id,
+                          sanitize_for_egress)
 from .tools import AgentSession, TOOL_DEFS
 
 DEFAULT_DB = "data/ontology.sqlite"  # llm_calls 落库位置（与对象库同库，spec §9）
@@ -114,6 +115,9 @@ def _run_openai(question, session, max_turns, verbose):
     tools = _openai_tools(session.tool_defs())
 
     for _ in range(max_turns):
+        # G-Trace：本轮预生成一枚 trace_id → 既落本轮 llm_calls，也透传给本轮工具调用的 dispatch，
+        #   使本轮触发的写动作 action_log.trace_id == 本轮 llm_calls.trace_id（血缘可拼）。
+        turn_trace = new_trace_id()
         input_chars = len(SYSTEM_PROMPT) + len(json.dumps(messages, ensure_ascii=False, default=str))
         t0 = time.time()
         try:
@@ -123,20 +127,21 @@ def _run_openai(question, session, max_turns, verbose):
             _safe_log(session.con, call_type="briefing", provider="openai", model=model,
                       status="error", input_chars=input_chars,
                       duration_ms=int((time.time() - t0) * 1000),
-                      error=str(exc)[:300], redactions=pending)
+                      error=str(exc)[:300], redactions=pending, trace_id=turn_trace)
             raise
         tool_calls = [item for item in resp.output if item.type == "function_call"]
         _safe_log(session.con, call_type="briefing", provider="openai", model=model,
                   status="ok", input_chars=input_chars,
                   output_chars=len(resp.output_text or ""),
-                  duration_ms=int((time.time() - t0) * 1000), redactions=pending)
+                  duration_ms=int((time.time() - t0) * 1000), redactions=pending,
+                  trace_id=turn_trace)
         pending = empty_report()  # 本轮摘除已入账；下一行记录下一轮新过闸的内容
         if not tool_calls:
             return resp.output_text
 
         for tc in tool_calls:
             args = json.loads(tc.arguments or "{}")
-            out = session.dispatch(tc.name, args)
+            out = session.dispatch(tc.name, args, trace_id=turn_trace)
             if verbose:
                 print(f"  [tool] {tc.name}({json.dumps(args, ensure_ascii=False)[:120]})")
             out_clean, rep = sanitize_for_egress(json.dumps(out, ensure_ascii=False, default=str))
@@ -168,6 +173,8 @@ def _run_anthropic(question, session, max_turns, verbose):
     q_clean, pending = sanitize_for_egress(question)
     messages = [{"role": "user", "content": q_clean}]
     for _ in range(max_turns):
+        # G-Trace：本轮预生成 trace_id，落 llm_calls + 透传给本轮工具 dispatch（血缘可拼，同 openai 档）。
+        turn_trace = new_trace_id()
         input_chars = len(SYSTEM_PROMPT) + len(json.dumps(messages, ensure_ascii=False, default=str))
         t0 = time.time()
         try:
@@ -176,20 +183,21 @@ def _run_anthropic(question, session, max_turns, verbose):
             _safe_log(session.con, call_type="briefing", provider="anthropic", model=model,
                       status="error", input_chars=input_chars,
                       duration_ms=int((time.time() - t0) * 1000),
-                      error=str(exc)[:300], redactions=pending)
+                      error=str(exc)[:300], redactions=pending, trace_id=turn_trace)
             raise
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
         _safe_log(session.con, call_type="briefing", provider="anthropic", model=model,
                   status="ok", input_chars=input_chars,
                   output_chars=sum(len(b.text) for b in resp.content if b.type == "text"),
-                  duration_ms=int((time.time() - t0) * 1000), redactions=pending)
+                  duration_ms=int((time.time() - t0) * 1000), redactions=pending,
+                  trace_id=turn_trace)
         pending = empty_report()  # 本轮摘除已入账；下一行记录下一轮新过闸的内容
         if not tool_uses:
             return "".join(b.text for b in resp.content if b.type == "text")
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for tu in tool_uses:
-            out = session.dispatch(tu.name, dict(tu.input))
+            out = session.dispatch(tu.name, dict(tu.input), trace_id=turn_trace)
             if verbose:
                 print(f"  [tool] {tu.name}({json.dumps(tu.input, ensure_ascii=False)[:120]})")
             out_clean, rep = sanitize_for_egress(json.dumps(out, ensure_ascii=False, default=str))

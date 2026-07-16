@@ -686,9 +686,13 @@ def main():
         proposal_actor_id TEXT, proposal_actor_role TEXT, assignee_user_id TEXT,
         assignee_team_id TEXT, sla_state TEXT, escalation_level INTEGER DEFAULT 0,
         policy_version TEXT)""")
+    # G-Trace 贯穿追踪号（治理证据包）：trace_id 是**可空增列**（存量/人工/UI 动作写 NULL）——AI 经
+    #   dispatch 触发的写动作把当次 LLM 调用的 trace_id 透传进来，使 action_log（业务动作）↔ llm_calls
+    #   （AI 调用遥测，agent/egress_gate.py 已有 trace_id）能按血缘拼成"这次 AI 调用→改了哪条数据"。
+    #   纯测量：既有 8 列审计内容一字不动，只多记一个关联号（不进真值 md5、不进 ontology_lint 断言域）。
     cur.execute("""CREATE TABLE action_log (log_id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT,
         role TEXT, action TEXT, target_object_id TEXT, params_json TEXT, as_of_date TEXT,
-        timestamp TEXT, result TEXT)""")
+        timestamp TEXT, result TEXT, trace_id TEXT)""")
     # CL1 协调回路（Coordination Loop，决策 CL1）：CoordinationThread 承载「延误处置时对外协调」的
     #   运营状态（对供应商/货代/报关行/银行/客户的 ask→跟进→回复→升级）。空表，运行期由
     #   app.coordination_actions 状态机写入；demo 快照由 datagen.seed_demo_ops 幂等 seed。

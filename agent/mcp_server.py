@@ -69,7 +69,7 @@ from pipeline.ontology_runtime import (           # noqa: E402  路径注入后�
     build_forbidden_tools, build_tool_defs, load_ontology, snake_case, traverse as onto_traverse)
 from agent.tools import MASK, allowed_tools_for_role  # noqa: E402  脱敏掩码 + 角色域 scoping 单一来源
 from agent.egress_gate import (                   # noqa: E402
-    log_llm_call, migrate_llm_calls_call_type_check, sanitize_for_egress)
+    log_llm_call, migrate_llm_calls_call_type_check, new_trace_id, sanitize_for_egress)
 
 
 def _stderr(msg: str) -> None:
@@ -359,9 +359,14 @@ class OntologyMCPServer:
         # + action_log 审计都在 dispatch 内完成（无权角色→dispatch 落 denial 审计）；此处不预筛角色，
         # 让越权写抵达 dispatch 以留 action_log 痕迹（双账本：另落 llm_calls）。
         if name in self.write_names:
-            data = self._dispatch_write(name, args)
+            # G-Trace：写工具一次调用要同时落两本账——action_log（经 dispatch）与 llm_calls（mcp_tool，经
+            #   _audit）。先在此预生成一枚 trace_id，两处同号 → action_log 该行 trace_id == 对应 llm_calls
+            #   trace_id（血缘可拼：这次 AI 调用→改了哪条数据）。读工具无 action_log 写，仍走各调用自动号。
+            trace_id = new_trace_id()
+            data = self._dispatch_write(name, args, trace_id)
             self.masker.mask_value(data)             # 门槛1：写结果也过声明脱敏（幂等，防提案回显敏感字段）
-            return self._finish(name, args, data, is_error=_is_write_error(data), t0=t0)
+            return self._finish(name, args, data, is_error=_is_write_error(data), t0=t0,
+                                trace_id=trace_id)
 
         # 读工具：角色域外拒绝并审计（越域读，MCP 协议层拦截；读工具不触 action_log，仅 llm_calls 留痕）
         if name not in self.visible_tool_names():
@@ -388,13 +393,14 @@ class OntologyMCPServer:
             return self._traverse(args)
         return self._read_handlers[name](**args)
 
-    def _dispatch_write(self, name: str, args: dict) -> dict:
+    def _dispatch_write(self, name: str, args: dict, trace_id: str | None = None) -> dict:
         """写提案工具路由到 agent/tools.py 既有 dispatch（V6 裁2）：同一套 ROLE_PERMS 白名单 +
         FORBIDDEN 拦截 + action_log 审计。写连接是独立读写 AgentSession（业务只读连接 mode=ro 不被复用）；
         **不 import app.actions 任何写函数**——绝不绕过 dispatch 建第二写路径。dispatch 返回
-        {ok,object_id,...}（成功提案）/{refused,reason}（越权，已落 action_log denial）/{error}（参数错）。"""
+        {ok,object_id,...}（成功提案）/{refused,reason}（越权，已落 action_log denial）/{error}（参数错）。
+        G-Trace：trace_id 透传给 dispatch → app.actions._log，与本次工具的 llm_calls(mcp_tool) 行同号。"""
         try:
-            return self._ensure_write_session().dispatch(name, args)
+            return self._ensure_write_session().dispatch(name, args, trace_id=trace_id)
         except Exception as exc:  # noqa: BLE001  dispatch 内异常兜底为业务错误（不拖垮协议）
             _stderr("写工具 dispatch 异常:\n" + traceback.format_exc())
             return {"error": f"写工具执行异常: {exc}"}
@@ -430,8 +436,11 @@ class OntologyMCPServer:
                        and l.get("status") != "declared_only"})
 
     # ── 结果封装 + 出境闸门 + 双落盘审计 ──────────────────────────────────
-    def _finish(self, name: str, args: dict, data: dict, is_error: bool, t0: float) -> dict:
-        """工具结果 → 出境 PI 摘除（回传模型=再次出境，spec §9）→ 审计双落盘（llm_calls + jsonl）。"""
+    def _finish(self, name: str, args: dict, data: dict, is_error: bool, t0: float,
+                trace_id: str | None = None) -> dict:
+        """工具结果 → 出境 PI 摘除（回传模型=再次出境，spec §9）→ 审计双落盘（llm_calls + jsonl）。
+        G-Trace：写工具传入预生成 trace_id，使 llm_calls(mcp_tool) 行与 action_log 该动作行同号；
+        读工具 trace_id=None，log_llm_call 内部自动生成本次调用号（行为同现状）。"""
         raw = json.dumps(data, ensure_ascii=False, indent=2, default=str)
         clean, report = sanitize_for_egress(raw)     # 业务编号豁免，PI 才摘（多为空操作）
         rows = self._count_rows(name, data, is_error)
@@ -439,7 +448,7 @@ class OntologyMCPServer:
         self._audit(name, args, rows, ok=not is_error,
                     error=(data.get("error") if is_error else None),
                     duration_ms=duration_ms, input_chars=len(json.dumps(args, ensure_ascii=False)),
-                    output_chars=len(clean), redactions=report)
+                    output_chars=len(clean), redactions=report, trace_id=trace_id)
         return {"content": [{"type": "text", "text": clean}], "isError": is_error}
 
     @staticmethod
@@ -459,16 +468,18 @@ class OntologyMCPServer:
         return 1 if "error" not in data else 0
 
     def _audit(self, tool: str, args: dict, rows: int, ok: bool, error, duration_ms: int,
-               input_chars: int, output_chars: int, redactions: dict) -> None:
+               input_chars: int, output_chars: int, redactions: dict,
+               trace_id: str | None = None) -> None:
         """门槛3 双落盘：① llm_calls（call_type='mcp_tool'，审计写连接，仅 INSERT）；② jsonl（PoC 格式）。
-        任一落盘失败只 stderr 告警，绝不拖垮工具返回（审计故障不放大为回答故障）。"""
+        任一落盘失败只 stderr 告警，绝不拖垮工具返回（审计故障不放大为回答故障）。
+        G-Trace：trace_id 非空（写工具）时落 llm_calls 用同一号 → 与 action_log 该动作行血缘可拼。"""
         if self.audit_con is not None:
             try:
                 log_llm_call(self.audit_con, call_type="mcp_tool", provider="mcp_server",
                              model=SERVER_NAME, status="ok" if ok else "error",
                              input_chars=input_chars, output_chars=output_chars,
                              duration_ms=duration_ms, error=(str(error)[:300] if error else None),
-                             redactions=redactions)
+                             redactions=redactions, trace_id=trace_id)
             except Exception as exc:  # noqa: BLE001
                 _stderr(f"审计入库失败（不影响返回）：{exc}")
         rec = {"ts": datetime.now(timezone.utc).isoformat(), "tool": tool, "role": self.role,

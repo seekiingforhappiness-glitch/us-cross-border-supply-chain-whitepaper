@@ -12,7 +12,8 @@ import sqlite3
 
 import yaml
 
-from app.actions import assign_task, propose_mitigation, propose_collection, _log, ROLE_PERMS
+from app.actions import (assign_task, propose_mitigation, propose_collection, _log, ROLE_PERMS,
+                         set_action_trace_id, reset_action_trace_id)
 from app.admission_actions import (ADM_PERMS, create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario)
 from engine.graph import explain_path
@@ -670,7 +671,18 @@ class AgentSession:
         self.con.commit()
 
     # ---------- 统一调度 ----------
-    def dispatch(self, tool_name, args):
+    def dispatch(self, tool_name, args, trace_id=None):
+        # G-Trace：AI 触发的写动作（含被拒的越权写）在本次 dispatch 期间把 trace_id 透传给 app.actions._log，
+        #   使 action_log 该行 trace_id == 触发它的 LLM 调用 trace_id（血缘可拼）。trace_id=None（人工/测试
+        #   直调 dispatch 不传）时不设置上下文 → _log 写 NULL。finally 复位防跨调用泄漏。
+        token = set_action_trace_id(trace_id) if trace_id is not None else None
+        try:
+            return self._dispatch(tool_name, args)
+        finally:
+            if token is not None:
+                reset_action_trace_id(token)
+
+    def _dispatch(self, tool_name, args):
         # 原则2：审批/关闭类对任何 role 永不开放——最先拦截并审计（诱导越权 → 拒绝 + 留痕）
         if tool_name in FORBIDDEN_TOOLS:
             self._audit_denied(tool_name, args,

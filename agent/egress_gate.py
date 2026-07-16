@@ -210,6 +210,13 @@ def migrate_llm_calls_call_type_check(conn: sqlite3.Connection) -> str:
     return "migrated"
 
 
+def new_trace_id():
+    """生成一枚 llm_calls/action_log 通用格式的追踪号（G-Trace 单一来源）：LLM-<12hex 大写>。
+    调用方需要"先拿到 trace 再同时喂给多本账"（如 MCP 写工具：一次调用既落 action_log 又落 llm_calls，
+    两处须同号）时用它预生成；log_llm_call 内部缺省也走同一格式。"""
+    return f"LLM-{uuid.uuid4().hex[:12].upper()}"
+
+
 def log_llm_call(db, *, call_type, provider, status, model=None, input_chars=0, output_chars=0,
                  duration_ms=0, error=None, redactions=None, trace_id=None, created_at=None):
     """每次外部 LLM 调用（含失败/降级）落一行。db 可传 sqlite3.Connection 或库路径。返回 trace_id。"""
@@ -217,7 +224,7 @@ def log_llm_call(db, *, call_type, provider, status, model=None, input_chars=0, 
     conn = sqlite3.connect(db) if own else db
     try:
         ensure_llm_calls_table(conn)
-        trace_id = trace_id or f"LLM-{uuid.uuid4().hex[:12].upper()}"
+        trace_id = trace_id or new_trace_id()
         created_at = created_at or datetime.now(timezone.utc).isoformat(
             timespec="seconds").replace("+00:00", "Z")
         conn.execute(

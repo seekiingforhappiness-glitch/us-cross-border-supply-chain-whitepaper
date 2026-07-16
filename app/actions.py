@@ -5,6 +5,7 @@
 - 一切调用（成功/失败/越权）都写 action_log（断言 B4/C4）
 - 审计时间戳基于 as_of，不用系统时钟（D8）
 """
+import contextvars
 import json
 import sqlite3
 
@@ -149,11 +150,46 @@ class _StateConflict(Exception):
     由动作的 except 捕获转 _fail——业务写随事务回滚，审计留痕（_fail 另起事务）不被吞。"""
 
 
+# G-Trace 贯穿追踪号（治理证据包）：AI 经 dispatch 触发的写动作，把当次 LLM 调用的 trace_id 透传到
+#   action_log，使 action_log ↔ llm_calls 可按血缘拼接（"这次 AI 调用→改了哪条数据"）。透传用
+#   ContextVar 而非改 7 个动作函数签名——dispatch 层（agent/tools.py Toolbox.dispatch）在 AI 动作
+#   执行期间 set，_log 读取。人工/UI/存量动作从不 set → 读到默认 None → action_log.trace_id 写 NULL
+#   （如实：非 AI 触发无 trace）。纯测量：动作语义/权限/审计内容一字不动，只多记一个关联号。
+#   本模块的 _log 被 warehouse/admission/coordination/procurement 等动作层共享 import——一处透传，全域覆盖。
+_CURRENT_TRACE_ID = contextvars.ContextVar("gtrace_action_trace_id", default=None)
+
+
+def set_action_trace_id(trace_id):
+    """在 AI 触发的动作执行期间设置当前 trace_id；返回 token 交 reset_action_trace_id 复位。"""
+    return _CURRENT_TRACE_ID.set(trace_id)
+
+
+def reset_action_trace_id(token):
+    """复位 trace 上下文（务必在 finally 调用，防跨调用/跨请求泄漏 trace）。"""
+    _CURRENT_TRACE_ID.reset(token)
+
+
+def current_action_trace_id():
+    """当前生效的 trace_id（无则 None）；供审计对齐（如 MCP 侧 llm_calls 落同一 trace）读取。"""
+    return _CURRENT_TRACE_ID.get()
+
+
 def _log(cur, actor, role, action, target, params, as_of, result):
-    cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
-                   as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
-                (actor, role, action, target, json.dumps(params, ensure_ascii=False),
-                 as_of, f"{as_of}T00:00:00Z", result))
+    trace_id = _CURRENT_TRACE_ID.get()
+    params_json = json.dumps(params, ensure_ascii=False)
+    timestamp = f"{as_of}T00:00:00Z"
+    try:
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
+                       as_of_date, timestamp, result, trace_id) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (actor, role, action, target, params_json, as_of, timestamp, result, trace_id))
+    except sqlite3.OperationalError as exc:
+        # 旧库副本 / 测试自建的 action_log 尚无 trace_id 列（G-Trace 是可空增列）：回落 8 列写入，
+        #   既有审计内容照写不误——追踪号缺列只丢关联号，绝不阻断审计（红线：只增不改语义）。
+        if "trace_id" not in str(exc):
+            raise
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
+                       as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    (actor, role, action, target, params_json, as_of, timestamp, result))
 
 
 def _res(ok, object_id=None, side_effects=None, error=None):
