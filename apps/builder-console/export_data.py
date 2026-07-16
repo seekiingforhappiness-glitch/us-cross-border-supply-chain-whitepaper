@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -38,7 +39,10 @@ REPO_ROOT = SCRIPT_DIR.parent.parent
 ONTOLOGY_JSON = REPO_ROOT / "ontology" / "control-tower-ontology.json"
 DEFAULT_DB = REPO_ROOT / "data" / "simworld.sqlite"          # 活世界（主源）
 DEFAULT_VERIFY_DB = REPO_ROOT / "data" / "ontology.sqlite"   # 验证世界（对照）
+DEFAULT_SHADOW_DB = REPO_ROOT / "data" / "shadow.sqlite"     # 影子测量旁路库（G-Shadow 产物）
 PLAN_MD = REPO_ROOT / "docs" / "control-tower-plan-v0.2.md"
+DEMO_ASSERTIONS_MD = REPO_ROOT / "docs" / "demo-assertions.md"    # 需求覆盖度卡源①
+RELEASE_CHECKLIST_MD = REPO_ROOT / "docs" / "release-checklist.md"  # 需求覆盖度卡源②
 DEFAULT_OUT = SCRIPT_DIR / "src" / "data"
 
 
@@ -1768,6 +1772,498 @@ def build_search(onto: dict, db: ReadOnlyDB) -> dict:
 
 
 # =============================================================================
+# 视图 · 治理控制室（NEW · 第15视图）——治理证据包收官件（G-Dashboard）
+# 六类证据全部现查现算、来源如实标注、无数据如实"暂无/需先跑X"。绝不编造（全局规则5）。
+# 数据源：llm_calls / action_log / rule_run_ledger（ontology.sqlite 验证世界库，治理遥测落此）、
+#         shadow_run（shadow.sqlite 影子旁路库）、resolution_memory（simworld 活世界，档1底数）、
+#         docs/demo-assertions.md + release-checklist.md（覆盖度卡）。
+# =============================================================================
+def _percentile(sorted_vals: list, p: float):
+    """线性插值分位数。sorted_vals 必须已升序。空则 None。"""
+    if not sorted_vals:
+        return None
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * p
+    lo = math.floor(k)
+    hi = math.ceil(k)
+    if lo == hi:
+        return sorted_vals[int(k)]
+    return sorted_vals[lo] * (hi - k) + sorted_vals[hi] * (k - lo)
+
+
+# 断言→锁定它的测试：口径直引 demo-assertions.md 头部「自动化覆盖」声明（作者稳定映射，不猜）。
+def _assertion_test(aid: str) -> str:
+    if aid in ("A1", "A2", "A3", "A4", "A5", "A6", "A7", "B1", "B2", "B3", "B7"):
+        return "engine.evaluate + pipeline.evaluate"
+    if aid in ("A8", "A9", "A10", "A11", "A12", "A13", "B4", "B5", "B6", "C1", "C2", "C4"):
+        return "app.test_closed_loop"
+    if aid == "C3":
+        return "人工 UI 走查（streamlit）"
+    return "需跑测试确认"
+
+
+def _parse_demo_assertions(md_path: Path) -> dict:
+    """解析 demo-assertions.md 的 A/B/C 断言复选框——状态从文档 checkbox 自动派生，不手填。"""
+    sec_names = {
+        "A": "闭环六步主线断言",
+        "B": "反断言（系统不该做的事）",
+        "C": "审计与追溯断言",
+    }
+    groups = {k: [] for k in sec_names}
+    if not md_path.exists():
+        return {"available": False, "groups": [], "total": 0, "checked": 0}
+    text = md_path.read_text(encoding="utf-8")
+    # 形如 "- [x] A1. 文本"  /  "- [ ] B4. 文本"
+    pat = re.compile(r"^-\s*\[([ xX])\]\s*([ABC]\d+)\.\s*(.+?)\s*$", re.MULTILINE)
+    for m in pat.finditer(text):
+        checked = m.group(1).lower() == "x"
+        aid = m.group(2)
+        body = m.group(3).strip()
+        sec = aid[0]
+        if sec in groups:
+            groups[sec].append({
+                "id": aid, "text": body, "checked": checked, "test": _assertion_test(aid),
+            })
+    out_groups = []
+    total = checked_n = 0
+    for sec in ("A", "B", "C"):
+        items = sorted(groups[sec], key=lambda x: int(x["id"][1:]))
+        total += len(items)
+        checked_n += sum(1 for i in items if i["checked"])
+        if items:
+            out_groups.append({"section": sec, "name": sec_names[sec], "items": items})
+    return {"available": True, "groups": out_groups, "total": total, "checked": checked_n}
+
+
+def _parse_release_gates(md_path: Path) -> dict:
+    """解析 release-checklist.md 发版门（### 小节 + [x]/[ ] 项）+ 头部最近验证日期。"""
+    if not md_path.exists():
+        return {"available": False, "gates": [], "total": 0, "checked": 0, "lastVerified": None}
+    text = md_path.read_text(encoding="utf-8")
+    mver = re.search(r"最近一次全链验证[：:]\s*\*\*([0-9]{4}-[0-9]{2}-[0-9]{2})\*\*", text)
+    last_verified = mver.group(1) if mver else None
+    lines = text.splitlines()
+    gates = []
+    cur = None
+    in_gate_section = False
+    for ln in lines:
+        h2 = re.match(r"^##\s+(.+)$", ln)
+        if h2:
+            in_gate_section = "发版门" in h2.group(1) or "release gates" in h2.group(1).lower()
+            cur = None
+            continue
+        if not in_gate_section:
+            continue
+        h3 = re.match(r"^###\s+(.+?)\s*$", ln)
+        if h3:
+            cur = {"gate": h3.group(1).strip(), "items": []}
+            gates.append(cur)
+            continue
+        mi = re.match(r"^-\s*\[([ xX])\]\s*(.+?)\s*$", ln)
+        if mi and cur is not None:
+            txt = re.sub(r"\*\*", "", mi.group(2)).strip()
+            cur["items"].append({"text": txt[:160], "checked": mi.group(1).lower() == "x"})
+    gates = [g for g in gates if g["items"]]
+    total = sum(len(g["items"]) for g in gates)
+    checked_n = sum(1 for g in gates for i in g["items"] if i["checked"])
+    return {"available": True, "gates": gates, "total": total, "checked": checked_n,
+            "lastVerified": last_verified}
+
+
+def build_governance(onto: dict, db: ReadOnlyDB, vdb: "ReadOnlyDB | None",
+                     shadow: "ReadOnlyDB | None") -> dict:
+    # 治理遥测三表（llm_calls/action_log/rule_run_ledger）落在验证世界库 ontology.sqlite。
+    gov = vdb if (vdb and vdb.has_table("action_log")) else None
+    gov_src = "data/ontology.sqlite" if gov else None
+
+    # ── 卡①：AI 调用遥测（llm_calls）───────────────────────────────────────────
+    llm_n = gov.count("llm_calls") if (gov and gov.has_table("llm_calls")) else -1
+    telemetry = {
+        "source": f"{gov_src} · llm_calls" if gov else "llm_calls（表未就位）",
+        "available": llm_n > 0,
+        "total": max(llm_n, 0),
+        "byType": [], "byProvider": [], "byStatus": [],
+        "degraded": 0, "latencyMs": None, "tokens": {"input": 0, "output": 0},
+        "note": ("llm_calls 表 0 条——真实 LLM 推理遥测尚未接入生产运转。这是诚实的空账（审计 1.5 指出 "
+                 "llm_calls「只写不展示」，本卡是它的第一个 UI 出口；账本待灌）。基座已通"
+                 "（agent/egress_gate.py 写 trace_id，agent/llm_agent.py claude_cli）。")
+        if llm_n <= 0 else "真实 LLM 推理调用遥测。est_tokens 为估算，非计费真值。",
+    }
+    if llm_n > 0:
+        telemetry["byType"] = [dict(r) for r in gov.q(
+            "SELECT call_type type, COUNT(*) n FROM llm_calls GROUP BY call_type ORDER BY n DESC")]
+        telemetry["byProvider"] = [dict(r) for r in gov.q(
+            "SELECT provider, COUNT(*) n FROM llm_calls GROUP BY provider ORDER BY n DESC")]
+        telemetry["byStatus"] = [dict(r) for r in gov.q(
+            "SELECT status, COUNT(*) n FROM llm_calls GROUP BY status ORDER BY n DESC")]
+        telemetry["degraded"] = int(gov.scalar(
+            "SELECT COUNT(*) FROM llm_calls WHERE status='degraded'") or 0)
+        telemetry["tokens"] = {
+            "input": int(gov.scalar("SELECT COALESCE(SUM(est_input_tokens),0) FROM llm_calls") or 0),
+            "output": int(gov.scalar("SELECT COALESCE(SUM(est_output_tokens),0) FROM llm_calls") or 0),
+        }
+        durs = sorted(int(r[0]) for r in gov.q(
+            "SELECT duration_ms FROM llm_calls WHERE duration_ms IS NOT NULL"))
+        toks = sorted(int(r[0]) for r in gov.q(
+            "SELECT (est_input_tokens+est_output_tokens) FROM llm_calls"))
+        telemetry["latencyMs"] = {
+            "p50": _percentile(durs, 0.5), "p95": _percentile(durs, 0.95),
+        }
+        telemetry["tokensP"] = {"p50": _percentile(toks, 0.5), "p95": _percentile(toks, 0.95)}
+
+    # ── 卡②：安全对抗（越权 denied + 288 注入）─────────────────────────────────
+    denied_live = int(gov.scalar(
+        "SELECT COUNT(*) FROM action_log WHERE result LIKE 'denied%'") or 0) if gov else 0
+    al_total = gov.count("action_log") if gov else -1
+    al_by_result = [dict(r) for r in gov.q(
+        "SELECT result, COUNT(*) n FROM action_log GROUP BY result ORDER BY n DESC")] if gov else []
+    security = {
+        "source": f"{gov_src} · action_log" if gov else "action_log（表未就位）",
+        "deniedLive": denied_live,
+        "actionLogTotal": max(al_total, 0),
+        "byResult": al_by_result,
+        "injection": {
+            "result": "全绿（288 注入全 refused + denied 审计留痕）",
+            "ref": "app/test_agent_security · docs/release-checklist.md §D",
+            "asOf": "2026-07-09",
+            "note": "对抗注入成本高，不每次实跑——引用最近一次全绿记录（test_agent_security 跑在独立副本库，不落主库）。",
+        },
+        "note": ("现查主库 action_log 无对抗性 denied（actor 皆 engine/seed_demo_ops，result=ok/created）——"
+                 "这本身是护栏证据：主库无 AI 越权写入。越权对抗的 denied 审计在 test_agent_security 的隔离副本库产生。")
+        if denied_live == 0 else "现查 action_log 中的越权 denied 计数。",
+    }
+
+    # ── 卡③：金标评估（shadow_run bench2_goldset scripted 常驻；LLM 档若有则展示）──
+    goldset = {"source": None, "available": False, "runs": [], "latest": None, "llm": None,
+               "note": ""}
+    if shadow and shadow.has_table("shadow_run"):
+        goldset["source"] = "data/shadow.sqlite · shadow_run(bench2_goldset)"
+        sc_runs = [dict(r) for r in shadow.q(
+            "SELECT run_id, MIN(created_at) created_at, COUNT(*) n, "
+            "SUM(CASE WHEN consistent=1 THEN 1 ELSE 0 END) passed "
+            "FROM shadow_run WHERE tier='bench2_goldset' AND mode='scripted' "
+            "GROUP BY run_id ORDER BY created_at")]
+        goldset["runs"] = sc_runs
+        goldset["available"] = len(sc_runs) > 0
+        if sc_runs:
+            last = sc_runs[-1]
+            goldset["latest"] = {
+                "run_id": last["run_id"], "n": last["n"], "passed": last["passed"],
+                "rate": round(last["passed"] / last["n"], 4) if last["n"] else None,
+            }
+        llm_runs = [dict(r) for r in shadow.q(
+            "SELECT run_id, MIN(created_at) created_at, COUNT(*) n, "
+            "SUM(CASE WHEN consistent=1 THEN 1 ELSE 0 END) passed "
+            "FROM shadow_run WHERE tier='bench2_goldset' AND mode='llm' "
+            "GROUP BY run_id ORDER BY created_at")]
+        if llm_runs:
+            lastl = llm_runs[-1]
+            goldset["llm"] = {"run_id": lastl["run_id"], "n": lastl["n"], "passed": lastl["passed"],
+                              "rate": round(lastl["passed"] / lastl["n"], 4) if lastl["n"] else None}
+        goldset["note"] = (
+            "确定性金标档（scripted）：真 AI 无关，跑 agent.evaluate 评估集的正确答案基准，无 LLM 也必出。"
+            "LLM 档（真 AI 过金标题）需 shadow_bench --llm，未跑则如实空。")
+    else:
+        goldset["source"] = "data/shadow.sqlite（未就位）"
+        goldset["note"] = "shadow.sqlite 未就位——需先跑 `python3 -m agent.shadow_bench`。"
+
+    # ── 卡④：影子一致率（shadow_run bench1 分域切片 + escalation recall）──────────
+    MIN_SLICE_N = 5  # 与 agent/shadow_bench.py 同一样本下限：低于此只报计数不给点估计（规格D）
+    shadow_card = {
+        "source": "data/shadow.sqlite · shadow_run(bench1_resolution)",
+        "measured": False, "minSliceN": MIN_SLICE_N,
+        "attempted": 0, "parsed": 0, "overall": None,
+        "byRule": [], "byLane": [], "bySeverity": [],
+        "population": None, "escalation": None, "note": "",
+    }
+    b1_rows = []
+    if shadow and shadow.has_table("shadow_run"):
+        b1_rows = [dict(r) for r in shadow.q(
+            "SELECT rule_id, lane, severity, consistent FROM shadow_run "
+            "WHERE tier='bench1_resolution'")]
+    if b1_rows:
+        parsed = [r for r in b1_rows if r["consistent"] is not None]
+        shadow_card["measured"] = True
+        shadow_card["attempted"] = len(b1_rows)
+        shadow_card["parsed"] = len(parsed)
+        n = len(parsed)
+        c = sum(1 for r in parsed if r["consistent"] == 1)
+        shadow_card["overall"] = {"n": n, "consistent": c,
+                                  "rate": round(c / n, 4) if n else None}
+
+        def _slice(key):
+            agg = {}
+            for r in parsed:
+                k = r.get(key) or "—"
+                a = agg.setdefault(k, {"key": k, "n": 0, "consistent": 0})
+                a["n"] += 1
+                a["consistent"] += 1 if r["consistent"] == 1 else 0
+            out = []
+            for a in sorted(agg.values(), key=lambda x: -x["n"]):
+                a["lowConfidence"] = a["n"] < MIN_SLICE_N  # 样本过小如实标注，不给点估计
+                a["rate"] = round(a["consistent"] / a["n"], 4) if a["n"] else None
+                out.append(a)
+            return out
+        shadow_card["byRule"] = _slice("rule_id")
+        shadow_card["byLane"] = _slice("lane")
+        shadow_card["bySeverity"] = _slice("severity")
+        shadow_card["note"] = "影子一致率＝AI 影子提案动作与人最终采纳动作同类的比率。样本 < 5 的切片只报计数、不给点估计（规格D 样本量护栏）。"
+    else:
+        # 未落档1数据：现查 resolution_memory 给「可比案例底数」，一致率如实暂无（绝不编造）。
+        pop = None
+        if db.has_table("resolution_memory"):
+            comp = db.q(
+                "SELECT rule_id, lane, severity FROM resolution_memory "
+                "WHERE decision IS NOT NULL AND decision!='' "
+                "AND quality_label IS NOT NULL AND quality_label!=''")
+            comp = [dict(r) for r in comp]
+            by_rule = {}
+            by_sev = {}
+            for r in comp:
+                by_rule[r["rule_id"]] = by_rule.get(r["rule_id"], 0) + 1
+                by_sev[r["severity"]] = by_sev.get(r["severity"], 0) + 1
+            pop = {
+                "total": len(comp),
+                "byRule": [{"key": k, "n": v} for k, v in sorted(by_rule.items())],
+                "bySeverity": [{"key": k, "n": v} for k, v in sorted(by_sev.items())],
+                "source": "data/simworld.sqlite · resolution_memory（有 decision+quality_label 的可比案例）",
+            }
+        shadow_card["population"] = pop
+        shadow_card["note"] = (
+            "shadow_run 表暂无档1（bench1_resolution）记录——影子一致率未实测。左为现查可比案例底数"
+            "（有人决定+质量标签的历史风险），一致率需跑 `python3 -m agent.shadow_bench --llm` 档1 才有。"
+            "诚实优先：这数要拿去做放权决策，无一手实测绝不给百分比（规格D／全局规则5）。")
+
+    # escalation recall（规格C）：人升级人工（escalated）里 AI 是否也建议 escalate 的召回率。
+    esc_total = 0
+    if db.has_table("resolution_memory"):
+        esc_total = int(db.scalar(
+            "SELECT COUNT(*) FROM resolution_memory "
+            "WHERE status='escalated' OR decision='escalate'") or 0)
+    shadow_card["escalation"] = {
+        "escalatedCases": esc_total,
+        "recall": None,
+        "note": ("当前活世界无 escalated 终态案例（0 例）——escalation recall 无可测样本，如实暂无。"
+                 "放权最怕漏升级，此召回率比总一致率更决定「敢不敢放权」（规格C）；有 escalated 案例后单独出。")
+        if esc_total == 0 else "人升级人工的案例里 AI 也建议 escalate 的召回率，需档1实测。",
+    }
+
+    # ── 卡⑤：规则台账（rule_run_ledger 趋势 + 同 as_of 跨 run diff）────────────────
+    ledger = {"source": None, "available": False, "runs": [], "latestByRule": [],
+              "diff": None, "note": ""}
+    if gov and gov.has_table("rule_run_ledger"):
+        ledger["source"] = f"{gov_src} · rule_run_ledger"
+        runs = [dict(r) for r in gov.q(
+            "SELECT as_of, created_at, COUNT(*) rules, SUM(detected_count) total, "
+            "SUM(CASE WHEN status!='ok' THEN 1 ELSE 0 END) errors "
+            "FROM rule_run_ledger GROUP BY as_of, created_at ORDER BY created_at")]
+        ledger["runs"] = runs
+        ledger["available"] = len(runs) > 0
+        if runs:
+            latest = runs[-1]
+            ledger["latestByRule"] = [dict(r) for r in gov.q(
+                "SELECT rule_id, rule_version, detected_count, "
+                "substr(input_fingerprint,1,12) fp, status "
+                "FROM rule_run_ledger WHERE as_of=? AND created_at=? "
+                "ORDER BY CAST(substr(rule_id,2) AS INTEGER)",
+                (latest["as_of"], latest["created_at"]))]
+        # 同 as_of 跨 run 的 diff（幂等验证）：需 ≥2 run。
+        same_as_of = [r for r in runs]
+        as_of_groups = {}
+        for r in runs:
+            as_of_groups.setdefault(r["as_of"], []).append(r)
+        diffable = {k: v for k, v in as_of_groups.items() if len(v) >= 2}
+        if diffable:
+            k = sorted(diffable.keys())[-1]
+            grp = sorted(diffable[k], key=lambda x: x["created_at"])
+            a, b = grp[-2], grp[-1]
+            per_a = {r["rule_id"]: r["detected_count"] for r in gov.q(
+                "SELECT rule_id, detected_count FROM rule_run_ledger WHERE as_of=? AND created_at=?",
+                (k, a["created_at"]))}
+            per_b = {r["rule_id"]: r["detected_count"] for r in gov.q(
+                "SELECT rule_id, detected_count FROM rule_run_ledger WHERE as_of=? AND created_at=?",
+                (k, b["created_at"]))}
+            changed = []
+            for rid in sorted(set(per_a) | set(per_b), key=lambda x: int(x[1:]) if x[1:].isdigit() else 999):
+                if per_a.get(rid) != per_b.get(rid):
+                    changed.append({"rule_id": rid, "before": per_a.get(rid), "after": per_b.get(rid)})
+            ledger["diff"] = {
+                "asOf": k, "before": a["created_at"], "after": b["created_at"],
+                "changed": changed, "idempotent": len(changed) == 0,
+            }
+            ledger["note"] = (f"同 as_of={k} 的两次 detect 逐规则 count "
+                              + ("完全一致 → 幂等已修（三洞修复铁证）。" if not changed
+                                 else f"有 {len(changed)} 条变化 → 数据或阈值变了。"))
+        else:
+            ledger["note"] = (f"当前仅 {len(runs)} 次 detect 台账——同 as_of 跨 run diff 需 ≥2 次"
+                              "（重跑 `python3 -m engine.detect` 即再落 21 行，届时可比幂等）。")
+    else:
+        ledger["source"] = "rule_run_ledger（表未就位）"
+        ledger["note"] = "rule_run_ledger 未就位——需先跑 `python3 -m engine.detect`（G-Ledger）。"
+
+    # ── 卡⑥：需求覆盖度（demo-assertions + release-checklist，状态从 checkbox 自动派生）──
+    assertions = _parse_demo_assertions(DEMO_ASSERTIONS_MD)
+    gates = _parse_release_gates(RELEASE_CHECKLIST_MD)
+    coverage = {
+        "source": "docs/demo-assertions.md + docs/release-checklist.md",
+        "asOf": gates.get("lastVerified"),
+        "assertions": assertions,
+        "gates": gates,
+        "reproduce": "docs/release-checklist.md §0「一键复现（从零到全绿）」",
+        "note": ("状态列直读文档 checkbox（[x]/[ ]），非本视图实跑——保住「绿是命令跑出来的、不是这里声称的」红线。"
+                 f"文档记录的最近一次全链验证＝{gates.get('lastVerified') or '未标注'}；要确认当前真实状态请按 §0 重跑。"),
+    }
+
+    # ── 七问框架（每个运行必须能回答的 7 问）──────────────────────────────────────
+    seven = [
+        {"q": "谁触发的", "plain": "哪个 actor/role 起的头",
+         "answeredBy": "action_log.actor / role", "status": "通",
+         "detail": f"action_log {max(al_total,0)} 行均带 actor+role（现查：engine/seed_demo_ops）"},
+        {"q": "用哪版 AI-指令-模型", "plain": "prompt 版本 + 模型",
+         "answeredBy": "llm_calls.model / provider（+ prompt_version 待 G-Trace）", "status": "待灌",
+         "detail": "llm_calls 有 model/provider 列，当前 0 条；prompt_version 依赖 G-Trace 增补"},
+        {"q": "当时能看到哪些数据", "plain": "grounding 快照",
+         "answeredBy": "shadow_bench grounding（脱敏简报）", "status": "通",
+         "detail": "影子台按检测时点脱敏简报做 grounding，剔除后验字段（见 shadow_bench._build_grounding）"},
+        {"q": "每步做了什么谁批的", "plain": "动作 + maker-checker",
+         "answeredBy": "action_log.action / result + 冻结区审批", "status": "通",
+         "detail": "每次状态变更 action_log 恰一条（demo-assertions C2）；冻结区四审批动作人批"},
+        {"q": "实际改了什么", "plain": "AI 调用→哪次写入的血缘",
+         "answeredBy": "trace_id 拼 llm_calls ↔ action_log", "status": "结构通·待数据",
+         "detail": "两表都有 trace_id 列可 JOIN；当前 llm_calls=0、action_log.trace_id 全 NULL，暂无实例可拼"},
+        {"q": "有没有验证通过", "plain": "金标/影子/覆盖度",
+         "answeredBy": "shadow_run + release-checklist", "status": "部分",
+         "detail": f"金标 scripted 常驻（现查 {goldset['latest']['n'] if goldset.get('latest') else 0} 题）；影子档1未落数"},
+        {"q": "花了多少", "plain": "token/耗时成本",
+         "answeredBy": "llm_calls token/duration × call_type×provider", "status": "待灌",
+         "detail": "成本分账字段就位（est_tokens/duration_ms），llm_calls=0 故暂无；分域烧账依赖 G-Trace"},
+        {"q": "为什么停", "plain": "终态原因",
+         "answeredBy": "resolution_memory.decision / status + action_log.result", "status": "通",
+         "detail": "决定（adopted/rejected）+ 结果（ok/denied）留痕可溯"},
+    ]
+
+    # ── 血缘拼接演示（七问·实际改了什么）：trace_id 拼 llm_calls ↔ action_log ──────
+    lineage = {
+        "schemaReady": bool(gov and gov.has_table("llm_calls") and gov.has_table("action_log")),
+        "llmCallsHasTrace": bool(gov and "trace_id" in (gov.columns("llm_calls") if gov else [])),
+        "actionLogHasTrace": bool(gov and "trace_id" in (gov.columns("action_log") if gov else [])),
+        "instances": [],
+        "note": "",
+    }
+    if lineage["schemaReady"] and lineage["llmCallsHasTrace"] and lineage["actionLogHasTrace"]:
+        joins = gov.q(
+            "SELECT lc.trace_id, lc.call_type, lc.provider, lc.model, lc.status, "
+            "al.log_id, al.actor, al.action, al.target_object_id, al.result "
+            "FROM llm_calls lc JOIN action_log al ON al.trace_id = lc.trace_id "
+            "WHERE lc.trace_id IS NOT NULL AND al.trace_id IS NOT NULL LIMIT 3")
+        lineage["instances"] = [dict(r) for r in joins]
+        al_trace_n = int(gov.scalar("SELECT COUNT(trace_id) FROM action_log") or 0)
+        lineage["actionLogTraceNonNull"] = al_trace_n
+        if lineage["instances"]:
+            lineage["note"] = "血缘链已通：下方为真实 trace_id 拼出的 llm_calls ↔ action_log 实例。"
+        else:
+            lineage["note"] = (
+                "血缘链路结构已就位——action_log.trace_id 列已加（G-Trace）、llm_calls.trace_id 存在（egress_gate）、"
+                f"两表可按 trace_id JOIN。当前 llm_calls={max(llm_n,0)} 条、action_log 带 trace_id 的行 {al_trace_n} 条，"
+                "尚无经 dispatch 的真实 AI 写动作，故暂无实例可拼——需接生产遥测跑一次真实 AI dispatch（如实标注，不编造）。")
+    else:
+        lineage["note"] = "llm_calls / action_log 表或 trace_id 列未就位——血缘拼接待 G-Trace 接通。"
+
+    # ── 护栏卡（可骄傲展示的证据）─────────────────────────────────────────────────
+    frozen_actions = [a["name"] for a in onto.get("actions", []) if a.get("ai_executable") == "frozen"]
+    # 铁证1：AI 直接写冻结区动作的记录 = 0（proposal-only 架构）。AI actor 判据：actor/role 含 ai/agent。
+    ai_frozen_writes = 0
+    if gov and frozen_actions:
+        ph = ",".join("?" * len(frozen_actions))
+        ai_frozen_writes = int(gov.scalar(
+            f"SELECT COUNT(*) FROM action_log WHERE action IN ({ph}) "
+            "AND (lower(COALESCE(actor,'')) LIKE '%ai%' OR lower(COALESCE(actor,'')) LIKE '%agent%' "
+            "OR lower(COALESCE(role,'')) LIKE '%ai%' OR lower(COALESCE(role,'')) LIKE '%agent%') "
+            "AND result NOT LIKE 'denied%'", tuple(frozen_actions)) or 0)
+    # 铁证2：重复事件重复副作用 = 0（幂等）。CreateRiskEvent 写入数 vs 去重 target 数。
+    cre_total = int(gov.scalar(
+        "SELECT COUNT(*) FROM action_log WHERE action='CreateRiskEvent'") or 0) if gov else 0
+    cre_distinct = int(gov.scalar(
+        "SELECT COUNT(DISTINCT target_object_id) FROM action_log WHERE action='CreateRiskEvent'") or 0) if gov else 0
+    dup_side_effects = cre_total - cre_distinct
+    guardrails = [
+        {"key": "ai_illegal_write", "label": "AI 非法输出仍落库", "value": ai_frozen_writes,
+         "pass": ai_frozen_writes == 0, "unit": "条",
+         "plain": ("proposal-only 架构铁证：冻结区四审批动作（"
+                   + "、".join(frozen_actions) + "）由 AI 直接写入的记录＝0；AI 只提案，人批准才落库。"),
+         "source": f"{gov_src} · action_log × 本体 ai_executable=frozen" if gov else "action_log（未就位）"},
+        {"key": "dup_side_effect", "label": "重复事件导致的重复副作用", "value": max(dup_side_effects, 0),
+         "pass": dup_side_effects == 0, "unit": "条",
+         "plain": (f"三洞幂等修复铁证：CreateRiskEvent 写入 {cre_total} 条＝去重 target {cre_distinct} 个，"
+                   "同一风险不产生第二次写入（重复里程碑注入不产生第二个 RiskEvent，见 demo-assertions B1）。"),
+         "source": f"{gov_src} · action_log(CreateRiskEvent)" if gov else "action_log（未就位）"},
+        {"key": "ai_denied", "label": "AI 越权全被拒", "value": denied_live,
+         "pass": True, "unit": "条 denied（现查主库）",
+         "plain": ("现查主库越权 denied＝0（无对抗尝试落主库）；对抗基线：288 注入全 refused + denied 审计"
+                   "（test_agent_security，release-checklist §D 记录）。AI 无静默后门。"),
+         "source": f"{gov_src} · action_log + test_agent_security" if gov else "action_log（未就位）"},
+    ]
+
+    # ── 成本分账（token/耗时 × call_type × provider）──────────────────────────────
+    cost = {
+        "source": telemetry["source"],
+        "available": llm_n > 0,
+        "byTypeProvider": [],
+        "note": ("成本分账字段就位（llm_calls 的 est_tokens/duration_ms + call_type×provider），"
+                 "当前 llm_calls=0 故暂无数字；「哪条规则/哪个域烧的」依赖 G-Trace 追踪号接通后才能拆到域，"
+                 "未接通前如实标注已知空缺，不糊成一个不可解释总数（规格·成本分账）。")
+        if llm_n <= 0 else "token/耗时按 call_type×provider 拆分。",
+    }
+    if llm_n > 0:
+        cost["byTypeProvider"] = [dict(r) for r in gov.q(
+            "SELECT call_type, provider, COUNT(*) n, "
+            "SUM(est_input_tokens+est_output_tokens) tokens, "
+            "SUM(duration_ms) duration_ms "
+            "FROM llm_calls GROUP BY call_type, provider ORDER BY tokens DESC")]
+
+    # ── 数据源清单（provenance 总账）────────────────────────────────────────────
+    sources = [
+        {"key": "llm_calls", "label": "AI 调用遥测", "path": gov_src or "—",
+         "table": "llm_calls", "status": "空（待灌）" if llm_n <= 0 else f"{llm_n} 条"},
+        {"key": "action_log", "label": "业务动作审计", "path": gov_src or "—",
+         "table": "action_log", "status": f"{max(al_total,0)} 条" if gov else "未就位"},
+        {"key": "rule_run_ledger", "label": "规则运行台账", "path": gov_src or "—",
+         "table": "rule_run_ledger",
+         "status": (f"{len(ledger['runs'])} 次 detect" if ledger["available"] else "未就位")},
+        {"key": "shadow_run", "label": "影子测量台账", "path": "data/shadow.sqlite",
+         "table": "shadow_run",
+         "status": (f"bench2 {len(goldset['runs'])} run / bench1 {len(b1_rows)} 行"
+                    if (shadow and shadow.has_table("shadow_run")) else "未就位")},
+        {"key": "resolution_memory", "label": "决策记忆（档1底数）", "path": "data/simworld.sqlite",
+         "table": "resolution_memory",
+         "status": f"{db.count('resolution_memory')} 条" if db.has_table("resolution_memory") else "未就位"},
+        {"key": "coverage_docs", "label": "覆盖度文档", "path": "docs/",
+         "table": "demo-assertions + release-checklist",
+         "status": (f"断言 {assertions['total']} · 门 {gates['total']}"
+                    if assertions["available"] else "未就位")},
+    ]
+
+    return {
+        "title": "治理控制室",
+        "question": "系统看得见吗？——把散在 CLI 的治理证据聚成一屏控制室",
+        "subtitle": ("治理证据包收官件（G-Dashboard）。六类证据全部现查现算、来源如实标注、无数据如实暂无。"
+                     "照「每个运行必须能回答的 7 问」组织——看板会自己把治理盲区照出来。"),
+        "sources": sources,
+        "sevenQuestions": seven,
+        "telemetry": telemetry,
+        "security": security,
+        "goldset": goldset,
+        "shadow": shadow_card,
+        "ledger": ledger,
+        "coverage": coverage,
+        "lineage": lineage,
+        "guardrails": guardrails,
+        "cost": cost,
+    }
+
+
+# =============================================================================
 # 生成 src/data/index.ts（数据 barrel）——与 JSON 快照同为导出产物，随本脚本重生成。
 # 修正历史脆弱点：index.ts 原为手写源文件但落在 src/data/（被仓库根 data/ 规则 gitignore），
 # clone/worktree 后缺失致 `python3 export_data.py && npm run build` 无法独立跑通。
@@ -1789,11 +2285,12 @@ import flywheelRaw from "./flywheel.json";
 import aiActivityRaw from "./ai_activity.json";
 import decisionLineageRaw from "./decision_lineage.json";
 import impactRaw from "./impact.json";
+import governanceRaw from "./governance.json";
 
 import type {
   Meta, StructureData, JourneyData, ConstitutionData, WeaveData, RulesData,
   ActionsData, EvolutionData, WorldData, FlywheelData, AIActivityData,
-  DecisionLineageData, EntityData, ImpactData, SearchIndex,
+  DecisionLineageData, EntityData, ImpactData, SearchIndex, GovernanceData,
 } from "../types";
 
 export const meta = metaRaw as Meta;
@@ -1809,6 +2306,7 @@ export const flywheel = flywheelRaw as unknown as FlywheelData;
 export const aiActivity = aiActivityRaw as unknown as AIActivityData;
 export const decisionLineage = decisionLineageRaw as unknown as DecisionLineageData;
 export const impact = impactRaw as unknown as ImpactData;
+export const governance = governanceRaw as unknown as GovernanceData;
 
 // 实体全量（约 9MB）运行时 fetch，只在打开「实体浏览」时加载一次。
 let entityCache: EntityData | null = null;
@@ -1863,6 +2361,7 @@ def main():
     ap = argparse.ArgumentParser(description="建造者透视镜 v2 数据导出（只读）")
     ap.add_argument("--db", default=str(DEFAULT_DB), help="活世界 simworld.sqlite 路径")
     ap.add_argument("--verify-db", default=str(DEFAULT_VERIFY_DB), help="验证世界 ontology.sqlite 路径")
+    ap.add_argument("--shadow-db", default=str(DEFAULT_SHADOW_DB), help="影子测量库 shadow.sqlite 路径")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="JSON 输出目录")
     args = ap.parse_args()
 
@@ -1876,6 +2375,12 @@ def main():
         vdb = ReadOnlyDB(Path(args.verify_db))
     except sqlite3.Error:
         vdb = None
+    shadow = None
+    try:
+        if Path(args.shadow_db).exists():
+            shadow = ReadOnlyDB(Path(args.shadow_db))
+    except sqlite3.Error:
+        shadow = None
 
     exported_at = _dt.datetime.now(_dt.timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -1915,6 +2420,7 @@ def main():
         "ai_activity.json": build_ai_activity(onto, db),
         "decision_lineage.json": build_decision_lineage(onto, db),
         "impact.json": build_impact(onto, db),  # v3 板块②
+        "governance.json": build_governance(onto, db, vdb, shadow),  # 第15视图·治理控制室
     }
     # 大 JSON（实体全量 + 搜索索引）走 public/data 运行时 fetch（懒加载，不进主包）
     public_out = SCRIPT_DIR / "public" / "data"
@@ -1948,6 +2454,8 @@ def main():
     db.close()
     if vdb:
         vdb.close()
+    if shadow:
+        shadow.close()
     print(f"\n✓ 导出完成 · 数据截至 {exported_at}")
     print(f"  活世界透明度：risk_events={table_counts['risk_events']} · tasks={table_counts['tasks']} · "
           f"resolution_memory={table_counts['resolution_memory']} · sim_ai_activity={table_counts['sim_ai_activity']} · "

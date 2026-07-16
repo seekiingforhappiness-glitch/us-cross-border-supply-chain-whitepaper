@@ -199,6 +199,107 @@ export interface ImpactData {
   domains: ImpactDomainRef[]; types: Record<string, ImpactType>;
 }
 
+// ---- 治理控制室（第15视图 · governance.json · G-Dashboard） ----
+export interface GovSource {
+  key: string; label: string; path: string; table: string; status: string;
+}
+export interface GovSevenQ {
+  q: string; plain: string; answeredBy: string; status: string; detail: string;
+}
+export interface GovNameN { type?: string; provider?: string; status?: string; result?: string; n: number; }
+export interface GovTelemetry {
+  source: string; available: boolean; total: number;
+  byType: { type: string; n: number }[];
+  byProvider: { provider: string; n: number }[];
+  byStatus: { status: string; n: number }[];
+  degraded: number;
+  latencyMs: { p50: number | null; p95: number | null } | null;
+  tokens: { input: number; output: number };
+  tokensP?: { p50: number | null; p95: number | null };
+  note: string;
+}
+export interface GovSecurity {
+  source: string; deniedLive: number; actionLogTotal: number;
+  byResult: { result: string; n: number }[];
+  injection: { result: string; ref: string; asOf: string; note: string };
+  note: string;
+}
+export interface GovGoldsetRun { run_id: string; created_at: string; n: number; passed: number; }
+export interface GovGoldset {
+  source: string | null; available: boolean;
+  runs: GovGoldsetRun[];
+  latest: { run_id: string; n: number; passed: number; rate: number | null } | null;
+  llm: { run_id: string; n: number; passed: number; rate: number | null } | null;
+  note: string;
+}
+export interface GovSlice { key: string; n: number; consistent: number; rate: number | null; lowConfidence: boolean; }
+export interface GovShadow {
+  source: string; measured: boolean; minSliceN: number;
+  attempted: number; parsed: number;
+  overall: { n: number; consistent: number; rate: number | null } | null;
+  byRule: GovSlice[]; byLane: GovSlice[]; bySeverity: GovSlice[];
+  population: {
+    total: number; source: string;
+    byRule: { key: string; n: number }[];
+    bySeverity: { key: string; n: number }[];
+  } | null;
+  escalation: { escalatedCases: number; recall: number | null; note: string } | null;
+  note: string;
+}
+export interface GovLedgerRun { as_of: string; created_at: string; rules: number; total: number; errors: number; }
+export interface GovLedgerRule { rule_id: string; rule_version: string | null; detected_count: number; fp: string | null; status: string; }
+export interface GovLedger {
+  source: string | null; available: boolean;
+  runs: GovLedgerRun[];
+  latestByRule: GovLedgerRule[];
+  diff: {
+    asOf: string; before: string; after: string;
+    changed: { rule_id: string; before: number | null; after: number | null }[];
+    idempotent: boolean;
+  } | null;
+  note: string;
+}
+export interface GovAssertItem { id: string; text: string; checked: boolean; test: string; }
+export interface GovAssertGroup { section: string; name: string; items: GovAssertItem[]; }
+export interface GovGateItem { text: string; checked: boolean; }
+export interface GovGateGroup { gate: string; items: GovGateItem[]; }
+export interface GovCoverage {
+  source: string; asOf: string | null;
+  assertions: { available: boolean; groups: GovAssertGroup[]; total: number; checked: number };
+  gates: { available: boolean; gates: GovGateGroup[]; total: number; checked: number; lastVerified: string | null };
+  reproduce: string; note: string;
+}
+export interface GovLineageInstance {
+  trace_id: string; call_type: string; provider: string; model: string | null; status: string;
+  log_id: number; actor: string; action: string; target_object_id: string; result: string;
+}
+export interface GovLineage {
+  schemaReady: boolean; llmCallsHasTrace: boolean; actionLogHasTrace: boolean;
+  instances: GovLineageInstance[]; actionLogTraceNonNull?: number; note: string;
+}
+export interface GovGuardrail {
+  key: string; label: string; value: number; pass: boolean; unit: string; plain: string; source: string;
+}
+export interface GovCost {
+  source: string; available: boolean;
+  byTypeProvider: { call_type: string; provider: string; n: number; tokens: number; duration_ms: number }[];
+  note: string;
+}
+export interface GovernanceData {
+  title: string; question: string; subtitle: string;
+  sources: GovSource[];
+  sevenQuestions: GovSevenQ[];
+  telemetry: GovTelemetry;
+  security: GovSecurity;
+  goldset: GovGoldset;
+  shadow: GovShadow;
+  ledger: GovLedger;
+  coverage: GovCoverage;
+  lineage: GovLineage;
+  guardrails: GovGuardrail[];
+  cost: GovCost;
+}
+
 // ---- 全局搜索索引（v3 板块① · public/data/search.json 懒加载） ----
 export interface SearchItem { id: string; t: string; s: string; }
 export interface SearchIndex {

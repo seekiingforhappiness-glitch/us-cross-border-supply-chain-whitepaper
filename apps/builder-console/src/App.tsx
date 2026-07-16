@@ -17,6 +17,7 @@ import ViewAIActivity from "./views/ViewAIActivity";
 import ViewDecisionLineage from "./views/ViewDecisionLineage";
 import ViewImpact from "./views/ViewImpact";
 import ViewOntologyMap from "./views/ViewOntologyMap";
+import ViewGovernance from "./views/ViewGovernance";
 
 interface NavDef {
   id: string;
@@ -61,6 +62,14 @@ const GROUPS: { key: string; name: string; hint: string; views: NavDef[] }[] = [
     views: [
       { id: "impact", num: "13", label: "影响分析", q: "改一处牵连什么？", el: <ViewImpact /> },
       { id: "ontology-map", num: "14", label: "本体地图", q: "对象类型怎么分层？", el: <ViewOntologyMap /> },
+    ],
+  },
+  {
+    key: "governance",
+    name: "治理证据 · 控制室",
+    hint: "遥测 · 安全 · 金标 · 影子 · 台账 · 覆盖度",
+    views: [
+      { id: "governance", num: "15", label: "治理控制室", q: "系统看得见吗？", el: <ViewGovernance /> },
     ],
   },
 ];
