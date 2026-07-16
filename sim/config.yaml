@@ -233,6 +233,21 @@ enrichment:
     overdue_recent_days: 21          # AI 关注近端逾期窗：crossing_day ∈ [as_of-此, as_of] 逐日复核进活 AI 流
     horizon_guarantee_days: 2        # 末端 N 天 crossing 的应收强制未付 → 保证 07-13/07-14（含 as_of）各有新逾期
     r21_anomalies: 3                 # 付款异常纹理数（重复付款 / 金额不符 → R21，横向体检用）
+  # ── C 补全域：12 类零实例对象补灌（询价/合规预审/物流方案/基准成本/资质/预付款/预留/协调线程）──
+  # 独立命名 rng 子流（sourcing/compliance/logistics/qualification/coordination/purchase_pay，见
+  # backfill.STREAMS 追加、附在末尾）——既有 11 条子流索引不变 → seed 不变 → S1/S2/F2 逐字节零扰动。
+  # 全部派生自上面已建世界（PO/供票/准入案/船/供应商/风险任务），因果自洽、id 带 -SIM- 后缀。
+  purchase_pay:                      # 采购预付款（PO 定金/尾款 + R12 敞口）——独立于通用 payments（AP 发票结算）
+    deposit_ratio: 0.30              # 定金比例（× PO 货值）
+    overdue_grace_days: 7            # 敞口判据：已付定金 + 齐货日已过 grace 天仍无收货 → at_risk（货逾期未到，钱已出）
+  sourcing:                          # 询价-报价链（RFQ→Quote 多供应商比价）
+    rfq_count: 16                    # 生成 RFQ 数（抽部分 active SKU）
+    inflight_ratio: 0.25             # 在建（未 awarded）RFQ 占比
+  reservation:                       # 库存预留（so_line→inventory_position 待履约需求，区别于 shipment_allocation）
+    open_sample: 60                  # 额外覆盖 open 状态样本数（enum 多样性）
+    fulfilled_sample: 60             # 额外覆盖 fulfilled 状态样本数
+  coordination:                      # CL1 协调回路线程（跨角色协作快照，锚部分 sim task/risk）
+    thread_count: 28                 # 生成协调线程数
 
 output:
   sqlite_path: "data/simworld.sqlite"   # 与 data/ontology.sqlite 物理隔离

@@ -78,6 +78,38 @@ OBJECT_DDL = {
     "payments": """(payment_id TEXT PRIMARY KEY, direction TEXT, counterparty_type TEXT,
         counterparty_id TEXT, ref_type TEXT, ref_id TEXT, amount_usd REAL, due_date TEXT,
         paid_date TEXT, status TEXT, as_of_date TEXT, created_at TEXT)""",
+    # C 补全域（12 类零实例对象；列集严格对齐本体 0.11.3 / pipeline.ontology_models——驾驶舱直接读）
+    "po_lines": """(po_line_id TEXT PRIMARY KEY, po_id TEXT, sku_id TEXT, qty INTEGER,
+        unit_price_usd REAL, currency TEXT, expected_ready_date TEXT, line_status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "supplier_invoice_lines": """(supplier_invoice_line_id TEXT PRIMARY KEY,
+        supplier_invoice_id TEXT, po_line_id TEXT, qty INTEGER, unit_price_usd REAL,
+        amount_usd REAL, as_of_date TEXT, created_at TEXT)""",
+    "purchase_payments": """(payment_id TEXT PRIMARY KEY, po_id TEXT, payment_type TEXT,
+        amount_usd REAL, paid_date TEXT, exposure_status TEXT, as_of_date TEXT, created_at TEXT)""",
+    "inventory_reservations": """(reservation_id TEXT PRIMARY KEY, so_line_id TEXT,
+        inventory_position_id TEXT, qty INTEGER, status TEXT, as_of_date TEXT)""",
+    "rfqs": """(rfq_id TEXT PRIMARY KEY, sku_id TEXT, status TEXT, created_date TEXT,
+        as_of_date TEXT)""",
+    "rfq_lines": """(rfq_line_id TEXT PRIMARY KEY, rfq_id TEXT, sku_id TEXT, qty INTEGER)""",
+    "quotes": """(quote_id TEXT PRIMARY KEY, rfq_id TEXT, supplier_id TEXT, unit_price_usd REAL,
+        currency TEXT, status TEXT, as_of_date TEXT)""",
+    "compliance_findings": """(compliance_finding_id TEXT PRIMARY KEY, admission_case_id TEXT,
+        finding_title TEXT, finding_type TEXT, severity TEXT, hts_candidate TEXT, pga_agency TEXT,
+        required_document TEXT, evidence_status TEXT, recommendation TEXT)""",
+    "logistics_plans": """(logistics_plan_id TEXT PRIMARY KEY, admission_case_id TEXT,
+        plan_name TEXT, route_type TEXT, incoterm TEXT, origin_port_locode TEXT,
+        destination_port_locode TEXT, us_warehouse_region TEXT, last_mile_method TEXT,
+        estimated_transit_days INTEGER, sla_risk TEXT, operational_notes TEXT)""",
+    "expected_costs": """(expected_cost_id TEXT PRIMARY KEY, shipment_id TEXT, charge_code TEXT,
+        container_no TEXT, baseline_usd REAL, source TEXT)""",
+    "supplier_qualifications": """(qualification_id TEXT PRIMARY KEY, supplier_id TEXT,
+        cert_type TEXT, evidence_status TEXT, valid_from TEXT, valid_to TEXT, status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "coordination_threads": """(coordination_id TEXT PRIMARY KEY, task_id TEXT, risk_event_id TEXT,
+        counterparty_type TEXT, counterparty_ref TEXT, ask TEXT, state TEXT, followup_count INTEGER,
+        escalation_level INTEGER, owner TEXT, next_action_due TEXT, last_response TEXT,
+        outcome TEXT, opened_at TEXT, last_update TEXT, policy_version TEXT)""",
 }
 
 # sim 专属表：世界谱系参数 / 性格模型 / 货代-船绑定 / 自审计——不污染对象层
@@ -261,6 +293,25 @@ def _rows(world):
                                  key=lambda r: r["cost_scenario_id"])
     t["cycle_counts"] = sorted(world.get("cycle_counts", []), key=lambda r: r["cycle_count_id"])
     t["payments"] = sorted(world.get("payments", []), key=lambda r: r["payment_id"])
+    # C 补全域（enrich.py 派生填入 world[...]；确定性排序，列集对齐本体）
+    t["po_lines"] = sorted(world.get("po_lines", []), key=lambda r: r["po_line_id"])
+    t["supplier_invoice_lines"] = sorted(world.get("supplier_invoice_lines", []),
+                                         key=lambda r: r["supplier_invoice_line_id"])
+    t["purchase_payments"] = sorted(world.get("purchase_payments", []), key=lambda r: r["payment_id"])
+    t["inventory_reservations"] = sorted(world.get("inventory_reservations", []),
+                                         key=lambda r: r["reservation_id"])
+    t["rfqs"] = sorted(world.get("rfqs", []), key=lambda r: r["rfq_id"])
+    t["rfq_lines"] = sorted(world.get("rfq_lines", []), key=lambda r: r["rfq_line_id"])
+    t["quotes"] = sorted(world.get("quotes", []), key=lambda r: r["quote_id"])
+    t["compliance_findings"] = sorted(world.get("compliance_findings", []),
+                                      key=lambda r: r["compliance_finding_id"])
+    t["logistics_plans"] = sorted(world.get("logistics_plans", []),
+                                  key=lambda r: r["logistics_plan_id"])
+    t["expected_costs"] = sorted(world.get("expected_costs", []), key=lambda r: r["expected_cost_id"])
+    t["supplier_qualifications"] = sorted(world.get("supplier_qualifications", []),
+                                          key=lambda r: r["qualification_id"])
+    t["coordination_threads"] = sorted(world.get("coordination_threads", []),
+                                       key=lambda r: r["coordination_id"])
     return t
 
 

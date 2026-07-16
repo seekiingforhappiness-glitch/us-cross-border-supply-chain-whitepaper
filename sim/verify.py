@@ -314,6 +314,9 @@ def main():
     print("== 8. F2 补灌域（采购/准入/盘点/资金流——七区点亮 + 引用完整性 + 隔离 + 无未来泄漏）==")
     _check_enrichment(con, cfg, as_of, orders, invs, inv_pos, risks, sev, acts)
 
+    print("== 8b. C 补全域（12 类零实例对象——引用完整性 + 因果勾稽 + 外键补齐 + -SIM- 隔离 + 无未来泄漏）==")
+    _check_c_backfill(con, as_of)
+
     print("== 9. 真实感量化底线：20 条世界快照叙事（含异常与处置）==")
     _print_narratives(con, cfg)
 
@@ -366,12 +369,134 @@ def _check_isolation():
     n_grn = cnt("select count(*) from goods_receipts where grn_id like '%-SIM-%'")
     n_pay = cnt("select count(*) from payments where payment_id like '%-SIM-%'")
     n_adm = cnt("select count(*) from admission_cases where admission_case_id like '%-SIM-%'")
+    # C 补全域：新 12 类对象亦绝不混入真实库（抽 po_lines/purchase_payments/coordination_threads 代表）
+    n_pol = cnt("select count(*) from po_lines where po_line_id like '%-SIM-%'")
+    n_ppay = cnt("select count(*) from purchase_payments where payment_id like '%-SIM-%'")
+    n_coord = cnt("select count(*) from coordination_threads where coordination_id like '%-SIM-%'")
     c2.close()
     check("两库物理隔离：真实库 data/ontology.sqlite 无 sim 先例/风险混入",
           n_mem == 0 and n_rsk == 0, f"MEM-SIM={n_mem} RSK-SIM={n_rsk}")
     check("两库物理隔离：真实库无 sim 补灌实例（收货/付款/准入）混入",
           n_grn == 0 and n_pay == 0 and n_adm == 0,
           f"GRN-SIM={n_grn} PAY-SIM={n_pay} ADM-SIM={n_adm}")
+    check("两库物理隔离：真实库无 sim C 补全实例（po_line/预付款/协调线程）混入",
+          n_pol == 0 and n_ppay == 0 and n_coord == 0,
+          f"POL-SIM={n_pol} PPAY-SIM={n_ppay} COORD-SIM={n_coord}")
+
+
+def _check_c_backfill(con, as_of):
+    """C 补全域断言：12 类零实例对象补全后的引用完整性、因果勾稽（PO行↔头qty、供票行↔票额）、
+    历史外键补齐（收货行/成本情景不再悬空）、-SIM- 物理隔离、无未来泄漏。"""
+    def ids(t, col):
+        return {r[0] for r in con.execute(f"select {col} from {t}")}
+
+    po_ids = ids("purchase_orders", "po_id")
+    sku_ids = ids("skus", "sku_id")
+    sup_ids = ids("suppliers", "supplier_id")
+    sol_ids = ids("sales_order_lines", "so_line_id")
+    invp_ids = ids("inventory_positions", "inventory_position_id")
+    adm_ids = ids("admission_cases", "admission_case_id")
+    ship_ids = ids("shipments", "shipment_id")
+    sinv_ids = ids("supplier_invoices", "supplier_invoice_id")
+    pol_ids = ids("po_lines", "po_line_id")
+    lp_ids = ids("logistics_plans", "logistics_plan_id")
+    task_ids = ids("tasks", "task_id")
+    risk_ids = ids("risk_events", "risk_event_id")
+    rfq_ids = ids("rfqs", "rfq_id")
+
+    pol = q(con, "select * from po_lines")
+    sil = q(con, "select * from supplier_invoice_lines")
+    pp = q(con, "select * from purchase_payments")
+    rsv = q(con, "select * from inventory_reservations")
+    qu = q(con, "select * from quotes")
+    rl = q(con, "select * from rfq_lines")
+    cf = q(con, "select * from compliance_findings")
+    lp = q(con, "select * from logistics_plans")
+    ec = q(con, "select * from expected_costs")
+    sq = q(con, "select * from supplier_qualifications")
+    cth = q(con, "select * from coordination_threads")
+
+    # —— 非空（12 类全点亮）——
+    empties = [t for t in ("po_lines", "supplier_invoice_lines", "purchase_payments",
+                           "inventory_reservations", "rfqs", "rfq_lines", "quotes",
+                           "compliance_findings", "logistics_plans", "expected_costs",
+                           "supplier_qualifications", "coordination_threads")
+               if con.execute(f"select count(*) from {t}").fetchone()[0] == 0]
+    check("C 补全域 12 类对象全部非空（零实例清零）", not empties, f"仍空: {empties}")
+
+    # —— 引用完整性 ——
+    check("po_lines 引用完整（po + sku）",
+          all(r["po_id"] in po_ids and r["sku_id"] in sku_ids for r in pol))
+    check("supplier_invoice_lines 引用完整（供票 + po_line）",
+          all(r["supplier_invoice_id"] in sinv_ids and r["po_line_id"] in pol_ids for r in sil))
+    check("purchase_payments.po_id 全指向存在 PO", all(r["po_id"] in po_ids for r in pp))
+    check("inventory_reservations 引用完整（so_line + inventory_position）",
+          all(r["so_line_id"] in sol_ids and r["inventory_position_id"] in invp_ids for r in rsv))
+    check("rfq_lines/quotes 引用完整（rfq + supplier）",
+          all(r["rfq_id"] in rfq_ids for r in rl)
+          and all(r["rfq_id"] in rfq_ids and r["supplier_id"] in sup_ids for r in qu))
+    check("compliance_findings/logistics_plans.admission_case_id 全指向存在案件",
+          all(r["admission_case_id"] in adm_ids for r in cf)
+          and all(r["admission_case_id"] in adm_ids for r in lp))
+    check("expected_costs.shipment_id 全指向存在 shipment",
+          all(r["shipment_id"] in ship_ids for r in ec))
+    check("supplier_qualifications.supplier_id 全指向存在供应商",
+          all(r["supplier_id"] in sup_ids for r in sq))
+    check("coordination_threads 引用完整（task + risk）",
+          all(r["task_id"] in task_ids and r["risk_event_id"] in risk_ids for r in cth))
+
+    # —— 因果勾稽：PO 行 Σqty == PO 头 qty；供票行 Σ金额 == 供票 total ——
+    byp = {}
+    for r in pol:
+        byp[r["po_id"]] = byp.get(r["po_id"], 0) + r["qty"]
+    poqty = {r["po_id"]: r["qty"] for r in q(con, "select po_id, qty from purchase_orders")}
+    check("po_lines 逐单 Σ行qty == PO 头 qty（分行不失量）",
+          all(byp[p] == poqty[p] for p in byp))
+    byi = {}
+    for r in sil:
+        byi[r["supplier_invoice_id"]] = round(byi.get(r["supplier_invoice_id"], 0.0)
+                                              + r["amount_usd"], 2)
+    tot = {r["supplier_invoice_id"]: r["total_usd"]
+           for r in q(con, "select supplier_invoice_id, total_usd from supplier_invoices")}
+    check("supplier_invoice_lines Σ行金额 == 供票 total_usd（逐分对账）",
+          all(round(byi[k], 2) == round(tot[k], 2) for k in byi))
+
+    # —— 历史外键补齐（既有表因新对象而不再悬空——因果补全的核心价值）——
+    grl_pol = ids("goods_receipt_lines", "po_line_id")
+    check("goods_receipt_lines.po_line_id 现全指向存在 po_line（补全前悬空）", grl_pol <= pol_ids,
+          f"{len(grl_pol - pol_ids)} 悬空")
+    cs_lp = ids("cost_scenarios", "logistics_plan_id")
+    check("cost_scenarios.logistics_plan_id 现全指向存在 logistics_plan（补全前悬空）", cs_lp <= lp_ids,
+          f"{len(cs_lp - lp_ids)} 悬空")
+
+    # —— 指标真实感：exposure 分布 / 资质双态样本 / 预留与协调多态 ——
+    check("purchase_payments exposure 三态齐备（released/covered/at_risk——R12 敞口样本存在）",
+          {"released", "covered", "at_risk"} <= {r["exposure_status"] for r in pp},
+          str({r["exposure_status"] for r in pp}))
+    check("supplier_qualifications 含 expired + expiring 样本（R13 未来规则支撑）",
+          {"expired", "expiring"} <= {r["status"] for r in sq}, str({r["status"] for r in sq}))
+    check("inventory_reservations status 多态（allocated/open/fulfilled）",
+          len({r["status"] for r in rsv}) >= 3, str({r["status"] for r in rsv}))
+    check("coordination_threads state 多态（awaiting/responded/escalated/resolved）",
+          len({r["state"] for r in cth}) >= 3, str({r["state"] for r in cth}))
+
+    # —— 无未来泄漏（已发生时间戳 ≤ as_of）——
+    leak = ([r["paid_date"] for r in pp if r["paid_date"] and r["paid_date"] > as_of]
+            + [r["opened_at"] for r in cth if r["opened_at"] and r["opened_at"] > as_of]
+            + [r["created_date"] for r in q(con, "select created_date from rfqs")
+               if r["created_date"] and r["created_date"] > as_of])
+    check("C 补全域无未来泄漏（paid/opened/created ≤ as_of）", not leak, f"{len(leak)} 越界")
+
+    # —— -SIM- 隔离标识（12 类新 id 全带）——
+    id_col = {"po_lines": "po_line_id", "supplier_invoice_lines": "supplier_invoice_line_id",
+              "purchase_payments": "payment_id", "inventory_reservations": "reservation_id",
+              "rfqs": "rfq_id", "rfq_lines": "rfq_line_id", "quotes": "quote_id",
+              "compliance_findings": "compliance_finding_id", "logistics_plans": "logistics_plan_id",
+              "expected_costs": "expected_cost_id", "supplier_qualifications": "qualification_id",
+              "coordination_threads": "coordination_id"}
+    bad_sim = [t for t, k in id_col.items()
+               if con.execute(f"select count(*) from {t} where {k} not like '%-SIM-%'").fetchone()[0]]
+    check("C 补全域 12 类 id 全带 -SIM- 标识（物理隔离防混淆）", not bad_sim, f"含非SIM: {bad_sim}")
 
 
 def _check_enrichment(con, cfg, as_of, orders, invs, inv_pos, risks, sev, acts):
