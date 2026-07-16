@@ -359,3 +359,15 @@ def post_action(name: str, body: dict = Body(default={}),
 from apps.api.cockpit import build_cockpit_router                        # noqa: E402
 
 app.include_router(build_cockpit_router(get_db_path, get_ro_connection, _infer_world))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 人类决策通道（A-1，V13①）：POST /decisions/{name}——冻结区四动作的「人类专用」HTTP 通道。
+# 与 /actions（AI 面平行验证通道）物理隔离：白名单恰为 ai_executable=frozen 集，AI 面 build_tool_defs
+# 永不含它们（暴露集 ∩ frozen == ∅）。同 cockpit 注入式挂载（decisions 不反向 import main → 零循环）；
+# 复用本模块 _resolve_action_func（同一解析器）与 AS_OF（同一仿真时钟），不建平行映射/平行日期常量。
+# 启动期 fail-fast（build_decisions_router 内）：frozen 动作解析不到实现函数则拒起服务。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.decisions import build_decisions_router                    # noqa: E402
+
+app.include_router(build_decisions_router(get_db_path, _resolve_action_func, AS_OF))

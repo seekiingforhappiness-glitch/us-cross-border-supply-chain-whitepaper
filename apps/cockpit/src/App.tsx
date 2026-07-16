@@ -47,6 +47,14 @@ export default function App() {
     setActiveKey(null);
   };
 
+  // 人类决策（批准/驳回）成功后：只重取体征数据（队列随 vitals 刷新，已拍板的提案自动移出待批），
+  // 不重置导航——用户停留在待拍板队列，仅收起右栏详情。与角色切换的整屏重置区分开。
+  const refreshVitalsData = () => {
+    fetchVitals(role)
+      .then((v) => setVitals(v))
+      .catch(() => setVitalsErr(true));
+  };
+
   // 体征带数据（角色变即重取——脱敏在服务端做）；角色切换重置导航态。
   useEffect(() => {
     let cancelled = false;
@@ -104,6 +112,7 @@ export default function App() {
         subtitle: t.subtitle,
         alerts: [{ risk_event_id: t.riskId, rule_id: "", type: "", severity: "" }],
         actionHint: t.actionHint,
+        decision: t.decision, // 待拍板提案 → 影响面板动作区渲染批准/驳回（A-1）
       });
       setActiveKey(key);
     } else {
@@ -139,7 +148,16 @@ export default function App() {
         </div>
         <div className="cp-side">
           {detail ? (
-            <ImpactPanel focus={detail} role={role} onOpenObject={setCard} onClose={closeDetail} />
+            <ImpactPanel
+              focus={detail}
+              role={role}
+              onOpenObject={setCard}
+              onClose={closeDetail}
+              onActed={() => {
+                refreshVitalsData();
+                closeDetail();
+              }}
+            />
           ) : (
             <AiWorkflow role={role} onOpenObject={setCard} />
           )}

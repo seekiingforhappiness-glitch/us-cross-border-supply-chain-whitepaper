@@ -1659,6 +1659,68 @@ body {
   line-height: 1.5;
 }
 
+/* A-1（V13①）待拍板动作按钮：批准/驳回搬回驾驶舱。沿用既有语义色盘（绿=批准、红=驳回），
+   等距组块观感，无新依赖。灰态=无权（非经理）或提交中。 */
+.cp-decide {
+  margin: 2px 0 9px;
+}
+.cp-decide__row {
+  display: flex;
+  gap: 8px;
+}
+.cp-decide-btn {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-3);
+  color: var(--ink-0);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.cp-decide-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.cp-decide-btn--approve:not(:disabled) {
+  border-color: var(--sev-green-dim);
+  color: var(--sev-green);
+}
+.cp-decide-btn--approve:not(:disabled):hover {
+  background: color-mix(in srgb, var(--sev-green) 15%, var(--bg-3));
+  border-color: var(--sev-green);
+}
+.cp-decide-btn--reject:not(:disabled) {
+  border-color: var(--sev-red-dim);
+  color: var(--sev-red);
+}
+.cp-decide-btn--reject:not(:disabled):hover {
+  background: color-mix(in srgb, var(--sev-red) 15%, var(--bg-3));
+  border-color: var(--sev-red);
+}
+.cp-decide__hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.cp-decide__err {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--sev-red);
+  line-height: 1.5;
+}
+.cp-decide__basis {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
 /* ═══════════════════════════ 履约航线夜景地图（SVG 手绘零依赖） ═══════════════════════════ */
 .cp-map-wrap {
   flex: 1;

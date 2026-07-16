@@ -259,8 +259,15 @@ export function summaryLines(z: Zone): SummaryLine[] {
 }
 
 // ═══════════════════════════ 下钻队列（第二段）═══════════════════════════
+// A-1（V13①）：待拍板提案下钻时带上的"决策上下文"——影响面板动作区据此渲染【批准】【驳回】。
+// taskId 是审批目标（approve_mitigation 按 task_id 拍板）；仅待拍板区 decisionsQueue 会设置它。
+export interface PendingDecision {
+  taskId: string;
+  proposedAction: string | null;
+  amountUsd: number | string | null;
+}
 export type DrillTarget =
-  | { kind: "risk"; riskId: string; title: string; subtitle?: string; actionHint?: string }
+  | { kind: "risk"; riskId: string; title: string; subtitle?: string; actionHint?: string; decision?: PendingDecision }
   | { kind: "object"; ref: ObjectRef; title: string };
 
 export interface QueueCell {
@@ -301,8 +308,16 @@ function decisionsQueue(d: D): QueueSpec {
       key: p.task_id,
       badge: p.priority ? { text: p.priority, tone: p.priority === "P1" ? "red" : "amber" } : undefined,
       cells: [{ text: p.title }, { text: p.proposed_action ?? "—" }, { text: p.assignee_role ?? "—" }, money(p.amount_usd)],
+      // 待拍板提案下钻带 decision 上下文（taskId/动作/金额）→ 影响面板动作区渲染批准/驳回按钮（A-1）。
       drill: p.risk_event_id
-        ? { kind: "risk", riskId: p.risk_event_id, title: p.title, subtitle: "待拍板 · 提案", actionHint: p.proposed_action ?? undefined }
+        ? {
+            kind: "risk",
+            riskId: p.risk_event_id,
+            title: p.title,
+            subtitle: "待拍板 · 提案",
+            actionHint: p.proposed_action ?? undefined,
+            decision: { taskId: p.task_id, proposedAction: p.proposed_action, amountUsd: p.amount_usd },
+          }
         : { kind: "object", ref: { type: "Task", id: p.task_id }, title: p.title },
     })),
   };

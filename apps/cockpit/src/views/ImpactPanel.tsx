@@ -5,15 +5,18 @@ import {
   formatUsd,
   isMasked,
   MASK,
+  postDecision,
   traverse,
   type ObjectFields,
   type ObjectRef,
   type PanoAlert,
   type Role,
 } from "../api";
+import { actorForRole } from "../roleActors";
 import Icon from "../components/Icons";
 import { RULE_CN, RULE_TYPE_CN, SEV_CN } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
+import type { PendingDecision } from "./zoneModel";
 
 // 影响分析面板（下钻第三段"详情"，右栏滑出）——V10 方案 C 直接复用 B3 资产、解耦全景依赖。
 // 风险类队列条目（区队列/航线队列的风险条）点开 → 这里：风险摘要 → 受影响订单行（N 条/金额合计/
@@ -28,6 +31,7 @@ export interface ImpactFocus {
   alerts: PanoAlert[]; // 待呈现风险（≥1）；单条时最小 alert 仅需 risk_event_id，详情由 fetch 补全
   members?: { id: string; label: string; ref: ObjectRef | null; note?: string }[];
   actionHint?: string; // AI 建议摘要（如提案 proposed_action），进动作区占位
+  decision?: PendingDecision; // A-1：待拍板提案 → 动作区渲染真的批准/驳回按钮（走人类决策通道）
 }
 
 interface CustRow {
@@ -61,7 +65,74 @@ function parseIds(raw: unknown): string[] {
 
 const LINE_FETCH_CAP = 8; // 明细行按需拉取上限（用户点击触发，非循环，有界）
 
-export default function ImpactPanel({ focus, role, onOpenObject, onClose }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void }) {
+// A-1（V13①）待拍板动作区：把批准/驳回真的搬回驾驶舱。经理角色可点，其余角色看到灰态 + 提示。
+// 批准=approve_mitigation(decision='approved') 按方案回写并结单；驳回=decision='rejected' 退回专员改方案
+// （approve_mitigation 的 decision 枚举仅 approved/rejected）。点击走 POST /decisions/ApproveMitigation，
+// 成功→onActed（刷新队列与体征、收起详情）；失败→原样展示后端白话中文错误，不吞不美化。
+function DecisionButtons({ decision, role, onActed }: { decision: PendingDecision; role: Role; onActed?: () => void }) {
+  const [busy, setBusy] = useState<null | "approved" | "rejected">(null);
+  const [err, setErr] = useState<string | null>(null);
+  // ApproveMitigation 本体 executors=[manager]——仅经理可批/驳；ops 等角色置灰并提示。前端只做体验预判，
+  // 真正闸门在后端（无权也会 403 + 审计留痕），前端置灰不等于放松后端校验。
+  const canDecide = role === "manager";
+
+  const act = async (d: "approved" | "rejected") => {
+    if (!canDecide || busy) return;
+    setBusy(d);
+    setErr(null);
+    try {
+      await postDecision(
+        "ApproveMitigation",
+        { task_id: decision.taskId, decision: d, comment: d === "approved" ? "驾驶舱批准" : "驾驶舱驳回" },
+        role,
+        actorForRole(role),
+      );
+      onActed?.(); // 成功：刷新待批队列与体征、收起详情（该提案已拍板，自动移出待批）
+    } catch (e) {
+      setErr((e as Error).message); // 失败：后端白话中文原文（缺身份 / 无权 / 提案人不能自批 …）
+      setBusy(null);
+    }
+  };
+
+  if (!canDecide) {
+    return (
+      <div className="cp-decide">
+        <div className="cp-decide__row">
+          <button className="cp-decide-btn cp-decide-btn--approve" disabled>
+            批准
+          </button>
+          <button className="cp-decide-btn cp-decide-btn--reject" disabled>
+            驳回
+          </button>
+        </div>
+        <div className="cp-decide__hint">
+          <Icon name="lock" size={12} /> 需经理角色才能拍板（顶栏切到"老板 manager"；当前是运营 ops，只能看不能批）
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cp-decide">
+      <div className="cp-decide__row">
+        <button className="cp-decide-btn cp-decide-btn--approve" disabled={busy !== null} onClick={() => act("approved")}>
+          {busy === "approved" ? "批准中…" : "批准"}
+        </button>
+        <button className="cp-decide-btn cp-decide-btn--reject" disabled={busy !== null} onClick={() => act("rejected")}>
+          {busy === "rejected" ? "驳回中…" : "驳回"}
+        </button>
+      </div>
+      {err && (
+        <div className="cp-decide__err">
+          <b>没提交成功</b> · {err}
+        </div>
+      )}
+      <div className="cp-decide__basis">批准=按方案回写并结单；驳回=退回专员改方案。经手身份 {actorForRole(role)}（原型级，真实系统换 SSO）</div>
+    </div>
+  );
+}
+
+export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActed }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void; onActed?: () => void }) {
   const alerts = [...focus.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
   const members = focus.members ?? [];
   const [riskIdx, setRiskIdx] = useState(0);
@@ -325,7 +396,9 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose }: { fo
           </div>
         )}
 
-        {/* 动作区占位（V10-B：真实批/驳留 Streamlit 操作台，此处只指引 + AI 建议摘要） */}
+        {/* 动作区（A-1/V13①：批准/驳回搬回驾驶舱）：待拍板提案在此直接拍板（走人类决策通道，
+            留痕到审计、maker-checker 不变）；非待拍板焦点仍只给指引 + AI 建议摘要。Streamlit 操作台
+            作为兜底入口保留（复杂处置 / 关闭 / 准入仍可去那边做）。 */}
         <div className="cp-action">
           <div className="cp-action__t">
             <Icon name="stamp" size={13} /> 动作区
@@ -336,7 +409,12 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose }: { fo
               <span className="cp-action__hint-v">{focus.actionHint}</span>
             </div>
           )}
-          <div className="cp-action__note">处置动作（批准 / 驳回 / 关闭）在 Streamlit 操作台执行——驾驶舱专注"看清 + 拍板定位"，审批语义与 maker-checker 留在操作台，防单量爆炸。</div>
+          {focus.decision && <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />}
+          <div className="cp-action__note">
+            {focus.decision
+              ? "批准 / 驳回在此直接拍板（人类决策通道，实时回写并留痕）。复杂处置、关闭风险、准入审批仍可去 Streamlit 操作台。"
+              : "处置动作（批准 / 驳回 / 关闭）在 Streamlit 操作台执行——驾驶舱专注「看清 + 拍板定位」，审批语义与 maker-checker 留在操作台，防单量爆炸。"}
+          </div>
         </div>
       </div>
     </div>

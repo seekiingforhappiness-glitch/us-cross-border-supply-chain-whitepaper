@@ -42,6 +42,44 @@ async function apiGet<T>(path: string, role: Role): Promise<T> {
   return (await resp.json()) as T;
 }
 
+// ═══════════════════════════ POST /decisions/{name}（人类决策通道，A-1 / V13①）═══════════════════════════
+// 冻结区四动作（审批 ApproveMitigation / 关闭 CloseRiskEvent / 准入批 ApproveQuoteDecision /
+// 拒接 RejectOrRequestMoreInfo）的**人类专用**写通道——与 /actions（AI 面）物理隔离，AI 永远调不到。
+// 必带两个头：X-Role（鉴权，同 GET）+ X-Actor（真实决策人 id，审计留痕与 maker-checker 靠它，见
+// roleActors.ts）。返回体是 app 层动作函数结果原样（ok/object_id/side_effects/error）。
+// 非 2xx 时后端 HTTPException 的 detail 是白话中文错误原文——原样抛出，调用方展示，这层不吞不美化。
+export interface DecisionResult {
+  ok: boolean;
+  object_id: string | null;
+  side_effects: string[];
+  error: string | null;
+}
+
+export async function postDecision(
+  name: string,
+  body: Record<string, unknown>,
+  role: Role,
+  actor: string,
+): Promise<DecisionResult> {
+  const resp = await fetch(`${API_BASE_URL}/decisions/${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Role": role, "X-Actor": actor },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    // 后端 HTTPException detail 为白话中文（如"缺少 X-Actor…""角色无权…""提案人不能审批自己…"）。
+    let detail = `提交失败：HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string" && j.detail) detail = j.detail;
+    } catch {
+      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as DecisionResult;
+}
+
 // ═══════════════════════════════ /cockpit/vitals ═══════════════════════════════
 export type ZoneId =
   | "money"
