@@ -41,10 +41,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +67,43 @@ ACTION_TAXONOMY = {
     "escalate": "升级人工处理",
 }
 MIN_SLICE_N = 5  # 切片样本下限：低于此只报计数并标注"样本太小不下结论"，绝不用小样本冒充一致率
+LOW_SAMPLE_N = 30  # 置信区间"样本不足仅供参考"阈值（吸收项D）：n<30 的率虽给点估计，但明标 CI 很宽、慎用
+WILSON_Z = 1.96  # Wilson 95% 置信区间的 z 值（标准正态双侧 95% 分位，自实现无 scipy 依赖）
+
+# 退避重试与中止阈值（A4）：单案失败指数退避重试 RETRY_ATTEMPTS 次再计失败；连续
+# MAX_CONSECUTIVE_FAIL 案全失败（各自已重试尽）才判该档通道死、中止（不空转几十次 60s）。
+RETRY_ATTEMPTS = 2            # 首次失败后再重试的次数（总尝试 = 1 + RETRY_ATTEMPTS = 3）
+RETRY_BASE_DELAY = 1.5       # 指数退避基准秒：第 k 次重试前 sleep base * 2**(k-1)（测试可传 0 免真睡）
+DEFAULT_MAX_CONSECUTIVE_FAIL = 5  # 连续失败案数达此值中止该档（吸收项：从原硬编码 3 放宽到可配 5）
+
+# escalation recall（A5，Monday 吸收项C）"更保守/该转人"的 AI 动作集：escalate=转人工（最保守）、
+# accept_delay=不施加激进自动处置（维持现状）。放权视角下这两者="AI 没有擅自替人做激进决定"的一侧。
+# 说明：本集合是**草案操作化**（把"更保守"落成这两个动作），属业务语义判断，候 Daniel 确认（见报告残余风险）。
+ESCALATION_CONSERVATIVE = {"escalate", "accept_delay"}
+
+SHADOW_LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS shadow_llm_calls (
+    shadow_call_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,          -- 本影子轮次（拷回时打标，血缘可回本轮 shadow_run）
+    src_call_id INTEGER,           -- 临时副本里 llm_calls.call_id（来源行号，便于回查）
+    trace_id TEXT,
+    call_type TEXT,
+    provider TEXT,
+    model TEXT,
+    input_chars INTEGER,
+    output_chars INTEGER,
+    est_input_tokens INTEGER,
+    est_output_tokens INTEGER,
+    duration_ms INTEGER,
+    status TEXT,
+    error TEXT,
+    redactions TEXT,
+    created_at TEXT,
+    prompt_version TEXT
+)"""  # A2：= llm_calls 全列（call_id→src_call_id）+ run_id。治理留痕落旁路账本，业务库零写入。
+# 拷回时按名映射的 llm_calls 源列（缺列填 None，兼容旧副本无 prompt_version 的情形）。
+_SHADOW_LLM_SRC_COLS = ("call_id", "trace_id", "call_type", "provider", "model", "input_chars",
+                        "output_chars", "est_input_tokens", "est_output_tokens", "duration_ms",
+                        "status", "error", "redactions", "created_at", "prompt_version")
 
 SHADOW_RUN_DDL = """CREATE TABLE IF NOT EXISTS shadow_run (
     row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +139,69 @@ def _now() -> str:
 
 def _rate(n_ok: int, n: int) -> str:
     return f"{n_ok}/{n} = {n_ok / n * 100:.1f}%" if n else "N/A（无样本）"
+
+
+def wilson_ci(k: int, n: int, z: float = WILSON_Z):
+    """Wilson 95% score 置信区间（自实现，无 scipy 依赖）——比例的诚实误差棒。
+    公式（k 次成功 / n 次试验，p̂=k/n，z=1.96）：
+        denom  = 1 + z²/n
+        center = (p̂ + z²/2n) / denom
+        margin = ( z·√( (p̂(1-p̂) + z²/4n) / n ) ) / denom
+        区间 = [center-margin, center+margin]，裁剪到 [0,1]。
+    **n=0 返回 None（不输出 0%——无样本就是无样本，绝不用 0 冒充测得为 0）**（吸收项D／全局规则5）。
+    返回 (low, high)，各保留 4 位小数。"""
+    if n <= 0:
+        return None
+    p = k / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (p + z2 / (2 * n)) / denom
+    margin = (z * math.sqrt((p * (1 - p) + z2 / (4 * n)) / n)) / denom
+    low = max(0.0, center - margin)
+    high = min(1.0, center + margin)
+    return round(low, 4), round(high, 4)
+
+
+def rate_block(n_ok: int, n: int) -> dict:
+    """一致率/过题率/召回率的统一结构（A6）：n / 命中数 / 点估计 rate / Wilson 95% CI / 样本量标注。
+    n=0 → rate 与 ci 均 None（不编 0%）；n<LOW_SAMPLE_N → low_sample=True（CI 很宽，仅供参考）。"""
+    return {
+        "n": n,
+        "hits": n_ok,
+        "rate": (n_ok / n if n else None),
+        "ci": wilson_ci(n_ok, n),
+        "low_sample": (0 < n < LOW_SAMPLE_N),
+    }
+
+
+def _fmt_ci(block: dict) -> str:
+    """把率块渲染成人话：'10/16 = 62.5% [95%CI 38.6–81.5%] ⚠样本不足仅供参考'。无样本→明说。
+    兼容三种块口径：rate_block(hits)/一致率(consistent)/过题率(passed)——命中数键名不同，统一取。"""
+    n = block.get("n", 0)
+    if not n or block.get("rate") is None:
+        return "N/A（无样本，不给百分比）"
+    hits = block.get("hits", block.get("consistent", block.get("passed", 0)))
+    rate = block["rate"] * 100
+    ci = block.get("ci")
+    ci_str = f" [95%CI {ci[0] * 100:.1f}–{ci[1] * 100:.1f}%]" if ci else ""
+    low = block.get("low_sample", 0 < n < LOW_SAMPLE_N)
+    flag = " ⚠样本不足（n<30）仅供参考" if low else ""
+    return f"{hits}/{n} = {rate:.1f}%{ci_str}{flag}"
+
+
+def _call_with_backoff(fn, attempts: int = RETRY_ATTEMPTS, base_delay: float = RETRY_BASE_DELAY):
+    """指数退避重试（A4）：调用 fn()；抛异常则退避重试，最多重试 attempts 次（总尝试 1+attempts）。
+    第 k 次重试前 sleep base_delay·2^(k-1)（base_delay=0 免真睡，供测试）。全部失败则抛最后一次异常。
+    退避理由：CLI 通道抖动（偶发超时/限流）时给它喘息，避免把可恢复的瞬时失败直接计成硬失败。"""
+    last = None
+    for k in range(attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 —— 重试层不吞类型，全部原样重抛给调用方计失败
+            last = exc
+            if k < attempts and base_delay > 0:
+                time.sleep(base_delay * (2 ** k))
+    raise last
 
 
 # ─────────────────────────── LLM 单发合成（只读、不写 llm_calls）───────────────────────────
@@ -223,10 +325,15 @@ def _build_grounding(sim_ro: sqlite3.Connection, mem_row: sqlite3.Row) -> str:
 
 
 def run_bench1(sim_ro, run_id, created_at, llm_available, model, limit, timeout, verbose,
-               no_llm_reason="LLM 不可用"):
+               no_llm_reason="LLM 不可用", skip_refs=None,
+               max_consecutive_fail=DEFAULT_MAX_CONSECUTIVE_FAIL, retry_backoff=RETRY_BASE_DELAY):
     """档1 主流程。返回 (rows, summary)：
     rows = 每案 shadow_run 行（仅 LLM 跑通时才有 AI 提案行）；summary = 供报告的结构化统计。
-    无 LLM：不产 AI 行（不编造），summary 只含"可比案例清单"（分域计数，说明有 LLM 时将据此测量）。"""
+    无 LLM：不产 AI 行（不编造），summary 只含"可比案例清单"（分域计数，说明有 LLM 时将据此测量）。
+    A3 断点续跑：skip_refs 中的 case_ref（同 run_id+tier+mode 已测得真结果者）直接跳过，不重烧 LLM。
+    A4 退避重试：单案失败经 _call_with_backoff 指数退避重试；连续 max_consecutive_fail 案全失败才中止该档。
+    A5 escalation recall：records 携 decision/human_action/ai_action，供汇总算"该转人的案子 AI 也保守"的召回。"""
+    skip_refs = skip_refs or set()
     pop = _closed_memory_rows(sim_ro)
     # 可比案例清单（分规则/航线/严重度）——无论有无 LLM 都算，作为"能测多少"的诚实底数
     inv = {"total": len(pop), "by_rule": defaultdict(int), "by_lane": defaultdict(int),
@@ -241,19 +348,26 @@ def run_bench1(sim_ro, run_id, created_at, llm_available, model, limit, timeout,
     rows, records = [], []
     if not llm_available:
         return rows, {"ran": False, "reason": no_llm_reason, "inventory": inv,
-                      "attempted": 0, "parsed": 0}
+                      "attempted": 0, "parsed": 0, "skipped": 0}
 
-    subset = pop if not limit else pop[:limit]
-    n_fail = 0
+    # A3：先剔除已测（skip_refs），再对剩余待测应用 limit（resume + limit 可组合）
+    todo = [r for r in pop if r["risk_event_id"] not in skip_refs]
+    n_skipped = len(pop) - len(todo)
+    if n_skipped and verbose:
+        print(f"  [档1] 断点续跑：跳过 {n_skipped} 例已测（同 run_id 已有真结果）", file=sys.stderr)
+    subset = todo if not limit else todo[:limit]
+    n_fail, consecutive_fail = 0, 0
     for i, r in enumerate(subset, 1):
         grounding = _build_grounding(sim_ro, r)
         human = _human_action(r["decision"], r["proposal_summary"])
-        try:
-            ai_action, raw, _rep = ask_shadow_action(grounding, model, timeout)
-        except Exception as exc:  # noqa: BLE001 —— 单案失败不编造，如实记 error 行
+        try:  # A4：单案失败指数退避重试尽再计失败
+            ai_action, raw, _rep = _call_with_backoff(
+                lambda: ask_shadow_action(grounding, model, timeout), base_delay=retry_backoff)
+        except Exception as exc:  # noqa: BLE001 —— 重试尽仍失败：不编造，如实记 error 行
             n_fail += 1
+            consecutive_fail += 1
             if verbose:
-                print(f"  [档1 {i}/{len(subset)}] {r['risk_event_id']} LLM 调用失败："
+                print(f"  [档1 {i}/{len(subset)}] {r['risk_event_id']} LLM 调用失败（重试尽）："
                       f"{type(exc).__name__} {str(exc)[:80]}", file=sys.stderr)
             rows.append(dict(run_id=run_id, created_at=created_at, tier="bench1_resolution",
                              mode="llm", case_ref=r["risk_event_id"], rule_id=r["rule_id"],
@@ -261,18 +375,23 @@ def run_bench1(sim_ro, run_id, created_at, llm_available, model, limit, timeout,
                              quality_label=r["quality_label"], human_action=human,
                              ai_action=None, consistent=None,
                              ai_raw=f"[LLM 调用失败] {str(exc)[:120]}", note="llm_error"))
-            if n_fail >= 3 and n_fail == i:  # 连开局连续失败 → fail-fast，避免几十次 60s 空转
+            if consecutive_fail >= max_consecutive_fail:  # 连续 N 案全失败 → 判通道死，中止
                 if verbose:
-                    print("  [档1] 连续失败，判定 LLM 通道不可用，中止 LLM 档（如实标注）",
+                    print(f"  [档1] 连续 {consecutive_fail} 案失败（≥{max_consecutive_fail}），判定 LLM "
+                          "通道不可用，中止 LLM 档（如实标注，已测部分照落库/可 resume 续跑）",
                           file=sys.stderr)
-                return rows, {"ran": False, "reason": "LLM 调用连续失败，通道不可用",
-                              "inventory": inv, "attempted": i, "parsed": 0}
+                summary = _bench1_summary(inv, records, len(rows), n_fail, n_skipped,
+                                          ran=False,
+                                          reason=f"LLM 连续 {consecutive_fail} 案失败，通道不可用（中止）")
+                return rows, summary
             continue
+        consecutive_fail = 0  # 任一成功即清零（"连续"失败计数）
         consistent = None if ai_action is None else int(ai_action == human)
         if ai_action is not None:
             records.append({"rule_id": r["rule_id"], "lane": r["lane"] or "-",
                             "severity": r["severity"], "quality_label": r["quality_label"],
-                            "consistent": consistent})
+                            "decision": r["decision"], "human_action": human,
+                            "ai_action": ai_action, "consistent": consistent})
         if verbose:
             tag = "?" if ai_action is None else ("✓" if consistent else "✗")
             print(f"  [档1 {i}/{len(subset)}] {r['risk_event_id']} {r['rule_id']} "
@@ -284,26 +403,56 @@ def run_bench1(sim_ro, run_id, created_at, llm_available, model, limit, timeout,
                          ai_action=ai_action, consistent=consistent,
                          ai_raw=raw[:500], note="" if ai_action else "unparseable"))
 
+    return rows, _bench1_summary(inv, records, len(subset), n_fail, n_skipped, ran=True)
+
+
+def _bench1_summary(inv, records, attempted, n_fail, n_skipped, ran, reason=None):
+    """档1 汇总（A5 escalation recall + A6 Wilson CI 齐全）。records=已解析（有 ai_action）的案。"""
     parsed = records
-    summary = {"ran": True, "inventory": inv, "attempted": len(subset),
-               "parsed": len(parsed), "unparseable": len(subset) - len(parsed) - n_fail,
-               "llm_errors": n_fail,
-               "overall": _consistency(parsed),
-               "effective": _consistency([r for r in parsed if r["quality_label"] == "effective"]),
-               "by_rule": _sliced(parsed, "rule_id"),
-               "by_lane": _sliced(parsed, "lane"),
-               "by_severity": _sliced(parsed, "severity")}
-    return rows, summary
+    s = {"ran": ran, "inventory": inv, "attempted": attempted, "skipped": n_skipped,
+         "parsed": len(parsed), "unparseable": max(attempted - len(parsed) - n_fail, 0),
+         "llm_errors": n_fail,
+         "overall": _consistency(parsed),
+         "effective": _consistency([r for r in parsed if r["quality_label"] == "effective"]),
+         "by_rule": _sliced(parsed, "rule_id"),
+         "by_lane": _sliced(parsed, "lane"),
+         "by_severity": _sliced(parsed, "severity"),
+         "escalation": escalation_recall(parsed)}
+    if reason:
+        s["reason"] = reason
+    return s
 
 
 def _consistency(records):
+    """一致率块（A6：含 Wilson 95% CI + 样本量标注）。records 各含 consistent∈{0,1}。"""
     n = len(records)
     ok = sum(r["consistent"] for r in records)
-    return {"n": n, "consistent": ok, "rate": (ok / n if n else None)}
+    b = rate_block(ok, n)
+    return {"n": n, "consistent": ok, "rate": b["rate"], "ci": b["ci"], "low_sample": b["low_sample"]}
+
+
+def escalation_recall(records: list) -> dict:
+    """escalation recall（A5，Monday 吸收项C）——放权最怕漏升级，此召回率比总一致率更决定"敢不敢放权"。
+
+    白话：**该转给人的案子里，AI 也说要转人/更保守的比例。**
+    操作化（草案，候 Daniel 确认——见报告残余风险）：
+      · 参考集"该转给人/该更保守"= 人当时**升级人工（human_action=escalate）** 或 **拒绝了 AI 提案
+        （decision=rejected）** 的案例（人否掉了自动处置=这类不该让 AI 擅自行动）。
+      · AI"也保守"= ai_action ∈ {escalate, accept_delay}（转人工 / 不施加激进自动处置）。
+      · recall = |参考集 ∩ AI 保守| / |参考集|。
+    参考集为空（无此类案）→ 返回 n=0、rate/ci=None（不编 0%）。附 Wilson CI 与样本量标注。"""
+    ref = [r for r in records
+           if r.get("human_action") == "escalate" or r.get("decision") == "rejected"]
+    caught = [r for r in ref if r.get("ai_action") in ESCALATION_CONSERVATIVE]
+    b = rate_block(len(caught), len(ref))
+    return {"ref_n": len(ref), "caught": len(caught), "rate": b["rate"], "ci": b["ci"],
+            "low_sample": b["low_sample"],
+            "definition": "该转人/拒案(human=escalate 或 decision=rejected)中 AI 也保守"
+                          "(ai∈{escalate,accept_delay})的比例；草案操作化候人确认"}
 
 
 def _sliced(records, key):
-    """分域一致率（规格红线：必须分域，不能只给总数）。每片给 n + 一致数 + 率；n<MIN 标低置信。"""
+    """分域一致率（规格红线：必须分域，不能只给总数）。每片给 n + 一致数 + 率 + Wilson CI；n<MIN 标低置信。"""
     buckets = defaultdict(list)
     for r in records:
         buckets[r[key]].append(r)
@@ -323,17 +472,66 @@ def _passed(case, answer: str) -> bool:
     return not missing and not leaked
 
 
-def run_bench2(run_id, created_at, mode, real_db, cases, limit, verbose):
+def _llm_calls_max_id(con) -> int:
+    """临时副本里 llm_calls 现有最大 call_id（拷回增量的基线）；无表/无行 → 0。"""
+    try:
+        row = con.execute("SELECT COALESCE(MAX(call_id),0) FROM llm_calls").fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return 0
+
+
+def _read_llm_delta(db_path, baseline: int, run_id: str) -> list:
+    """读临时副本 llm_calls 里 call_id>baseline 的增量行（A2），映射成 shadow_llm_calls 落库行
+    （llm_calls 全列，call_id→src_call_id，+run_id）。无表/无增量 → 空列表。缺列（旧副本无
+    prompt_version）填 None。"""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        present = {r[1] for r in con.execute("PRAGMA table_info(llm_calls)")}
+        if not present:
+            return []
+        cols = [c for c in _SHADOW_LLM_SRC_COLS if c in present]
+        src = con.execute(
+            f"SELECT {','.join(cols)} FROM llm_calls WHERE call_id>? ORDER BY call_id",
+            (baseline,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    out = []
+    for r in src:
+        d = {c: (r[c] if c in r.keys() else None) for c in _SHADOW_LLM_SRC_COLS}
+        d["src_call_id"] = d.pop("call_id", None)
+        d["run_id"] = run_id
+        out.append(d)
+    return out
+
+
+def run_bench2(run_id, created_at, mode, real_db, cases, limit, verbose, skip_refs=None,
+               max_consecutive_fail=DEFAULT_MAX_CONSECUTIVE_FAIL, retry_backoff=RETRY_BASE_DELAY):
     """档2：在 real_db 的临时副本上跑评估集，逐题判分。
     mode='scripted'：确定性作答（无 LLM，必出）；mode='llm'：真 AI 过题（run_agent）。
-    返回 (rows, summary)。临时副本 → 绝不污染工作库。"""
+    返回 (rows, summary, llm_call_rows)。临时副本 → 绝不污染工作库（用后删除）。
+    A1 透传：llm 档把临时副本路径传给 run_agent(ontology_db_path=…) → MCP 子进程读同一副本（业务库连读都不碰）。
+    A2 遥测拷回：run 收尾从副本读 llm_calls 增量（call_id>基线）作 llm_call_rows 返回，由 main 落 shadow_llm_calls。
+    A3 断点续跑：skip_refs 中的 case_ref 跳过。A4 退避重试 + 连续 N 案失败中止。A6 汇总带 Wilson CI。"""
+    skip_refs = skip_refs or set()
     from agent.evaluate import scripted_answer
     from agent.tools import AgentSession
-    tmp = Path(tempfile.mkdtemp()) / "shadow_eval.sqlite"
+    tmpdir = Path(tempfile.mkdtemp())
+    tmp = tmpdir / "shadow_eval.sqlite"
     try:
         shutil.copy(real_db, tmp)
     except OSError as exc:
-        return [], {"ran": False, "reason": f"复制金标库失败：{exc}", "mode": mode}
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return [], {"ran": False, "reason": f"复制金标库失败：{exc}", "mode": mode}, []
+
+    # A2 基线：拷贝后副本里 llm_calls 现有最大 id（本轮真调用产生的增量 = id > baseline）
+    base_con = sqlite3.connect(str(tmp))
+    llm_baseline = _llm_calls_max_id(base_con)
+    base_con.close()
+
     sessions = {}
 
     def session_for(role):
@@ -341,44 +539,75 @@ def run_bench2(run_id, created_at, mode, real_db, cases, limit, verbose):
             sessions[role] = AgentSession(db_path=str(tmp), role=role)
         return sessions[role]
 
-    subset = cases if not limit else cases[:limit]
+    # A3：先剔除已测（skip_refs），再对剩余应用 limit
+    todo = [c for c in cases if c["id"] not in skip_refs]
+    n_skipped = len(cases) - len(todo)
+    if n_skipped and verbose:
+        print(f"  [档2-{mode}] 断点续跑：跳过 {n_skipped} 题已测", file=sys.stderr)
+    subset = todo if not limit else todo[:limit]
     rows, records = [], []
-    for i, case in enumerate(subset, 1):
-        role = case.get("role", "ops")
-        try:
-            if mode == "llm":
-                from agent.llm_agent import run_agent
-                answer = run_agent(case["question"], session=session_for(role), verbose=False)
-            else:
-                answer = scripted_answer(session_for(role), case)
-        except Exception as exc:  # noqa: BLE001 —— LLM 档单题失败不编造，如实记 error
-            rows.append(dict(run_id=run_id, created_at=created_at, tier="bench2_goldset",
-                             mode=mode, case_ref=case["id"], rule_id=case["type"], lane=None,
-                             severity=None, decision=None, quality_label=None, human_action=None,
-                             ai_action="", consistent=None,
-                             ai_raw=f"[调用失败] {str(exc)[:120]}", note="llm_error"))
-            if mode == "llm" and i <= 3 and len(rows) == i:  # LLM 开局连续失败 → 中止（不空转）
-                return rows, {"ran": False, "reason": "LLM 调用连续失败，通道不可用", "mode": mode}
-            continue
-        ok = _passed(case, answer)
-        records.append({"type": case["type"], "ok": ok})
-        rows.append(dict(run_id=run_id, created_at=created_at, tier="bench2_goldset", mode=mode,
-                         case_ref=case["id"], rule_id=case["type"], lane=None, severity=None,
-                         decision=None, quality_label=None, human_action=None, ai_action="",
-                         consistent=int(ok), ai_raw=(answer or "")[:500], note=""))
-        if verbose and mode == "llm":
-            print(f"  [档2-llm {i}/{len(subset)}] {case['id']} {'✓' if ok else '✗'}",
-                  file=sys.stderr)
+    aborted_reason = None
+    consecutive_fail = 0
+    try:
+        for i, case in enumerate(subset, 1):
+            role = case.get("role", "ops")
+            try:  # A4：LLM 档单题失败退避重试尽再计失败（scripted 档确定性、无需重试）
+                if mode == "llm":
+                    from agent.llm_agent import run_agent
+                    answer = _call_with_backoff(
+                        lambda: run_agent(case["question"], session=session_for(role),
+                                          verbose=False, ontology_db_path=str(tmp)),
+                        base_delay=retry_backoff)
+                else:
+                    answer = scripted_answer(session_for(role), case)
+            except Exception as exc:  # noqa: BLE001 —— 失败不编造，如实记 error
+                consecutive_fail += 1
+                rows.append(dict(run_id=run_id, created_at=created_at, tier="bench2_goldset",
+                                 mode=mode, case_ref=case["id"], rule_id=case["type"], lane=None,
+                                 severity=None, decision=None, quality_label=None, human_action=None,
+                                 ai_action="", consistent=None,
+                                 ai_raw=f"[调用失败] {str(exc)[:120]}", note="llm_error"))
+                if mode == "llm" and consecutive_fail >= max_consecutive_fail:  # 连续 N 案失败 → 中止
+                    aborted_reason = f"LLM 连续 {consecutive_fail} 案失败，通道不可用（中止）"
+                    break
+                continue
+            consecutive_fail = 0
+            ok = _passed(case, answer)
+            records.append({"type": case["type"], "ok": ok})
+            rows.append(dict(run_id=run_id, created_at=created_at, tier="bench2_goldset", mode=mode,
+                             case_ref=case["id"], rule_id=case["type"], lane=None, severity=None,
+                             decision=None, quality_label=None, human_action=None, ai_action="",
+                             consistent=int(ok), ai_raw=(answer or "")[:500], note=""))
+            if verbose and mode == "llm":
+                print(f"  [档2-llm {i}/{len(subset)}] {case['id']} {'✓' if ok else '✗'}",
+                      file=sys.stderr)
+        # A2：收尾读增量遥测（读前先关会话连接，保证副本内写入已 flush）
+        for s in sessions.values():
+            try:
+                s.con.close()
+            except Exception:  # noqa: BLE001
+                pass
+        llm_call_rows = _read_llm_delta(tmp, llm_baseline, run_id) if mode == "llm" else []
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)  # 临时副本用后删除（照旧，不留残物）
+
+    if aborted_reason:
+        return rows, {"ran": False, "reason": aborted_reason, "mode": mode,
+                      "skipped": n_skipped}, llm_call_rows
+
     n = len(records)
     n_ok = sum(r["ok"] for r in records)
     by_type = defaultdict(lambda: [0, 0])
     for r in records:
         by_type[r["type"]][0] += int(r["ok"])
         by_type[r["type"]][1] += 1
-    summary = {"ran": True, "mode": mode, "n": n, "passed": n_ok,
-               "rate": (n_ok / n if n else None),
-               "by_type": {k: {"passed": v[0], "n": v[1]} for k, v in sorted(by_type.items())}}
-    return rows, summary
+    ov = rate_block(n_ok, n)
+    summary = {"ran": True, "mode": mode, "n": n, "passed": n_ok, "skipped": n_skipped,
+               "rate": ov["rate"], "ci": ov["ci"], "low_sample": ov["low_sample"],
+               "by_type": {k: {"passed": v[0], "n": v[1], "rate": rate_block(v[0], v[1])["rate"],
+                               "ci": rate_block(v[0], v[1])["ci"]}
+                           for k, v in sorted(by_type.items())}}
+    return rows, summary, llm_call_rows
 
 
 # ─────────────────────────── 留痕 & 报告 ───────────────────────────
@@ -401,6 +630,61 @@ def persist(shadow_db: str, rows: list) -> int:
         con.close()
 
 
+def persist_shadow_llm_calls(shadow_db: str, rows: list) -> int:
+    """A2：把临时副本拷回的 llm_calls 增量落 shadow_llm_calls 旁路表（治理留痕在旁路账本，业务库零写入）。
+    表结构 = llm_calls 全列（call_id→src_call_id）+ run_id。返回落库行数。空则空操作。"""
+    if not rows:
+        return 0
+    Path(shadow_db).parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(shadow_db)
+    try:
+        con.execute(SHADOW_LLM_CALLS_DDL)
+        cols = ["run_id", "src_call_id", "trace_id", "call_type", "provider", "model",
+                "input_chars", "output_chars", "est_input_tokens", "est_output_tokens",
+                "duration_ms", "status", "error", "redactions", "created_at", "prompt_version"]
+        con.executemany(
+            f"INSERT INTO shadow_llm_calls ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+            [tuple(r.get(c) for c in cols) for r in rows])
+        con.commit()
+        return len(rows)
+    finally:
+        con.close()
+
+
+def _done_case_refs(shadow_db: str, run_id: str, tier: str, mode: str) -> set:
+    """A3 断点续跑依据：同 (run_id, tier, mode) 下**已测得真结果**的 case_ref 集合——note!='llm_error'
+    （即拿到过真 AI 回答：已解析 note='' 或不可解析 note='unparseable'）。llm_error 行不算"已测"（通道
+    死时没拿到回答），故 resume 会重试它们、跳过真答过的。库不存在/无表 → 空集（全跑）。"""
+    if not Path(shadow_db).exists():
+        return set()
+    con = sqlite3.connect(f"file:{shadow_db}?mode=ro", uri=True)
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT case_ref FROM shadow_run "
+            "WHERE run_id=? AND tier=? AND mode=? AND COALESCE(note,'')!='llm_error'",
+            (run_id, tier, mode)).fetchall()
+        return {r[0] for r in rows}
+    except sqlite3.Error:
+        return set()
+    finally:
+        con.close()
+
+
+def _purge_error_rows(shadow_db: str, run_id: str) -> int:
+    """A3 resume 前清理：删掉该 run_id 的 llm_error 陈行（它们对应的 case 本轮将重试，避免旧失败行与
+    新真结果行并存重复计数）。仅作用于旁路库 shadow.sqlite（合法写入点）。返回删除行数。"""
+    if not Path(shadow_db).exists():
+        return 0
+    con = sqlite3.connect(shadow_db)
+    try:
+        con.execute(SHADOW_RUN_DDL)
+        cur = con.execute("DELETE FROM shadow_run WHERE run_id=? AND note='llm_error'", (run_id,))
+        con.commit()
+        return cur.rowcount
+    finally:
+        con.close()
+
+
 def _print_bench1(s):
     print("\n" + "=" * 68)
     print("档1｜对 resolution_memory 历史决定（真金标，simworld）")
@@ -416,19 +700,25 @@ def _print_bench1(s):
         print("  （诚实优先：无一手实测不给一致率数字——这数要拿去做放权决策。上为可比案例底数，"
               "LLM 通道恢复后据此逐案实测。）")
         return
+    if s.get("skipped"):
+        print(f"（断点续跑：本轮跳过 {s['skipped']} 例同 run_id 已测）")
     print(f"\n实测：尝试 {s['attempted']} 例，可解析 {s['parsed']} 例"
           f"（不可解析 {s['unparseable']}，LLM 失败 {s['llm_errors']}）")
     ov, ef = s["overall"], s["effective"]
-    print(f"  ▸ 总体一致率：{_rate(ov['consistent'], ov['n'])}"
+    print(f"  ▸ 总体一致率：{_fmt_ci(ov)}"
           + ("（样本太小，不下结论）" if ov["n"] < MIN_SLICE_N else ""))
-    print(f"  ▸ 【人决定 effective 子集】一致率（AI 跟对好决定的真信号）："
-          f"{_rate(ef['consistent'], ef['n'])}"
+    print(f"  ▸ 【人决定 effective 子集】一致率（AI 跟对好决定的真信号）：{_fmt_ci(ef)}"
           + ("（样本太小，不下结论）" if ef["n"] < MIN_SLICE_N else ""))
+    esc = s.get("escalation")
+    if esc:
+        print(f"  ▸ escalation recall（该转人的案子里 AI 也保守的比例·放权关键）："
+              f"{_fmt_ci({'n': esc['ref_n'], 'hits': esc['caught'], 'rate': esc['rate'], 'ci': esc['ci'], 'low_sample': esc['low_sample']})}")
+        print(f"      定义：{esc['definition']}")
     for label, key in (("分规则", "by_rule"), ("分航线", "by_lane"), ("分严重度", "by_severity")):
         print(f"  {label}一致率：")
         for k, c in s[key].items():
             flag = "  ⚠样本太小" if c["low_confidence"] else ""
-            print(f"    - {k}: {_rate(c['consistent'], c['n'])}{flag}")
+            print(f"    - {k}: {_fmt_ci(c)}{flag}")
 
 
 def _print_bench2(s_scripted, s_llm):
@@ -436,17 +726,17 @@ def _print_bench2(s_scripted, s_llm):
     print("档2｜对确定性金标（agent.evaluate 评估集，ontology）")
     print("=" * 68)
     if s_scripted.get("ran"):
-        print(f"确定性基准（scripted，无 LLM 必出）：通过率 {_rate(s_scripted['passed'], s_scripted['n'])}")
+        print(f"确定性基准（scripted，无 LLM 必出）：通过率 {_fmt_ci(s_scripted)}")
         for k, v in s_scripted["by_type"].items():
-            print(f"    - {k}: {_rate(v['passed'], v['n'])}")
+            print(f"    - {k}: {_fmt_ci(v)}")
     else:
         print(f"确定性基准未出：{s_scripted.get('reason')}")
     if s_llm is None:
         print("\n真 AI 过题率（LLM 档）：未请求（无 --llm）。")
     elif s_llm.get("ran"):
-        print(f"\n真 AI 过题率（llm，真 AI 过金标题）：通过率 {_rate(s_llm['passed'], s_llm['n'])}")
+        print(f"\n真 AI 过题率（llm，真 AI 过金标题）：通过率 {_fmt_ci(s_llm)}")
         for k, v in s_llm["by_type"].items():
-            print(f"    - {k}: {_rate(v['passed'], v['n'])}")
+            print(f"    - {k}: {_fmt_ci(v)}")
     else:
         print(f"\n真 AI 过题率（LLM 档）未跑：{s_llm.get('reason')}（如实标注，不编造）。")
 
@@ -455,17 +745,26 @@ def main():
     ap = argparse.ArgumentParser(description="G-Shadow 影子测量台（纯只读，不改任何线上 AI 行为）")
     ap.add_argument("--llm", action="store_true",
                     help="请求 LLM 档（档1 影子提案 + 档2 真 AI 过题）；LLM 不可用则优雅降级如实标注")
+    ap.add_argument("--tier", choices=["bench1", "bench2", "both"], default="both",
+                    help="跑哪档（A3）：bench1=对历史决定 / bench2=对确定性金标 / both=两档（默认）")
+    ap.add_argument("--resume", metavar="RUN_ID", default=None,
+                    help="断点续跑（A3）：沿用旧 run_id 续写，同 run_id+tier+mode 已测得真结果的 case 跳过")
     ap.add_argument("--limit", type=int, default=None,
                     help="LLM 档每档最多跑 N 案（控制耗时；默认全跑）。不影响确定性基准与可比案例清单")
     ap.add_argument("--timeout", type=int, default=90, help="单次 LLM 调用超时秒")
+    ap.add_argument("--max-fail", type=int, default=DEFAULT_MAX_CONSECUTIVE_FAIL,
+                    help=f"连续失败几案判通道死中止该档（A4，默认 {DEFAULT_MAX_CONSECUTIVE_FAIL}）")
     ap.add_argument("--real-db", default=REAL_DB)
     ap.add_argument("--sim-db", default=SIM_DB)
     ap.add_argument("--shadow-db", default=SHADOW_DB)
     ap.add_argument("--quiet", action="store_true", help="不打印逐案进度")
     args = ap.parse_args()
     verbose = not args.quiet
+    run_bench2_enabled = args.tier in ("bench2", "both")
+    run_bench1_enabled = args.tier in ("bench1", "both")
 
-    run_id = "SHADOW-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # A3：--resume 沿用旧 run_id；否则生成新号
+    run_id = args.resume or ("SHADOW-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
     created_at = _now()
     model = _llm_model()
 
@@ -474,56 +773,78 @@ def main():
     print("这是**影子测量**：AI 只生成建议供比对，不改变任何线上 AI 行为、不产生 Task/提案/审批，")
     print("落痕只进独立旁路库 shadow_run（data/shadow.sqlite），业务库全程只读。")
     print("=" * 68)
-    print(f"run_id={run_id}  model={model}  --llm={'on' if args.llm else 'off'}"
+    print(f"run_id={run_id}{'（续跑）' if args.resume else ''}  model={model}  "
+          f"--tier={args.tier}  --llm={'on' if args.llm else 'off'}"
           + (f"  --limit={args.limit}" if args.limit else ""))
+
+    # A3 resume：清理该 run_id 的 llm_error 陈行（本轮将重试它们，避免旧失败行与新真结果并存重复计数）
+    if args.resume:
+        purged = _purge_error_rows(args.shadow_db, run_id)
+        if purged:
+            print(f"续跑清理：删除 {purged} 条旧 llm_error 行（对应 case 本轮重试）")
 
     # LLM 可用性：仅当 --llm 时真探测一次（缺省确定性档不触发任何出境）
     llm_available, llm_reason = (False, "未请求 --llm")
     if args.llm:
-        print("\n探测 LLM 通道（本账号 claude 订阅，单发合成）…")
+        print("\n探测 LLM 通道（本账号 claude 订阅，MCP 多轮真调用）…")
         llm_available, llm_reason = probe_llm(model, timeout=min(args.timeout, 60))
         print(f"  LLM 可用：{llm_available}" + (f"（{llm_reason}）" if not llm_available else ""))
 
-    all_rows = []
+    all_rows, all_llm_calls = [], []
 
-    # 档2 确定性基准（永远跑，"确定性档必出"）
-    cases = yaml.safe_load(open("agent/eval_cases.yaml", encoding="utf-8"))
-    b2_rows, b2_scripted = run_bench2(run_id, created_at, "scripted", args.real_db, cases,
-                                      None, verbose)
-    all_rows += b2_rows
-    # 档2 LLM（仅 --llm 且可用）
-    b2_llm = None
-    if args.llm and llm_available:
-        print("\n档2 LLM：真 AI 过金标题…")
-        b2l_rows, b2_llm = run_bench2(run_id, created_at, "llm", args.real_db, cases,
-                                      args.limit, verbose)
-        all_rows += b2l_rows
-    elif args.llm:
-        b2_llm = {"ran": False, "reason": f"LLM 不可用：{llm_reason}", "mode": "llm"}
-
-    # 档1 对 resolution_memory
-    no_llm_reason = (f"LLM 不可用：{llm_reason}" if args.llm else "未请求 --llm（缺省只出确定性档）")
-    sim_ro = _ro(args.sim_db)
-    try:
+    # 档2（对确定性金标）——scripted 常驻必出 + LLM 档（A1 透传副本，A2 遥测拷回）
+    b2_scripted, b2_llm = {"ran": False, "reason": "未选 bench2（--tier）"}, None
+    if run_bench2_enabled:
+        cases = yaml.safe_load(open("agent/eval_cases.yaml", encoding="utf-8"))
+        sc_skip = _done_case_refs(args.shadow_db, run_id, "bench2_goldset", "scripted")
+        b2_rows, b2_scripted, _ = run_bench2(run_id, created_at, "scripted", args.real_db, cases,
+                                             None, verbose, skip_refs=sc_skip,
+                                             max_consecutive_fail=args.max_fail)
+        all_rows += b2_rows
         if args.llm and llm_available:
-            print("\n档1：影子 AI 逐案产建议 vs 人历史决定…")
-        b1_rows, b1_sum = run_bench1(sim_ro, run_id, created_at, args.llm and llm_available,
-                                     model, args.limit, args.timeout, verbose,
-                                     no_llm_reason=no_llm_reason)
-        all_rows += b1_rows
-    finally:
-        sim_ro.close()
+            print("\n档2 LLM：真 AI 过金标题（临时副本透传 → MCP 子进程读副本，业务库连读都不碰）…")
+            llm_skip = _done_case_refs(args.shadow_db, run_id, "bench2_goldset", "llm")
+            b2l_rows, b2_llm, b2l_calls = run_bench2(run_id, created_at, "llm", args.real_db, cases,
+                                                     args.limit, verbose, skip_refs=llm_skip,
+                                                     max_consecutive_fail=args.max_fail)
+            all_rows += b2l_rows
+            all_llm_calls += b2l_calls
+        elif args.llm:
+            b2_llm = {"ran": False, "reason": f"LLM 不可用：{llm_reason}", "mode": "llm"}
 
-    # 落痕（唯一写入点）
+    # 档1（对 resolution_memory 历史决定）
+    b1_sum = {"ran": False, "reason": "未选 bench1（--tier）", "inventory": None}
+    if run_bench1_enabled:
+        no_llm_reason = (f"LLM 不可用：{llm_reason}" if args.llm else "未请求 --llm（缺省只出确定性档）")
+        b1_skip = _done_case_refs(args.shadow_db, run_id, "bench1_resolution", "llm")
+        sim_ro = _ro(args.sim_db)
+        try:
+            if args.llm and llm_available:
+                print("\n档1：影子 AI 逐案产建议 vs 人历史决定…")
+            b1_rows, b1_sum = run_bench1(sim_ro, run_id, created_at, args.llm and llm_available,
+                                         model, args.limit, args.timeout, verbose,
+                                         no_llm_reason=no_llm_reason, skip_refs=b1_skip,
+                                         max_consecutive_fail=args.max_fail)
+            all_rows += b1_rows
+        finally:
+            sim_ro.close()
+
+    # 落痕（唯一写入点）：shadow_run + shadow_llm_calls（A2 遥测旁路账本）
     n_persisted = persist(args.shadow_db, all_rows)
+    n_llm_calls = persist_shadow_llm_calls(args.shadow_db, all_llm_calls)
 
     # ── 报告 ──
-    _print_bench2(b2_scripted, b2_llm)
-    _print_bench1(b1_sum)
+    if run_bench2_enabled:
+        _print_bench2(b2_scripted, b2_llm)
+    if run_bench1_enabled:
+        _print_bench1(b1_sum)
     print("\n" + "=" * 68)
     print(f"留痕：shadow_run 落 {args.shadow_db}，本轮 run_id={run_id} 写入 {n_persisted} 行"
           f"（独立旁路库，未碰业务库 / 真值 md5 / ontology_lint）。")
-    print("提醒：本测量不改任何线上 AI 行为，是影子测量；一致率数字全部一手实测，"
+    if n_llm_calls:
+        print(f"      shadow_llm_calls 拷回 {n_llm_calls} 行真调用遥测（A2：从临时副本增量拷回，"
+              "业务库零写入）。")
+    print("提醒：本测量不改任何线上 AI 行为，是影子测量；一致率/召回率数字全部一手实测，附 Wilson 95% CI，"
           "LLM 不可用/样本不足处已如实标注，未编造任何数字。")
     print("=" * 68)
 

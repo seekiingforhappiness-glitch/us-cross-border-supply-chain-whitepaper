@@ -40,6 +40,7 @@ ONTOLOGY_JSON = REPO_ROOT / "ontology" / "control-tower-ontology.json"
 DEFAULT_DB = REPO_ROOT / "data" / "simworld.sqlite"          # 活世界（主源）
 DEFAULT_VERIFY_DB = REPO_ROOT / "data" / "ontology.sqlite"   # 验证世界（对照）
 DEFAULT_SHADOW_DB = REPO_ROOT / "data" / "shadow.sqlite"     # 影子测量旁路库（G-Shadow 产物）
+GATING_REPORT_JSON = REPO_ROOT / "data" / "gating_report.json"  # 放权门禁报告（波1·C，agent.gating 产物）
 PLAN_MD = REPO_ROOT / "docs" / "control-tower-plan-v0.2.md"
 DEMO_ASSERTIONS_MD = REPO_ROOT / "docs" / "demo-assertions.md"    # 需求覆盖度卡源①
 RELEASE_CHECKLIST_MD = REPO_ROOT / "docs" / "release-checklist.md"  # 需求覆盖度卡源②
@@ -1871,6 +1872,35 @@ def _parse_release_gates(md_path: Path) -> dict:
             "lastVerified": last_verified}
 
 
+def build_gating_card(report_path: Path = GATING_REPORT_JSON) -> dict:
+    """放权阶梯卡（波1·C）：读 agent.gating 产出的 data/gating_report.json（display-only 报告）。
+    报告缺失（未跑 `python3 -m agent.gating`）→ 如实空态，绝不编档位。只读文件、零推断。"""
+    if not report_path.exists():
+        return {"available": False, "source": "data/gating_report.json（未就位）",
+                "note": "放权报告未就位——需先跑 `python3 -m agent.gating`（读 shadow.sqlite + llm_calls "
+                        "算各域放权档位）。display-only：只展示档位，绝不改任何工具授权（V15 保护条款）。",
+                "domains": [], "config": None, "summary": None, "telemetry": None}
+    try:
+        rep = json.loads(report_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as exc:
+        return {"available": False, "source": "data/gating_report.json（读取失败）",
+                "note": f"放权报告读取失败：{exc}", "domains": [], "config": None,
+                "summary": None, "telemetry": None}
+    return {
+        "available": bool(rep.get("domains")),
+        "source": "data/gating_report.json · agent.gating（display-only）",
+        "generatedAt": rep.get("generated_at"),
+        "config": rep.get("config"),
+        "sources": rep.get("sources"),
+        "domains": rep.get("domains", []),
+        "summary": rep.get("summary"),
+        "telemetry": rep.get("telemetry"),
+        "honestNote": rep.get("honest_note"),
+        "note": ("放权门禁引擎 display-only：读影子证据 + 遥测算各域当前放权档位 + 离下一档差什么，"
+                 "绝不改任何工具授权（V15 保护条款）。阈值为草案默认值，候 Daniel 正式裁决。"),
+    }
+
+
 def build_governance(onto: dict, db: ReadOnlyDB, vdb: "ReadOnlyDB | None",
                      shadow: "ReadOnlyDB | None") -> dict:
     # 治理遥测三表（llm_calls/action_log/rule_run_ledger）落在验证世界库 ontology.sqlite。
@@ -2121,8 +2151,9 @@ def build_governance(onto: dict, db: ReadOnlyDB, vdb: "ReadOnlyDB | None",
          "answeredBy": "action_log.actor / role", "status": "通",
          "detail": f"action_log {max(al_total,0)} 行均带 actor+role（现查：engine/seed_demo_ops）"},
         {"q": "用哪版 AI-指令-模型", "plain": "prompt 版本 + 模型",
-         "answeredBy": "llm_calls.model / provider（+ prompt_version 待 G-Trace）", "status": "待灌",
-         "detail": "llm_calls 有 model/provider 列，当前 0 条；prompt_version 依赖 G-Trace 增补"},
+         "answeredBy": "llm_calls.model / provider / prompt_version", "status": "结构通·待数据",
+         "detail": "llm_calls 有 model/provider/prompt_version 列（波1·B prompt 版本机：改 SYSTEM_PROMPT "
+                   "必换号，每次完成型调用落版本号）；旧库自愈式 ALTER 补列，真实 AI 调用写入即有数据"},
         {"q": "当时能看到哪些数据", "plain": "grounding 快照",
          "answeredBy": "shadow_bench grounding（脱敏简报）", "status": "通",
          "detail": "影子台按检测时点脱敏简报做 grounding，剔除后验字段（见 shadow_bench._build_grounding）"},
@@ -2255,6 +2286,7 @@ def build_governance(onto: dict, db: ReadOnlyDB, vdb: "ReadOnlyDB | None",
         "security": security,
         "goldset": goldset,
         "shadow": shadow_card,
+        "gating": build_gating_card(),  # 波1·C：放权阶梯（各域档位徽章 + 差距白话 + 空态如实）
         "ledger": ledger,
         "coverage": coverage,
         "lineage": lineage,

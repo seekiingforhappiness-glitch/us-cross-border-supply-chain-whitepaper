@@ -29,9 +29,17 @@ function SourceTag({ src }: { src: string | null }) {
   return <span className="gov-src mono">源 · {src}</span>;
 }
 
+// 放权阶梯档位 → 色调（复用既有 tag 色）：影子=中性紫、建议=琥珀、审核=青、自动=绿。
+const TIER_TONE: Record<string, string> = {
+  shadow: "violet", suggest: "amber", approve: "cyan", auto: "green",
+};
+const TIER_NAME: Record<string, string> = {
+  shadow: "影子", suggest: "建议", approve: "审核", auto: "自动",
+};
+
 export default function ViewGovernance() {
   const g = governance;
-  const { telemetry: t, security: sec, goldset, shadow: sh, ledger, coverage, lineage, cost } = g;
+  const { telemetry: t, security: sec, goldset, shadow: sh, gating, ledger, coverage, lineage, cost } = g;
 
   return (
     <div className="gov">
@@ -272,6 +280,89 @@ export default function ViewGovernance() {
             </div>
           )}
           <p className="gov-note">{sh.note}</p>
+        </div>
+      </section>
+
+      {/* 卡④½：放权阶梯（波1·C · display-only）——各域当前该在放权阶梯哪一档 */}
+      <section className="panel gov-card">
+        <div className="panel-head">
+          <span className="panel-title">④½ 放权阶梯 · 各域当前档位（display-only）</span>
+          <SourceTag src={gating.source} />
+        </div>
+        <div className="gov-card-body">
+          {/* 阶梯图例 + 阈值版本（草案候人裁决） */}
+          {gating.config && (
+            <div className="gov-ladder" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 10 }}>
+              {gating.config.ladder.map((L, i) => (
+                <span key={L.tier} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span className={`tag ${TIER_TONE[L.tier] ?? "violet"}`} title={L.plain}>{L.name}</span>
+                  {i < gating.config!.ladder.length - 1 && <span className="muted">→</span>}
+                </span>
+              ))}
+              <span className="mono muted" style={{ marginLeft: "auto", fontSize: 10 }}>
+                阈值 {gating.config.version} · 草案候 Daniel 裁决
+              </span>
+            </div>
+          )}
+          {/* escalation recall 白话（放权关键指标，必解释术语） */}
+          <div className="gov-note" style={{ marginBottom: 8 }}>
+            白话：<b>放权阶梯</b>＝系统按各域 AI 实测可靠度，算它现在该被信任到哪一档（只展示、绝不自动改权限，V15 保护条款）。
+            <b>escalation recall</b>＝该转给人的案子里，AI 也说要转人/更保守的比例——放权最怕漏升级，这个比一致率更决定"敢不敢放权"。
+          </div>
+          {gating.available && gating.summary ? (
+            <>
+              <div className="gov-cov-summary" style={{ marginBottom: 10 }}>
+                {Object.entries(gating.summary.by_tier).map(([tier, n]) => (
+                  <div className="stat" key={tier}>
+                    <span className={`stat-num ${tier === "shadow" ? "" : "cyan"}`}>{n}</span>
+                    <span className="stat-label">{TIER_NAME[tier] ?? tier} 档域数</span>
+                  </div>
+                ))}
+                <div className="stat">
+                  <span className="stat-num">{gating.summary.domain_count}</span>
+                  <span className="stat-label">域总数</span>
+                </div>
+              </div>
+              {["resolution", "goldset"].map((grp) => {
+                const rows = gating.domains.filter((d) => d.group === grp);
+                if (!rows.length) return null;
+                return (
+                  <div className="gov-slice-group" key={grp}>
+                    <span className="gov-slice-lbl mono">{grp === "resolution" ? "档1 · 分规则（对历史决定）" : "档2 · 分题类（真 AI 过金标题）"}</span>
+                    <div className="gov-gate-rows" style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                      {rows.map((d) => (
+                        <div className="gov-gate-row" key={`${d.group}-${d.domain}`}
+                          style={{ display: "flex", flexDirection: "column", gap: 2, padding: "6px 8px", borderRadius: 6, background: "rgba(127,127,127,0.06)" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span className={`tag ${TIER_TONE[d.tier] ?? "violet"}`}>{TIER_NAME[d.tier] ?? d.tier}</span>
+                            <span className="mono">{d.domain}</span>
+                            <span className="muted">{d.plain}</span>
+                            <span className="num" style={{ marginLeft: "auto" }}>
+                              {d.rate == null ? "—" : pct(d.rate)}
+                              {d.ci && <span className="muted mono" style={{ fontSize: 10 }}> [{pct(d.ci[0])}–{pct(d.ci[1])}]</span>}
+                              <span className="muted mono" style={{ fontSize: 10 }}> n={d.n}{d.low_sample ? " ⚠样本不足" : ""}</span>
+                            </span>
+                          </div>
+                          {d.escalation && d.escalation.ref_n > 0 && (
+                            <div className="mono muted" style={{ fontSize: 10 }}>
+                              escalation recall {d.escalation.rate == null ? "—" : pct(d.escalation.rate)} ({d.escalation.caught}/{d.escalation.ref_n})
+                            </div>
+                          )}
+                          <div className="muted" style={{ fontSize: 11 }}>
+                            离下一档（{TIER_NAME[d.next_tier] ?? d.next_tier}）差：{d.gaps.join("；")}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {gating.summary.note && <p className="gov-note">{gating.summary.note}</p>}
+            </>
+          ) : (
+            <Empty label="放权报告未就位 · 需先跑 python3 -m agent.gating" />
+          )}
+          <p className="gov-note">{gating.honestNote ?? gating.note}</p>
         </div>
       </section>
 

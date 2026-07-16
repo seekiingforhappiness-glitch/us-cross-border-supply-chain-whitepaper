@@ -79,6 +79,12 @@ def _safe_log(db, **kw):
         print(f"⚠️ [llm-log] llm_calls 落库失败：{exc}（本次调用未入账）", file=sys.stderr)
         return None
 
+# 波1·B prompt 版本机（深研 2-1 落地）：SYSTEM_PROMPT 与其版本号 PROMPT_VERSION **同处声明**——
+#   铁律：**改动下方任一提示文本（SYSTEM_PROMPT 或 _MCP_PROPOSAL_DISCIPLINE）必须递增 PROMPT_VERSION**
+#   （p1→p2…），使 llm_calls.prompt_version 能诚实回答"这次回答用的哪版 AI-指令"。每次经本模块的完成型
+#   调用（openai/anthropic/claude_cli 单发/claude_cli_mcp 多轮）落该版本号；不涉系统提示的逐工具遥测
+#   （mcp_server 的 mcp_tool 行）留 NULL。指纹漂移即拒（深研 2-6）属波2（审批绑指纹一族），本波只记不拦。
+PROMPT_VERSION = "p1"
 SYSTEM_PROMPT = """你是跨境供应链控制塔的 AI 协同助手，服务物流运营人员。铁律：
 
 1. 只能陈述工具返回的数据，每个关键事实附对象 ID（如 RSK-0044 / SHP-2026-0099）
@@ -127,14 +133,15 @@ def _run_openai(question, session, max_turns, verbose):
             _safe_log(session.con, call_type="briefing", provider="openai", model=model,
                       status="error", input_chars=input_chars,
                       duration_ms=int((time.time() - t0) * 1000),
-                      error=str(exc)[:300], redactions=pending, trace_id=turn_trace)
+                      error=str(exc)[:300], redactions=pending, trace_id=turn_trace,
+                      prompt_version=PROMPT_VERSION)
             raise
         tool_calls = [item for item in resp.output if item.type == "function_call"]
         _safe_log(session.con, call_type="briefing", provider="openai", model=model,
                   status="ok", input_chars=input_chars,
                   output_chars=len(resp.output_text or ""),
                   duration_ms=int((time.time() - t0) * 1000), redactions=pending,
-                  trace_id=turn_trace)
+                  trace_id=turn_trace, prompt_version=PROMPT_VERSION)
         pending = empty_report()  # 本轮摘除已入账；下一行记录下一轮新过闸的内容
         if not tool_calls:
             return resp.output_text
@@ -183,14 +190,15 @@ def _run_anthropic(question, session, max_turns, verbose):
             _safe_log(session.con, call_type="briefing", provider="anthropic", model=model,
                       status="error", input_chars=input_chars,
                       duration_ms=int((time.time() - t0) * 1000),
-                      error=str(exc)[:300], redactions=pending, trace_id=turn_trace)
+                      error=str(exc)[:300], redactions=pending, trace_id=turn_trace,
+                      prompt_version=PROMPT_VERSION)
             raise
         tool_uses = [b for b in resp.content if b.type == "tool_use"]
         _safe_log(session.con, call_type="briefing", provider="anthropic", model=model,
                   status="ok", input_chars=input_chars,
                   output_chars=sum(len(b.text) for b in resp.content if b.type == "text"),
                   duration_ms=int((time.time() - t0) * 1000), redactions=pending,
-                  trace_id=turn_trace)
+                  trace_id=turn_trace, prompt_version=PROMPT_VERSION)
         pending = empty_report()  # 本轮摘除已入账；下一行记录下一轮新过闸的内容
         if not tool_uses:
             return "".join(b.text for b in resp.content if b.type == "text")
@@ -245,16 +253,18 @@ def _invoke_cli(prompt, model, timeout):
 
 
 def _claude_cli_call(prompt, model, timeout=90, db=DEFAULT_DB, call_type="briefing",
-                     trace_id=None, degrade_note=None):
+                     trace_id=None, degrade_note=None, prompt_version=None):
     """claude_cli 出境统一闸口：①白名单摘除 ②降级模式检查（连续失败 fail-fast，冷却后放行探测）
     ③真实调用 ④llm_calls 落行（ok/error/degraded 全路径必写）。degrade_note 非空表示
-    上游已做预算降级——调用成功也记 status=degraded（超预算可追溯）。"""
+    上游已做预算降级——调用成功也记 status=degraded（超预算可追溯）。
+    波1·B：prompt_version 透传落 llm_calls（调用方 answer_over_context 传 PROMPT_VERSION，全路径同号）。"""
     clean, report = sanitize_for_egress(prompt)
     if not CLAUDE_CLI_TRACKER.should_attempt():
         msg = (f"claude_cli 降级模式生效（连续失败 {CLAUDE_CLI_TRACKER.failures} 次 ≥ 阈值 "
                f"{CLAUDE_CLI_TRACKER.threshold}，冷却未满）：本次未出境，回退确定性简报")
         _safe_log(db, call_type=call_type, provider="claude_cli", model=model, status="degraded",
-                  input_chars=len(clean), error=msg, redactions=report, trace_id=trace_id)
+                  input_chars=len(clean), error=msg, redactions=report, trace_id=trace_id,
+                  prompt_version=prompt_version)
         raise LLMDegradedError(msg)
     t0 = time.time()
     try:
@@ -263,14 +273,16 @@ def _claude_cli_call(prompt, model, timeout=90, db=DEFAULT_DB, call_type="briefi
         CLAUDE_CLI_TRACKER.record_failure()
         _safe_log(db, call_type=call_type, provider="claude_cli", model=model, status="error",
                   input_chars=len(clean), duration_ms=int((time.time() - t0) * 1000),
-                  error=str(exc)[:300], redactions=report, trace_id=trace_id)
+                  error=str(exc)[:300], redactions=report, trace_id=trace_id,
+                  prompt_version=prompt_version)
         raise
     CLAUDE_CLI_TRACKER.record_success()
     _safe_log(db, call_type=call_type, provider="claude_cli", model=model,
               status="degraded" if degrade_note else "ok",
               input_chars=len(clean), output_chars=len(out),
               duration_ms=int((time.time() - t0) * 1000),
-              error=degrade_note, redactions=report, trace_id=trace_id)
+              error=degrade_note, redactions=report, trace_id=trace_id,
+              prompt_version=prompt_version)
     return out
 
 
@@ -293,7 +305,8 @@ def answer_over_context(question, context_text, role=None, model=None, timeout=9
         print(f"  [claude_cli] model={model}，上下文 {len(context_text or '')} 字"
               + ("（超预算已降级为结构化字段摘要）" if degrade_note else ""))
     return _claude_cli_call(prompt, model, timeout, db=db, call_type=call_type,
-                            trace_id=trace_id, degrade_note=degrade_note).strip()
+                            trace_id=trace_id, degrade_note=degrade_note,
+                            prompt_version=PROMPT_VERSION).strip()
 
 
 # 按 focus 类型选用的只读工具（经 session.dispatch，权限/脱敏与 UI 同规）
@@ -354,10 +367,17 @@ def _mcp_allowed_tool_args():
     return ",".join(f"mcp__{SERVER_NAME}__{n}" for n in names)
 
 
-def _invoke_cli_mcp(prompt, role, model, max_turns, timeout, verbose):
+def _invoke_cli_mcp(prompt, role, model, max_turns, timeout, verbose, ontology_db_path=None):
     """真实出境点（MCP 多轮，测试可替换本函数模拟）：claude -p 经 --mcp-config 起本体只读 MCP server，
     模型多轮自调只读工具后作答。失败一律抛 RuntimeError 族（可被 run_agent 回退链 + 降级计数接住）。
-    role 经环境变量 ONTOLOGY_MCP_ROLE 传给 server 决定 tools/list 过滤（claude 把父环境透传给 stdio 子进程）。"""
+    role 经环境变量 ONTOLOGY_MCP_ROLE 传给 server 决定 tools/list 过滤（claude 把父环境透传给 stdio 子进程）。
+
+    波1·A1 临时副本透传：ontology_db_path 非空时，把它经环境变量 **ONTOLOGY_DB_PATH** 注入子进程——
+    claude CLI 拉起 `python3 -m agent.mcp_server` 时把自身 env 透传给该 stdio 子进程，mcp_server 读
+    ONTOLOGY_DB_PATH 决定连哪个库（见 agent/mcp_server.py 的 DB_PATH = os.environ.get("ONTOLOGY_DB_PATH", …)）。
+    **仅当调用方显式给了 db 路径时才注入**（影子测量台给临时副本路径）——正常驾驶舱问答不传 ⇒ 不注入 ⇒
+    子进程仍连主库（现状不变，接口向后兼容）。这样"影子跑全程业务库只读"才名副其实（连读都走临时副本）。
+    注：env 变量名是 ONTOLOGY_DB_PATH（mcp_server 实读键），不是 spec 行文里的 ONTOLOGY_DB——以代码实读为准。"""
     import shutil
     if not shutil.which("claude"):
         raise RuntimeError("未找到 claude CLI（本账号订阅渠道）。安装并登录 Claude Code 后重试，"
@@ -370,8 +390,11 @@ def _invoke_cli_mcp(prompt, role, model, max_turns, timeout, verbose):
            "--max-turns", str(max(int(max_turns), 12)),  # 多轮工具往返留足余量（PoC 实测 num_turns≈7）
            "--permission-mode", "bypassPermissions"]     # 工具均只读，可安全放行（PoC 报告 §4 备注）
     env = {**os.environ, "ONTOLOGY_MCP_ROLE": role or "ops"}
+    if ontology_db_path:  # A1：显式副本路径 → 注入 MCP 子进程读库（缺省不注入=连主库，现状不变）
+        env["ONTOLOGY_DB_PATH"] = str(ontology_db_path)
     if verbose:
-        print(f"  [claude_cli_mcp] role={role} model={model} 经 MCP 只读工具多轮真调用…", file=sys.stderr)
+        print(f"  [claude_cli_mcp] role={role} model={model} 经 MCP 只读工具多轮真调用"
+              + (f"（子进程读库→{ontology_db_path}）" if ontology_db_path else "") + "…", file=sys.stderr)
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     if proc.returncode != 0:
         raise RuntimeError(f"claude CLI(MCP) 退出码 {proc.returncode}：{(proc.stderr or '')[:200]}")
@@ -384,42 +407,49 @@ def _invoke_cli_mcp(prompt, role, model, max_turns, timeout, verbose):
     return envelope.get("result", "")
 
 
-def answer_via_mcp(question, role="ops", db=DEFAULT_DB, max_turns=8, verbose=False, timeout=180):
+def answer_via_mcp(question, role="ops", db=DEFAULT_DB, max_turns=8, verbose=False, timeout=180,
+                   ontology_db_path=None):
     """M4 新通道公共入口（UI 询问按钮与 run_agent 共用同一实现）——claude_cli_mcp 出境统一闸口
     （与 _claude_cli_call 同规）：①白名单摘除 ②降级 fail-fast（连续失败冷却后放行探测）③真实多轮
     MCP 工具调用 ④llm_calls 落 briefing 行（provider=claude_cli_mcp，ok/error/degraded 全写）。
     逐次工具调用另由 MCP server 审计写连接落 call_type='mcp_tool' 行——双层审计（整体一行+逐工具多行）。
-    role 决定 server 侧 tools/list 过滤与脱敏（经 ONTOLOGY_MCP_ROLE 透传）；db 收 llm_calls（路径或连接）。"""
+    role 决定 server 侧 tools/list 过滤与脱敏（经 ONTOLOGY_MCP_ROLE 透传）；db 收 llm_calls（路径或连接）。
+    波1·A1：ontology_db_path 非空 → 经 ONTOLOGY_DB_PATH 注入 MCP 子进程读库（影子副本透传，缺省连主库）。"""
     model = os.environ.get("AGENT_MODEL", "claude-opus-4-8")
     clean, report = sanitize_for_egress(question)
     if not CLAUDE_CLI_MCP_TRACKER.should_attempt():
         msg = (f"claude_cli_mcp 降级模式生效（连续失败 {CLAUDE_CLI_MCP_TRACKER.failures} 次 ≥ 阈值 "
                f"{CLAUDE_CLI_MCP_TRACKER.threshold}，冷却未满）：本次未出境，回退 provider")
         _safe_log(db, call_type="briefing", provider="claude_cli_mcp", model=model, status="degraded",
-                  input_chars=len(clean), error=msg, redactions=report)
+                  input_chars=len(clean), error=msg, redactions=report, prompt_version=PROMPT_VERSION)
         raise LLMDegradedError(msg)
     t0 = time.time()
     try:
-        out = _invoke_cli_mcp(clean, role, model, max_turns, timeout, verbose)
+        out = _invoke_cli_mcp(clean, role, model, max_turns, timeout, verbose,
+                              ontology_db_path=ontology_db_path)
     except Exception as exc:
         CLAUDE_CLI_MCP_TRACKER.record_failure()
         _safe_log(db, call_type="briefing", provider="claude_cli_mcp", model=model, status="error",
                   input_chars=len(clean), duration_ms=int((time.time() - t0) * 1000),
-                  error=str(exc)[:300], redactions=report)
+                  error=str(exc)[:300], redactions=report, prompt_version=PROMPT_VERSION)
         raise
     CLAUDE_CLI_MCP_TRACKER.record_success()
     _safe_log(db, call_type="briefing", provider="claude_cli_mcp", model=model, status="ok",
               input_chars=len(clean), output_chars=len(out),
-              duration_ms=int((time.time() - t0) * 1000), redactions=report)
+              duration_ms=int((time.time() - t0) * 1000), redactions=report,
+              prompt_version=PROMPT_VERSION)
     return out.strip()
 
 
-def _run_claude_cli_mcp(question, session, max_turns=8, verbose=True, timeout=180):
+def _run_claude_cli_mcp(question, session, max_turns=8, verbose=True, timeout=180,
+                        ontology_db_path=None):
     """run_agent 的 MCP 通道适配层：从 session 取 role（server 侧过滤/脱敏）与库（llm_calls 落点），
-    委托 answer_via_mcp（单一实现，UI 与 CLI 入口共用）。"""
+    委托 answer_via_mcp（单一实现，UI 与 CLI 入口共用）。
+    波1·A1：ontology_db_path 透传给 answer_via_mcp（影子测量台在临时副本上跑真 AI 时给副本路径）。"""
     return answer_via_mcp(question, role=getattr(session, "role", "ops") or "ops",
                           db=getattr(session, "con", None) or DEFAULT_DB,
-                          max_turns=max_turns, verbose=verbose, timeout=timeout)
+                          max_turns=max_turns, verbose=verbose, timeout=timeout,
+                          ontology_db_path=ontology_db_path)
 
 
 def _resolve_provider():
@@ -445,9 +475,10 @@ def _resolve_fallback_provider():
         return "claude_cli"
 
 
-def _dispatch_provider(provider, question, session, max_turns, verbose):
+def _dispatch_provider(provider, question, session, max_turns, verbose, ontology_db_path=None):
     if provider in ("claude_cli_mcp", "mcp"):
-        return _run_claude_cli_mcp(question, session, max_turns, verbose)
+        return _run_claude_cli_mcp(question, session, max_turns, verbose,
+                                   ontology_db_path=ontology_db_path)
     if provider in ("claude_cli", "claude", "cli"):
         return _run_claude_cli(question, session, max_turns, verbose)
     if provider == "openai":
@@ -458,21 +489,26 @@ def _dispatch_provider(provider, question, session, max_turns, verbose):
                      "（可选：claude_cli_mcp / claude_cli / openai / anthropic）")
 
 
-def run_agent(question, session=None, max_turns=8, verbose=True):
+def run_agent(question, session=None, max_turns=8, verbose=True, ontology_db_path=None):
     """默认走 config 的主通道 provider（M4 起 = claude_cli_mcp：本账号订阅 + 本体只读 MCP 多轮真调用）。
     主通道失败（RuntimeError/降级/超时）→ 回退 fallback_provider（默认 claude_cli 单发合成）；
-    再失败由 UI/调用方 except 兜确定性简报——裁3 优雅降级链路语义保持现状。"""
+    再失败由 UI/调用方 except 兜确定性简报——裁3 优雅降级链路语义保持现状。
+    波1·A1：ontology_db_path 非空时只对 MCP 主通道生效（透传给子进程读库=影子副本隔离）；缺省 None ⇒
+    正常问答接口零变化（子进程连主库现状不变）。单发合成回退档（claude_cli）由调用方 session.con 决定
+    llm_calls 落点，本参数只影响 MCP 子进程读库，不改回退档语义。"""
     session = session or AgentSession()
     provider = _resolve_provider()
     try:
-        return _dispatch_provider(provider, question, session, max_turns, verbose)
+        return _dispatch_provider(provider, question, session, max_turns, verbose,
+                                  ontology_db_path=ontology_db_path)
     except (RuntimeError, LLMDegradedError, subprocess.TimeoutExpired) as exc:
         fallback = _resolve_fallback_provider()
         if fallback and fallback != provider:
             if verbose:
                 print(f"  [provider] 主通道 {provider} 失败（{str(exc)[:80]}）→ 回退 {fallback}",
                       file=sys.stderr)
-            return _dispatch_provider(fallback, question, session, max_turns, verbose)
+            return _dispatch_provider(fallback, question, session, max_turns, verbose,
+                                      ontology_db_path=ontology_db_path)
         raise
 
 

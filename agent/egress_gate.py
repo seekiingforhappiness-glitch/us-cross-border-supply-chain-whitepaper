@@ -156,7 +156,14 @@ def sanitize_for_egress(payload_text, enabled=None):
 # created_at/duration_ms 用真实 UTC 时钟（运行态遥测的诚实值，非业务 as_of；D8 例外，可显式传入注入测试）。
 # call_type 允许值（CHECK 单一事实源）：'mcp_tool' 于 API 层 plan M4（勘误#3）加入——MCP server
 # 每次只读工具调用经审计写连接落一行 call_type='mcp_tool'（订阅通道真工具调用可追溯，与主通道审计统一）。
+# prompt_version（波1·B prompt 版本机）：记录本次调用所用 SYSTEM_PROMPT 文本的版本号（llm_agent.PROMPT_VERSION，
+#   改文本必须换号）——让"用哪版 AI-指令"从遥测直接可查（深研 2-1）。可空 TEXT，末列加（旧库 ALTER 兜底，
+#   不进真值 md5，不改既有列语义）；mcp_tool 逐工具遥测行不涉系统提示，留 NULL（诚实：无系统提示可版本化）。
 LLM_CALL_TYPES = ("briefing", "parse", "proposal", "mcp_tool")
+# llm_calls 列清单（单一来源）：ensure/migrate/log 三处共用，避免 SELECT * 在列漂移时错位（波1·B 加列后必需）。
+LLM_CALLS_COLUMNS = ("call_id", "trace_id", "call_type", "provider", "model", "input_chars",
+                     "output_chars", "est_input_tokens", "est_output_tokens", "duration_ms",
+                     "status", "error", "redactions", "created_at", "prompt_version")
 LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS llm_calls (
     call_id INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id TEXT NOT NULL,
@@ -171,13 +178,28 @@ LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS llm_calls (
     status TEXT NOT NULL CHECK (status IN ('ok','error','degraded')),
     error TEXT,
     redactions TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    prompt_version TEXT
 )"""
 
 
+def _ensure_prompt_version_column(conn: sqlite3.Connection) -> bool:
+    """波1·B 兜底：给既有 llm_calls 表补 prompt_version 列（旧库无此列时 ALTER ADD）。幂等：
+    列已存在则空操作返回 False；新加返回 True。SQLite ALTER ADD COLUMN 是安全的原地加列（不重建表、
+    不动既有行/值），既有行该列填 NULL（诚实：历史调用未记版本号）。"""
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")]
+    if "prompt_version" not in cols:
+        conn.execute("ALTER TABLE llm_calls ADD COLUMN prompt_version TEXT")
+        return True
+    return False
+
+
 def ensure_llm_calls_table(conn: sqlite3.Connection) -> None:
-    """建表兜底（幂等）：pipeline.build_ontology 建正表；旧库副本首写运行期补建（仿 M2 兼容模式）。"""
+    """建表兜底（幂等）：pipeline.build_ontology 建正表；旧库副本首写运行期补建（仿 M2 兼容模式）。
+    波1·B：建表后再跑 prompt_version 补列兜底——既有库（无该列）经任一 log_llm_call 路径即自愈，
+    保证后续 INSERT 含 prompt_version 不因旧 schema 失败。"""
     conn.execute(LLM_CALLS_DDL)
+    _ensure_prompt_version_column(conn)
 
 
 def migrate_llm_calls_call_type_check(conn: sqlite3.Connection) -> str:
@@ -185,14 +207,16 @@ def migrate_llm_calls_call_type_check(conn: sqlite3.Connection) -> str:
 
     SQLite 无法 ALTER 既有 CHECK 约束——须**重建表**：存量行整表拷贝到新约束表。本函数**幂等可重跑**：
       · 表不存在 → 按最新 DDL 建表（含 mcp_tool），返回 'created'；
-      · CHECK 已含 'mcp_tool'（新库/build_ontology 重建后即如此）→ 直接返回 'current'，不动表；
-      · 旧 CHECK（仅 briefing/parse/proposal）→ 12 步重建：改名旧表→建新表→整表 INSERT SELECT→丢旧表。
-    列名/列序与旧表逐一相同（本次仅改 CHECK，不加减列），故 `INSERT INTO llm_calls SELECT * FROM …`
-    列对齐安全。崩溃遗留的中间表 llm_calls__mig_old 每次入口先丢弃，保证重跑不残留。
+      · CHECK 已含 'mcp_tool'（新库/build_ontology 重建后即如此）→ 补 prompt_version 列后返回 'current'；
+      · 旧 CHECK（仅 briefing/parse/proposal）→ 12 步重建：改名旧表→建新表→按共有列 INSERT SELECT→丢旧表。
+    波1·B 起本表新增 prompt_version 列，旧表可能无此列——重建的 INSERT 改用**新旧共有列显式清单**
+    （不再 `SELECT *`：列漂移时 SELECT * 会因列数不等而错位/报错）。共有列 = 新表列 ∩ 旧表列，旧表缺的
+    新列（prompt_version）在新表留默认 NULL（诚实：迁移前的行本就无版本号）。崩溃遗留的中间表
+    llm_calls__mig_old 每次入口先丢弃，保证重跑不残留。
 
     调用方：MCP server（agent.mcp_server）审计写连接启动时跑一次——保证 INSERT call_type='mcp_tool'
-    不被旧 CHECK 拒。稳态下（build_ontology 已用新 DDL 重建）本函数即 'current' 空转，审计连接实际
-    只执行 INSERT（不破"审计连接仅 INSERT"的红线语义）。"""
+    不被旧 CHECK 拒。稳态下（build_ontology 已用新 DDL 重建）本函数即 'current'（仅补列兜底、不重建），
+    审计连接实际只执行 INSERT（不破"审计连接仅 INSERT"的红线语义）。"""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='llm_calls'").fetchone()
     if row is None:
@@ -200,11 +224,16 @@ def migrate_llm_calls_call_type_check(conn: sqlite3.Connection) -> str:
         conn.commit()
         return "created"
     if "'mcp_tool'" in (row[0] or ""):
+        if _ensure_prompt_version_column(conn):  # 新 CHECK 但旧 schema 缺 prompt_version → 补列
+            conn.commit()
         return "current"
     conn.execute("DROP TABLE IF EXISTS llm_calls__mig_old")
     conn.execute("ALTER TABLE llm_calls RENAME TO llm_calls__mig_old")
-    conn.execute(LLM_CALLS_DDL)  # 新 CHECK（含 mcp_tool）
-    conn.execute("INSERT INTO llm_calls SELECT * FROM llm_calls__mig_old")
+    conn.execute(LLM_CALLS_DDL)  # 新 CHECK（含 mcp_tool）+ 新列（prompt_version）
+    old_cols = [r[1] for r in conn.execute("PRAGMA table_info(llm_calls__mig_old)")]
+    shared = [c for c in LLM_CALLS_COLUMNS if c in old_cols]  # 新旧共有列，列漂移安全
+    cols_sql = ",".join(shared)
+    conn.execute(f"INSERT INTO llm_calls ({cols_sql}) SELECT {cols_sql} FROM llm_calls__mig_old")
     conn.execute("DROP TABLE llm_calls__mig_old")
     conn.commit()
     return "migrated"
@@ -218,8 +247,11 @@ def new_trace_id():
 
 
 def log_llm_call(db, *, call_type, provider, status, model=None, input_chars=0, output_chars=0,
-                 duration_ms=0, error=None, redactions=None, trace_id=None, created_at=None):
-    """每次外部 LLM 调用（含失败/降级）落一行。db 可传 sqlite3.Connection 或库路径。返回 trace_id。"""
+                 duration_ms=0, error=None, redactions=None, trace_id=None, created_at=None,
+                 prompt_version=None):
+    """每次外部 LLM 调用（含失败/降级）落一行。db 可传 sqlite3.Connection 或库路径。返回 trace_id。
+    波1·B：prompt_version 记录本次调用所用 SYSTEM_PROMPT 版本号（llm_agent.PROMPT_VERSION）；
+    不涉系统提示的调用（如 mcp_tool 逐工具遥测）传 None，如实留空。"""
     own = isinstance(db, (str, os.PathLike))
     conn = sqlite3.connect(db) if own else db
     try:
@@ -230,10 +262,10 @@ def log_llm_call(db, *, call_type, provider, status, model=None, input_chars=0, 
         conn.execute(
             """INSERT INTO llm_calls (trace_id, call_type, provider, model, input_chars,
                output_chars, est_input_tokens, est_output_tokens, duration_ms, status,
-               error, redactions, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               error, redactions, created_at, prompt_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (trace_id, call_type, provider, model, int(input_chars), int(output_chars),
              int(input_chars) // 3, int(output_chars) // 3, int(duration_ms), status,
-             error, json.dumps(redactions or {}, ensure_ascii=False), created_at))
+             error, json.dumps(redactions or {}, ensure_ascii=False), created_at, prompt_version))
         conn.commit()
         return trace_id
     finally:

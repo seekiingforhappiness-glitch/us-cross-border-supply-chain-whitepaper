@@ -285,6 +285,31 @@ export interface GovCost {
   byTypeProvider: { call_type: string; provider: string; n: number; tokens: number; duration_ms: number }[];
   note: string;
 }
+// ---- 放权阶梯（波1·C · data/gating_report.json，agent.gating 产物，display-only） ----
+export interface GovGatingDomain {
+  group: string;            // resolution（档1分规则）| goldset（档2分题类）
+  domain: string;           // 域名（R1 / risk_explanation …）
+  plain: string;            // 白话（域盯什么 / 题类是什么）
+  n: number; hits: number;
+  rate: number | null; ci: [number, number] | null; low_sample: boolean;
+  escalation: { ref_n: number; caught: number; rate: number | null; ci: [number, number] | null } | null;
+  tier: string;             // 当前档位：shadow / suggest / approve / auto
+  next_tier: string;        // 下一档
+  gaps: string[];           // 离下一档差什么（白话）
+}
+export interface GovGatingLadder { tier: string; name: string; plain: string }
+export interface GovGating {
+  available: boolean;
+  source: string;
+  generatedAt?: string;
+  config: { version: string; status: string; ladder: GovGatingLadder[]; promotions: Record<string, unknown> } | null;
+  sources?: { shadow_run_rows: number; llm_calls_rows: number; note: string } | null;
+  domains: GovGatingDomain[];
+  summary: { domain_count: number; by_tier: Record<string, number>; reached_auto: string[]; note: string } | null;
+  telemetry: { available: boolean; total: number; by_prompt_version: { prompt_version: string; n: number }[]; prompt_version_migrated?: boolean; note: string } | null;
+  honestNote?: string;
+  note: string;
+}
 export interface GovernanceData {
   title: string; question: string; subtitle: string;
   sources: GovSource[];
@@ -293,6 +318,7 @@ export interface GovernanceData {
   security: GovSecurity;
   goldset: GovGoldset;
   shadow: GovShadow;
+  gating: GovGating;
   ledger: GovLedger;
   coverage: GovCoverage;
   lineage: GovLineage;
