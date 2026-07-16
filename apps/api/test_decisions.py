@@ -67,7 +67,24 @@ def anchors(con):
     rows = con.execute(
         "SELECT * FROM tasks WHERE approval_status='pending' AND proposal_actor_id IS NOT NULL "
         "AND proposed_action IS NOT NULL ORDER BY task_id").fetchall()
-    assert rows, "测试库需要至少 1 个带提案人的待批任务（datagen.seed_demo_ops 造的 in_progress 提案）"
+    if not rows:
+        # 自愈种子：演示库的待批余量是易变状态（人在驾驶舱批完即清零，2026-07-16 实发）。
+        # 测试不该依赖它——从任意已审批任务克隆出一条 pending 模板（临时副本内，绝不碰真库）。
+        donor = con.execute(
+            "SELECT * FROM tasks WHERE proposal_actor_id IS NOT NULL "
+            "AND proposed_action IS NOT NULL ORDER BY task_id LIMIT 1").fetchone()
+        assert donor, "测试库连历史提案任务都没有——库未跑过 seed_demo_ops，回归链缺步（勘误#2）"
+        seed = dict(donor)
+        seed.update(task_id="TSK-TEST-DEC-SEED", approval_status="pending",
+                    approved_by_role=None, action_taken=None, status="in_progress",
+                    proposal_actor_id="u-ops-us")
+        cols = list(seed.keys())
+        con.execute(f"INSERT INTO tasks ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
+                    [seed[c] for c in cols])
+        con.commit()
+        rows = con.execute(
+            "SELECT * FROM tasks WHERE approval_status='pending' AND proposal_actor_id IS NOT NULL "
+            "AND proposed_action IS NOT NULL ORDER BY task_id").fetchall()
     template = dict(rows[0])
     assert template["proposal_actor_id"] != MANAGER_ACTOR, \
         "happy-path 需提案人≠审批人：模板提案人不应恰是经理演员"

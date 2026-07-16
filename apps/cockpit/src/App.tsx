@@ -1,14 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import {
+  fetchGovernanceGating,
   fetchOntologySummary,
   fetchVitals,
+  setApiWorld,
+  type GovernanceGating,
   type ObjectRef,
   type OntologyLink,
   type Role,
   type Vitals,
   type DataWindow,
+  type World,
   type ZoneId,
 } from "./api";
+import StateHint from "./components/StateHint";
 import TopBar from "./components/TopBar";
 import AiWorkflow from "./views/AiWorkflow";
 import CommandWall from "./views/CommandWall";
@@ -34,9 +39,20 @@ type Stage = { view: "wall" } | { view: "zone"; zoneId: ZoneId } | { view: "map"
 
 export default function App() {
   const [role, setRole] = useState<Role>("manager");
+  // 世界切换（U1）：null=未显式选择（首屏跟随 apps/api 启动环境变量，byte-identical）；一旦切过就固定
+  // verify/sim。world 状态经 setApiWorld 同步到 api 模块级单例 → 全舱所有 fetch 自动带 X-World 头。
+  const [world, setWorld] = useState<World | null>(null);
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [vitalsErr, setVitalsErr] = useState(false);
+  const [vitalsReload, setVitalsReload] = useState(0); // 体征带重试计数（StateHint 重试按钮驱动）
+  const [gating, setGating] = useState<GovernanceGating | null>(null); // U3 AI 信任档（世界/角色无关，取一次）
   const [links, setLinks] = useState<OntologyLink[]>([]);
+
+  // world 状态 → api 模块级单例。用 layout effect：本 effect 在提交阶段（子组件 passive effect 之前）
+  // 跑，保证子组件/本组件的 fetch effect 读到的 currentWorld 已是最新，切世界不产生"旧世界头"竞态。
+  useLayoutEffect(() => {
+    setApiWorld(world);
+  }, [world]);
   // 世界时钟时间轴回放（A-2/V13②）：asOf=null 即"今天"（现状不变，不带 as_of 参数、byte-identical）；
   // 拖到过去某天 → 三聚合端点带 as_of 重算（脱敏/回放都在服务端做）。windowRange 单独存，reload
   // 期间（vitals 短暂置 null）滑条不丢定义域、不闪。
@@ -60,6 +76,24 @@ export default function App() {
     setAsOf(null);
   };
 
+  // 当前生效世界：显式选过就用 world，否则从已加载体征带的 world 字段反推（首屏跟随服务端默认）。
+  // 供顶栏切换钮高亮 + changeWorld 判别"点的是不是当前世界"（是则不折腾）。
+  const activeWorld: World | null =
+    world ?? (vitals ? (vitals.world === "simulation" ? "sim" : "verify") : null);
+
+  // 世界切换（U1）：切世界=回今天（asOf=null）+ 清全部下钻状态（回指挥墙、收详情与对象卡）——
+  // 跨世界的下钻目标 id 不通用，留着会指向错库对象。RouteMap/ObjectCard 因回到指挥墙+清 card 而
+  // 卸载，下次打开即用新世界重取，无需逐个改它们的签名。点当前世界=no-op（不做无谓重取与重置）。
+  const changeWorld = (w: World) => {
+    if (w === activeWorld) return;
+    setWorld(w);
+    setAsOf(null);
+    setStage({ view: "wall" });
+    setDetail(null);
+    setActiveKey(null);
+    setCard(null);
+  };
+
   // 人类决策（批准/驳回）成功后：只重取体征数据（队列随 vitals 刷新，已拍板的提案自动移出待批），
   // 不重置导航——用户停留在待拍板队列，仅收起右栏详情。与角色切换的整屏重置区分开。回放态保持当前 asOf。
   const refreshVitalsData = () => {
@@ -68,8 +102,10 @@ export default function App() {
       .catch(() => setVitalsErr(true));
   };
 
-  // 体征带数据：角色或回放时点变即重取（脱敏 + 回放都在服务端做）。windowRange 只在有值时更新，
-  // reload 期间不丢。
+  // 体征带数据：角色 / 回放时点 / 世界 变即重取（脱敏 + 回放 + 世界库都在服务端做）。windowRange
+  // 只在有值时更新，reload 期间不丢——切到 sim 世界时 window 自动跟随后端下发的 14 个月区间，
+  // 时间回放威力随之完整（验证世界 window.start==end → 顶栏退化为静态时钟）。vitalsReload 为
+  // StateHint 错误态重试按钮的驱动计数。
   useEffect(() => {
     let cancelled = false;
     setVitals(null);
@@ -84,7 +120,20 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [role, asOf]);
+  }, [role, asOf, world, vitalsReload]);
+
+  // AI 信任档（U3）：治理放权档位摘要，世界/角色无关（离线 gating_report.json），取一次即可。
+  // 失败不阻断主画面——CommandWall 侧按 available/null 画诚实空态。
+  useEffect(() => {
+    let cancelled = false;
+    fetchGovernanceGating(role)
+      .then((g) => !cancelled && setGating(g))
+      .catch(() => !cancelled && setGating(null));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 角色切换重置导航（asOf 已由 changeRole 同批置 null，此处只管导航，不碰数据取回）。
   useEffect(() => {
@@ -153,7 +202,8 @@ export default function App() {
         </div>
       )}
       <TopBar
-        world={vitals?.world ?? null}
+        activeWorld={activeWorld}
+        onWorld={changeWorld}
         clock={vitals?.clock ?? windowRange?.end ?? null}
         windowRange={windowRange}
         asOf={asOf}
@@ -170,11 +220,20 @@ export default function App() {
           ) : stage.view === "lane" ? (
             <LaneQueue lane={stage.lane} onWall={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : !vitals ? (
-            <div className="cp-fill-msg">{vitalsErr ? "体征带不可用——确认 API 已启动" : "指挥墙加载中…"}</div>
+            vitalsErr ? (
+              <StateHint
+                kind="error"
+                title="体征带不可用"
+                message="没能连上驾驶舱数据接口。确认 apps/api 服务已在 8100 端口启动，再重试。"
+                onRetry={() => setVitalsReload((n) => n + 1)}
+              />
+            ) : (
+              <StateHint kind="loading" title="指挥墙加载中…" skeletonRows={4} />
+            )
           ) : stage.view === "zone" && activeZone ? (
             <ZoneQueue zone={activeZone} onBack={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : (
-            <CommandWall zones={vitals.zones} onZone={goZone} onMap={goMap} />
+            <CommandWall zones={vitals.zones} provenance={vitals.provenance} gating={gating} onZone={goZone} onMap={goMap} />
           )}
         </div>
         <div className="cp-side">
@@ -190,7 +249,7 @@ export default function App() {
               }}
             />
           ) : (
-            <AiWorkflow role={role} asOf={asOf} onOpenObject={setCard} />
+            <AiWorkflow role={role} asOf={asOf} world={world} onOpenObject={setCard} />
           )}
         </div>
       </div>

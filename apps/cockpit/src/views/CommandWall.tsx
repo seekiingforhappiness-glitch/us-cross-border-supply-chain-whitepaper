@@ -1,9 +1,18 @@
-import { formatPct, type Zone, type ZoneId } from "../api";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  formatPct,
+  type GovernanceGating,
+  type Zone,
+  type ZoneId,
+  type ZoneProvenance,
+} from "../api";
 import Icon from "../components/Icons";
+import StateHint from "../components/StateHint";
 import { headlineOf, summaryLines, ZONE_ICON, ZONE_SHORT, type SummaryLine } from "./zoneModel";
 
 // 七区指挥墙（V10 方案 C 默认首屏中央）——体征带的"放大态"（顶部体征带已移除，避免同信息两处）。
-// 每卡：区图标+区名 + headline 大数字 + 趋势（有数据才显示）+ 告警计数徽标 + 该区最要紧 2-3 行摘要。
+// 每卡：区图标+区名 + headline 大数字 + 趋势（有数据才显示）+ 告警计数徽标 + 该区最要紧 2-3 行摘要
+// + 数字溯源钮（U2，点开口径/来源/样例浮层）；AI 卡额外挂 AI 信任档徽章（U3）。
 // 排序：有告警卡按 alert_count 降序在前，无告警卡按固定七区序在后。有告警卡辉光呼吸。
 // 无数据/掩码 headline 如实降饱和。履约卡右上角显眼「航线视图」钮 → 切航线走廊图（stopPropagation）。
 // 点卡体 → 该区工作队列（下钻第二段）。
@@ -53,102 +62,315 @@ function SummaryRow({ line }: { line: SummaryLine }) {
   );
 }
 
+// ═══════════════════════════ 轻量浮层（U2 溯源 / U3 信任档共用）═══════════════════════════
+// 固定定位锚到触发元素下方（rect 为触发钮 getBoundingClientRect），Esc / 点遮罩关闭，不是新页面
+// 也不入路由。reduced-motion 由 styles.css 无障碍块统一尊重（.cp-pop 的入场动画在该偏好下静止）。
+function Popover({ rect, label, onClose, children }: { rect: DOMRect; label: string; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const W = 308;
+  const left = Math.max(10, Math.min(rect.left, window.innerWidth - W - 12));
+  const openUp = rect.bottom > window.innerHeight * 0.62; // 触发钮偏下时向上弹，避免浮层被裁
+  const style: CSSProperties = openUp
+    ? { left, bottom: Math.max(12, window.innerHeight - rect.top + 6), width: W }
+    : { left, top: rect.bottom + 6, width: W };
+  return (
+    <>
+      <div className="cp-pop-scrim" onClick={onClose} />
+      <div className={`cp-pop ${openUp ? "cp-pop--up" : ""}`} role="dialog" aria-label={label} style={style} onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </>
+  );
+}
+
+// U2 溯源浮层内容：口径白话 + 来源表/对象 + 样例 id（可跳透视镜）+ 完整血缘提示。
+function ProvBody({ zone, prov }: { zone: ZoneId; prov: ZoneProvenance }) {
+  return (
+    <>
+      <div className="cp-pop__head">
+        <Icon name="link" size={13} /> 数字溯源 · {ZONE_SHORT[zone]}
+      </div>
+      <div className="cp-pop__sect">
+        <div className="cp-pop__k">口径（这个数怎么来的）</div>
+        <div className="cp-pop__caliber">{prov.caliber}</div>
+      </div>
+      <div className="cp-pop__sect">
+        <div className="cp-pop__k">来源表 / 对象</div>
+        <div className="cp-pop__srcs">
+          {prov.sources.map((s, i) => (
+            <span key={i} className="cp-pop__src num">
+              {s}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="cp-pop__sect">
+        <div className="cp-pop__k">样例 id（{prov.sample_ids.length}）</div>
+        {prov.sample_ids.length > 0 ? (
+          <div className="cp-pop__samples num">{prov.sample_ids.map(String).join("　·　")}</div>
+        ) : (
+          <div className="cp-pop__muted">当前世界无样例（缺数或该域未灌）</div>
+        )}
+      </div>
+      <div className="cp-pop__foot">
+        <Icon name="arrow-right" size={11} /> 完整血缘见透视镜（perspective lens）
+      </div>
+    </>
+  );
+}
+
+// U3 信任档浮层内容：display-only 声明 + 整体白话 + 分域档位小列表（tier→白话名从 ladder 现取不手抄）。
+function GatingBody({ gating }: { gating: GovernanceGating | null | undefined }) {
+  if (!gating) {
+    return (
+      <>
+        <div className="cp-pop__head">
+          <Icon name="chip" size={13} /> AI 信任档
+        </div>
+        <StateHint kind="loading" compact title="信任档加载中…" />
+      </>
+    );
+  }
+  if (!gating.available) {
+    return (
+      <>
+        <div className="cp-pop__head">
+          <Icon name="chip" size={13} /> AI 信任档
+        </div>
+        <StateHint kind="empty" compact title="信任档尚未生成" reason={gating.reason} />
+      </>
+    );
+  }
+  const tierName: Record<string, string> = {};
+  for (const step of gating.ladder) if (step.tier) tierName[step.tier] = String(step.name ?? step.tier);
+  const label = (t: string | null) => (t ? tierName[t] ?? t : "—");
+  return (
+    <>
+      <div className="cp-pop__head">
+        <Icon name="chip" size={13} /> AI 信任档 · 分域档位
+      </div>
+      {gating.display_only && <div className="cp-pop__tag">display-only · 只算档不放权（档位≠已授权）</div>}
+      {gating.summary_note && <div className="cp-pop__caliber">{gating.summary_note}</div>}
+      <div className="cp-gating__list">
+        {gating.domains.map((d) => (
+          <div key={d.domain} className="cp-gating__row">
+            <div className="cp-gating__top">
+              <span className="cp-gating__name">{d.name}</span>
+              <span className={`cp-gating__tier cp-gating__tier--${d.tier ?? "shadow"}`}>{label(d.tier)}</span>
+            </div>
+            <div className="cp-gating__meta num">
+              n={d.n ?? 0}
+              {d.next_tier ? ` · 下一档 ${label(d.next_tier)}` : ""}
+            </div>
+            {d.gaps.length > 0 && <div className="cp-gating__gap">差：{d.gaps[0]}</div>}
+          </div>
+        ))}
+      </div>
+      <div className="cp-pop__foot">
+        <Icon name="arrow-right" size={11} /> 档位阶梯 / 升档门槛完整白话见透视镜治理控制室
+      </div>
+    </>
+  );
+}
+
+// AI 卡信任档徽章文案（紧凑，卡面窄）：主导档位（域数最多）→ 白话名（从 ladder 现取）。徽章前缀已
+// 有"信任档"，此处只回档位摘要，不重复"信任档"三字。全部同档=「N 域·档名」，混合=「档名 x/N」。
+function trustSummary(gating: GovernanceGating | null | undefined): { text: string; muted: boolean } {
+  if (!gating) return { text: "加载中…", muted: true };
+  if (!gating.available) return { text: "未生成", muted: true };
+  const tierName: Record<string, string> = {};
+  for (const s of gating.ladder) if (s.tier) tierName[s.tier] = String(s.name ?? s.tier);
+  const entries = Object.entries(gating.tier_distribution ?? {});
+  if (entries.length === 0) return { text: "无域", muted: true };
+  entries.sort((a, b) => b[1] - a[1]);
+  const [topTier, topCount] = entries[0];
+  const total = entries.reduce((s, [, c]) => s + c, 0);
+  const name = tierName[topTier] ?? topTier;
+  return { text: entries.length === 1 ? `${total} 域·${name}` : `${name} ${topCount}/${total}`, muted: false };
+}
+
 interface Props {
   zones: Zone[];
+  provenance?: Record<ZoneId, ZoneProvenance>; // U2 溯源信封（App 恒带 provenance=1 拉取）
+  gating?: GovernanceGating | null; // U3 AI 信任档（App 取一次；null=加载中/失败）
   onZone: (z: ZoneId) => void;
   onMap: () => void;
 }
 
-export default function CommandWall({ zones, onZone, onMap }: Props) {
+type Pop = { kind: "prov"; zone: ZoneId; rect: DOMRect } | { kind: "gating"; rect: DOMRect };
+
+export default function CommandWall({ zones, provenance, gating, onZone, onMap }: Props) {
   const ordered = sortZones(zones);
+  const [pop, setPop] = useState<Pop | null>(null);
+  const openPop = (p: Pop) => setPop(p);
+
   return (
     <div className="cp-wall-wrap">
       <div className="cp-panel-head">
         <span className="cp-panel-head__title">七区指挥墙</span>
-        <span className="cp-panel-head__meta">告警区自动排前 · 点卡下钻工作队列</span>
+        <span className="cp-panel-head__meta">告警区自动排前 · 点卡下钻工作队列 · 指标可溯源</span>
       </div>
-      <div className="cp-wall" role="list">
-        {ordered.map((z) => {
-          const hl = headlineOf(z);
-          const nodata = hl.state === "missing"; // 只对真·无数据降饱和；掩码是权限态，显锁不降卡
-          const trend = trendView(z);
-          const alerted = z.alert_count > 0;
-          const isFulfillment = z.zone === "fulfillment";
-          return (
-            <button
-              key={z.zone}
-              role="listitem"
-              className={`cp-wall-card cp-wall-card--${z.zone} ${alerted ? "is-alerted" : ""} ${nodata ? "is-nodata" : ""}`}
-              onClick={() => onZone(z.zone)}
-              title={z.headline_reason || `${z.headline_label} · 点击下钻`}
-            >
-              {alerted && <span className={`cp-wall-card__alert ${z.alert_count > 20 ? "" : "is-amber"}`}>{z.alert_count > 99 ? "99+" : z.alert_count}</span>}
+      {ordered.length === 0 ? (
+        <StateHint
+          kind="empty"
+          title="七区暂无体征"
+          reason="当前世界没有可展示的掌控区数据。"
+          suggestion="切换世界，或确认该世界数据已灌入。"
+        />
+      ) : (
+        <div className="cp-wall" role="list">
+          {ordered.map((z) => {
+            const hl = headlineOf(z);
+            const nodata = hl.state === "missing"; // 只对真·无数据降饱和；掩码是权限态，显锁不降卡
+            const trend = trendView(z);
+            const alerted = z.alert_count > 0;
+            const isFulfillment = z.zone === "fulfillment";
+            const prov = provenance?.[z.zone];
+            return (
+              <button
+                key={z.zone}
+                role="listitem"
+                className={`cp-wall-card cp-wall-card--${z.zone} ${alerted ? "is-alerted" : ""} ${nodata ? "is-nodata" : ""}`}
+                onClick={() => onZone(z.zone)}
+                title={z.headline_reason || `${z.headline_label} · 点击下钻`}
+              >
+                {alerted && <span className={`cp-wall-card__alert ${z.alert_count > 20 ? "" : "is-amber"}`}>{z.alert_count > 99 ? "99+" : z.alert_count}</span>}
 
-              <div className="cp-wall-card__top">
-                <span className="cp-wall-card__icon" aria-hidden>
-                  <Icon name={ZONE_ICON[z.zone]} size={17} />
-                </span>
-                <span className="cp-wall-card__name">{ZONE_SHORT[z.zone]}</span>
-              </div>
-
-              <div className="cp-wall-card__headline">
-                <span className={`cp-wall-card__big num ${hl.state === "real" ? "" : hl.state === "masked" ? "is-masked" : "is-missing"}`}>
-                  {hl.state === "masked" && <Icon name="lock" size={14} />}
-                  {hl.text}
-                </span>
-                {trend ? (
-                  <span className={`cp-trend ${trend.cls}`}>
-                    {trend.arrow} {trend.text}
+                <div className="cp-wall-card__top">
+                  <span className="cp-wall-card__icon" aria-hidden>
+                    <Icon name={ZONE_ICON[z.zone]} size={17} />
                   </span>
-                ) : (
-                  <span className="cp-trend cp-trend--none">静态快照</span>
-                )}
-              </div>
-              <div className="cp-wall-card__hllabel">
-                {z.headline_label}
-                {/* 回放态诚实标注：headline_as_of 仅回放时下发。current=该指标无时点历史→显当前值（不造假），
-                    replayed=真按时点重算。存量类的小灰标是本任务"诚实边界"的画面兑现。 */}
-                {z.headline_as_of === "current" && (
-                  <span className="cp-asof-tag is-current" title="该指标无时点历史·回放时显示当前值">显示当前值</span>
-                )}
-                {z.headline_as_of === "replayed" && (
-                  <span className="cp-asof-tag is-replayed" title="按所选时点重算">回放</span>
-                )}
-              </div>
+                  <span className="cp-wall-card__name">{ZONE_SHORT[z.zone]}</span>
+                  {prov && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="cp-prov-trigger"
+                      aria-label={`${z.headline_label} 数字溯源`}
+                      title="这个数怎么来的（口径 / 来源表 / 样例 id）"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openPop({ kind: "prov", zone: z.zone, rect: e.currentTarget.getBoundingClientRect() });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openPop({ kind: "prov", zone: z.zone, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() });
+                        }
+                      }}
+                    >
+                      <Icon name="link" size={11} /> 溯源
+                    </span>
+                  )}
+                </div>
 
-              <div className="cp-wall-card__sum">
-                {summaryLines(z).map((line, i) => (
-                  <SummaryRow key={i} line={line} />
-                ))}
-              </div>
+                <div className="cp-wall-card__headline">
+                  <span className={`cp-wall-card__big num ${hl.state === "real" ? "" : hl.state === "masked" ? "is-masked" : "is-missing"}`}>
+                    {hl.state === "masked" && <Icon name="lock" size={14} />}
+                    {hl.text}
+                  </span>
+                  {trend ? (
+                    <span className={`cp-trend ${trend.cls}`}>
+                      {trend.arrow} {trend.text}
+                    </span>
+                  ) : (
+                    <span className="cp-trend cp-trend--none">静态快照</span>
+                  )}
+                </div>
+                <div className="cp-wall-card__hllabel">
+                  {z.headline_label}
+                  {/* 回放态诚实标注：headline_as_of 仅回放时下发。current=该指标无时点历史→显当前值（不造假），
+                      replayed=真按时点重算。存量类的小灰标是本任务"诚实边界"的画面兑现。 */}
+                  {z.headline_as_of === "current" && (
+                    <span className="cp-asof-tag is-current" title="该指标无时点历史·回放时显示当前值">显示当前值</span>
+                  )}
+                  {z.headline_as_of === "replayed" && (
+                    <span className="cp-asof-tag is-replayed" title="按所选时点重算">回放</span>
+                  )}
+                </div>
 
-              {isFulfillment && (
-                <div
-                  className="cp-wall-card__switch"
-                  role="button"
-                  tabIndex={0}
-                  aria-label="切换到航线地图"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onMap();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
+                <div className="cp-wall-card__sum">
+                  {summaryLines(z).map((line, i) => (
+                    <SummaryRow key={i} line={line} />
+                  ))}
+                </div>
+
+                {/* U3：AI 运营账卡挂 AI 当前信任档徽章（display-only：只算档不放权）·点开看分域小列表 */}
+                {z.zone === "ai" && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    className={`cp-trust-badge ${trustSummary(gating).muted ? "is-muted" : ""}`}
+                    title="AI 当前信任档（display-only：只算档不放权）· 点开看分域档位"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openPop({ kind: "gating", rect: e.currentTarget.getBoundingClientRect() });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openPop({ kind: "gating", rect: (e.currentTarget as HTMLElement).getBoundingClientRect() });
+                      }
+                    }}
+                  >
+                    <Icon name="chip" size={11} /> 信任档 · {trustSummary(gating).text}
+                  </span>
+                )}
+
+                {isFulfillment && (
+                  <div
+                    className="cp-wall-card__switch"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="切换到航线地图"
+                    onClick={(e) => {
                       e.stopPropagation();
                       onMap();
-                    }
-                  }}
-                >
-                  <Icon name="ship" size={15} />
-                  <span>航线视图</span>
-                  <Icon name="arrow-right" size={13} />
-                </div>
-              )}
-            </button>
-          );
-        })}
-      </div>
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onMap();
+                      }
+                    }}
+                  >
+                    <Icon name="ship" size={15} />
+                    <span>航线视图</span>
+                    <Icon name="arrow-right" size={13} />
+                  </div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {pop && (
+        <Popover
+          rect={pop.rect}
+          label={pop.kind === "prov" ? "数字溯源" : "AI 信任档"}
+          onClose={() => setPop(null)}
+        >
+          {pop.kind === "prov" ? (
+            provenance?.[pop.zone] ? (
+              <ProvBody zone={pop.zone} prov={provenance[pop.zone]} />
+            ) : (
+              <StateHint kind="empty" compact title="无溯源信息" reason="该指标未附溯源信封。" />
+            )
+          ) : (
+            <GatingBody gating={gating} />
+          )}
+        </Popover>
+      )}
     </div>
   );
 }

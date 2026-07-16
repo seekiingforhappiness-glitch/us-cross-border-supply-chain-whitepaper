@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { actorForRole } from "../roleActors";
 import Icon from "../components/Icons";
+import StateHint from "../components/StateHint";
 import { RULE_CN, RULE_TYPE_CN, SEV_CN } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
 import type { PendingDecision } from "./zoneModel";
@@ -105,9 +106,12 @@ function DecisionButtons({ decision, role, onActed }: { decision: PendingDecisio
             驳回
           </button>
         </div>
-        <div className="cp-decide__hint">
-          <Icon name="lock" size={12} /> 需经理角色才能拍板（顶栏切到"老板 manager"；当前是运营 ops，只能看不能批）
-        </div>
+        <StateHint
+          kind="no-permission"
+          compact
+          title="需经理角色才能拍板"
+          roleHint="顶栏切到「老板 manager」才能批 / 驳；当前是运营 ops，只能看不能批。"
+        />
       </div>
     );
   }
@@ -144,6 +148,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
   const [taskIds, setTaskIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [retryTick, setRetryTick] = useState(0); // StateHint 错误态重试驱动（重跑风险 fetch）
 
   useEffect(() => {
     setRiskIdx(0);
@@ -206,7 +211,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
     return () => {
       cancelled = true;
     };
-  }, [focusAlert, role]);
+  }, [focusAlert, role, retryTick]);
 
   const affectedLineCount = risk ? parseIds(risk.affected_so_line_ids).length : 0;
   const totalUsd = risk?.affected_value_usd;
@@ -256,11 +261,13 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
             <div className="cp-impact__sect">
               <div className="cp-impact__sect-t">风险摘要</div>
               {err ? (
-                <div className="cp-missing">
-                  <b>无法加载风险</b> · {err}
-                </div>
+                <StateHint kind="error" compact title="无法加载风险" message={err} onRetry={() => setRetryTick((n) => n + 1)} />
               ) : !risk ? (
-                <div className="cp-inline-load">{loading ? "加载中…" : "—"}</div>
+                loading ? (
+                  <StateHint kind="loading" compact title="加载中…" />
+                ) : (
+                  <div className="cp-inline-load">—</div>
+                )
               ) : (
                 <div className="cp-impact__risk">
                   <div className="cp-impact__risk-top">
@@ -293,7 +300,11 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
                 )}
               </div>
               {!lines ? (
-                <div className="cp-inline-load">{loading ? "加载中…" : "—"}</div>
+                loading ? (
+                  <StateHint kind="loading" compact title="加载中…" />
+                ) : (
+                  <div className="cp-inline-load">—</div>
+                )
               ) : lines.length === 0 ? (
                 <div className="cp-masked">无可展开的订单行明细</div>
               ) : (
@@ -335,7 +346,11 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
                 {custRows && custRows.length > 0 && <span className="cp-impact__agg">{custRows.length} 家</span>}
               </div>
               {!custRows ? (
-                <div className="cp-inline-load">{loading ? "归并中…" : "—"}</div>
+                loading ? (
+                  <StateHint kind="loading" compact title="归并中…" />
+                ) : (
+                  <div className="cp-inline-load">—</div>
+                )
               ) : custRows.length === 0 ? (
                 <div className="cp-masked">无可归并的客户（受影响行未关联到订单）</div>
               ) : (

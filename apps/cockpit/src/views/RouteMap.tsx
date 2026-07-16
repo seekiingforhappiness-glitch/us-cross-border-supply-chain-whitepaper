@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchPanorama, type Panorama as PanoData, type Role } from "../api";
 import Icon from "../components/Icons";
+import StateHint from "../components/StateHint";
 import { COUNTRY_CENTROID, LANDMASSES, PORT_COORD, type LonLat } from "./coastline";
 import { buildCorridor, laneWidth, portName, type CorridorModel, type Lane } from "./corridorModel";
 
@@ -70,6 +71,7 @@ interface PortNode {
 export default function RouteMap({ role, asOf, onLane, onBack }: Props) {
   const [data, setData] = useState<PanoData | null>(null);
   const [err, setErr] = useState(false);
+  const [reload, setReload] = useState(0); // 错误态重试计数（StateHint 重试按钮驱动，U4）
   const [hover, setHover] = useState<string | null>(null);
 
   useEffect(() => {
@@ -82,7 +84,7 @@ export default function RouteMap({ role, asOf, onLane, onBack }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [role, asOf]);
+  }, [role, asOf, reload]);
 
   const model: CorridorModel | null = useMemo(() => (data ? buildCorridor(data) : null), [data]);
 
@@ -132,9 +134,38 @@ export default function RouteMap({ role, asOf, onLane, onBack }: Props) {
     </div>
   );
 
-  if (err) return <div className="cp-map-wrap">{head}<div className="cp-fill-msg">航线数据加载失败——确认 API 已启动</div></div>;
-  if (!data || !model) return <div className="cp-map-wrap">{head}<div className="cp-fill-msg">履约地图加载中…</div></div>;
-  if (model.lanes.length === 0) return <div className="cp-map-wrap">{head}<div className="cp-fill-msg">当前无在途航线（未 delivered 票为 0）</div></div>;
+  // U4 三态：加载/错误/空统一走 StateHint（对齐全舱四态；替代原 cp-fill-msg 行内文案）。
+  if (err)
+    return (
+      <div className="cp-map-wrap">
+        {head}
+        <StateHint
+          kind="error"
+          title="航线地图不可用"
+          message="没能取到履约航线数据。确认 apps/api 服务已在 8100 端口启动，再重试。"
+          onRetry={() => setReload((n) => n + 1)}
+        />
+      </div>
+    );
+  if (!data || !model)
+    return (
+      <div className="cp-map-wrap">
+        {head}
+        <StateHint kind="loading" title="履约地图加载中…" skeletonRows={4} />
+      </div>
+    );
+  if (model.lanes.length === 0)
+    return (
+      <div className="cp-map-wrap">
+        {head}
+        <StateHint
+          kind="empty"
+          title="当前无在途航线"
+          reason="所有货件均已妥投（未 delivered 票为 0），没有可绘制的航线弧。"
+          suggestion="切到模拟世界看连续在途的履约航线，或用顶栏时间轴回放到有在途货件的时点。"
+        />
+      </div>
+    );
 
   const hoveredLane = hover ? model.lanes.find((l) => l.key === hover) ?? null : null;
 

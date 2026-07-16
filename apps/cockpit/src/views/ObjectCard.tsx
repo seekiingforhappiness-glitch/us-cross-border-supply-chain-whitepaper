@@ -13,12 +13,16 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import {
+  fieldGroup,
   fieldLabel,
+  FIELD_GROUP_ORDER,
   humanizeDqWarning,
   humanizeFieldValue,
   linkPhrase,
   OBJECT_TYPE_CN,
+  OBJECT_TYPE_DESC,
   type DqWarning,
+  type FieldGroupName,
 } from "./objectLabels";
 
 // 第二层对象卡（右侧抽屉）：点全景实体节点 / AI 卡片 ref / 邻居 id 打开。
@@ -29,6 +33,11 @@ import {
 // 人话化；_validation_warnings 不再作为字段行直出 JSON，改为顶部可折叠"数据质量提示"徽标。
 // 语义红线：本文件只改变呈现，不改变 fetchObject 拿到的数据本身——humanizeFieldValue 返回 null 时
 // 原样展示，未映射字段/枚举值不编造。
+//
+// U5（35 类白话铺满）：① 抬头新增一句白话"这是什么"（OBJECT_TYPE_DESC，35 类全覆盖）；
+// ② 字段区按 标识/状态/时间/金额/业务 五组分块渲染（fieldGroup()，35 类全覆盖，未登记类型/字段
+// 优雅降级到"业务"兜底组，不丢字段）；③ 脱敏字段沿用既有 renderVal()/isMasked() 路径原样显示
+// "无权查看"（非空白）——该行为在本次改动前就已生效，这里未新增逻辑，只是分组不影响它。
 
 interface Props {
   target: ObjectRef;
@@ -85,6 +94,14 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
   const warnings: DqWarning[] = Array.isArray(rawWarnings) ? (rawWarnings as DqWarning[]) : [];
   const fieldEntries = fields ? Object.entries(fields).filter(([k]) => k !== DQ_WARNINGS_KEY) : [];
 
+  // U5：按 标识/状态/时间/金额/业务 分组（顺序取 FIELD_GROUP_ORDER），组内保留 API 原始字段顺序。
+  const groupedFields: Record<FieldGroupName, [string, unknown][]> = {
+    "标识": [], "状态": [], "时间": [], "金额": [], "业务": [],
+  };
+  for (const entry of fieldEntries) {
+    groupedFields[fieldGroup(target.type, entry[0])].push(entry);
+  }
+
   function toggleLink(l: UsableLink) {
     const cur = expanded[l.linkType];
     if (cur) {
@@ -105,12 +122,17 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
     <>
       <div className="cp-drawer-scrim" onClick={onClose} />
       <aside className="cp-drawer" role="dialog" aria-label={`${OBJECT_TYPE_CN[target.type] ?? target.type} ${target.id}`}>
-        <div className="cp-drawer__head">
-          <div>
+        <div className="cp-drawer__head" style={{ alignItems: "flex-start" }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div className="cp-drawer__type" title={target.type}>
               {OBJECT_TYPE_CN[target.type] ?? target.type}
             </div>
             <div className="cp-drawer__id num">{target.id}</div>
+            {OBJECT_TYPE_DESC[target.type] && (
+              <div style={{ fontSize: "11px", color: "var(--ink-2)", marginTop: "4px", lineHeight: 1.4 }}>
+                {OBJECT_TYPE_DESC[target.type]}
+              </div>
+            )}
           </div>
           <button className="cp-drawer__close" onClick={onClose} aria-label="关闭">
             ×
@@ -147,22 +169,35 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
               )}
 
               <div className="cp-drawer__section-title">字段（{fieldEntries.length}）</div>
-              <div className="cp-fields">
-                {fieldEntries.map(([k, v]) => {
-                  const r = renderVal(target.type, k, v);
-                  return (
-                    <div className="cp-field" key={k}>
-                      <span className="cp-field__k" title={k}>
-                        {fieldLabel(target.type, k)}
-                      </span>
-                      <span className={`cp-field__v ${r.cls}`}>
-                        {r.masked && <Icon name="lock" size={11} />}
-                        {r.text}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
+              {FIELD_GROUP_ORDER.filter((g) => groupedFields[g].length > 0).map((g) => (
+                <div key={g}>
+                  <div
+                    className="cp-field-group__title"
+                    style={{
+                      fontSize: "9.5px", letterSpacing: "0.08em", textTransform: "uppercase",
+                      color: "var(--ink-3)", fontWeight: 600, margin: "10px 0 4px 2px",
+                    }}
+                  >
+                    {g}（{groupedFields[g].length}）
+                  </div>
+                  <div className="cp-fields">
+                    {groupedFields[g].map(([k, v]) => {
+                      const r = renderVal(target.type, k, v);
+                      return (
+                        <div className="cp-field" key={k}>
+                          <span className="cp-field__k" title={k}>
+                            {fieldLabel(target.type, k)}
+                          </span>
+                          <span className={`cp-field__v ${r.cls}`}>
+                            {r.masked && <Icon name="lock" size={11} />}
+                            {r.text}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
 
               <div className="cp-drawer__section-title">关系（{usable.length} 条可走）</div>
               <div className="cp-links">

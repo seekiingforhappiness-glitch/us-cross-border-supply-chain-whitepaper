@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Icon from "../components/Icons";
+import StateHint from "../components/StateHint";
 import type { DrillTarget, QueueSpec } from "./zoneModel";
 
 // 下钻四段式第二段"工作队列"的通用呈现件（区队列 / 航线队列共用）。
@@ -88,7 +89,9 @@ export default function WorkQueue({ crumbs, title, alertCount, headerActions, sp
             <div className="cp-basis">{spec.basis}</div>
           </div>
         ) : (
-          emptyHint && <div className="cp-queue__empty">{emptyHint}</div>
+          // U4 三态：空态统一走 StateHint（emptyHint 白话作 reason）——原 cp-queue__empty 无图标
+          // 不成体系（见三态报告接入点）。下方 context 聚合仍照常承接，故此处不是死胡同、只是"无逐条队列"。
+          emptyHint && <StateHint kind="empty" title="暂无队列条目" reason={emptyHint} />
         )}
 
         {context && <div className="cp-zone__context">{context}</div>}

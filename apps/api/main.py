@@ -49,6 +49,7 @@ from pipeline.ontology_runtime import (                                  # noqa:
     build_role_perms, load_ontology, snake_case, traverse as onto_traverse)
 
 DEFAULT_DB_PATH = REPO_ROOT / "data" / "ontology.sqlite"
+SIMWORLD_DB_PATH = REPO_ROOT / "data" / "simworld.sqlite"    # 模拟世界库（X-World: sim 的解析目标）
 DATAGEN_CFG_PATH = REPO_ROOT / "config" / "datagen.yaml"
 ONTOLOGY_JSON_PATH = REPO_ROOT / "ontology" / "control-tower-ontology.json"
 
@@ -143,12 +144,38 @@ def _require_known_type(object_type: str) -> None:
 # 依赖注入：DB 路径 / 只读连接。测试用 app.dependency_overrides 直接换路径（fastapi 标准做法，
 # 见 apps/api/test_api.py），不依赖环境变量重载/进程重启。
 # ═══════════════════════════════════════════════════════════════════════════
-def get_db_path() -> str:
-    """默认仓库内 data/ontology.sqlite（绝对路径，不依赖 uvicorn 启动 cwd）。
-    可用 ONTOLOGY_DB 环境变量覆盖——驾驶舱双世界切换的唯一开关（验证世界 data/ontology.sqlite
-    ⇄ 模拟世界 data/simworld.sqlite，见 apps/cockpit/README.md）。ONTOLOGY_DB_PATH（
-    agent/mcp_server.py 的既有同名环境变量，本函数原先也用这个名字）仍兼容识别、ONTOLOGY_DB
-    优先——只加不减，避免任何已经在用旧变量名的启动脚本/文档悄悄失效；两者都未设时落回默认路径。"""
+# X-World 请求头 → 世界库解析别名（U1）：verify/verification=验证世界，sim/simulation/simworld=
+# 模拟世界。大小写不敏感、去空白。未知值 fail-fast 422（不静默回退默认，避免"以为切了世界其实没切"）。
+_WORLD_DB_ALIASES = {
+    "verify": "verification", "verification": "verification",
+    "sim": "simulation", "simulation": "simulation", "simworld": "simulation",
+}
+
+
+def get_db_path(x_world: str | None = Header(default=None, alias="X-World")) -> str:
+    """读端点的双世界解析（U1）+ 向后兼容。优先级：
+      1. X-World 请求头（驾驶舱世界切换钮的传导）：verify→data/ontology.sqlite、
+         sim→data/simworld.sqlite；未知值 → 422 fail-fast。不重启进程即切库。
+      2. 缺省（无 X-World）→ 现行 ONTOLOGY_DB / ONTOLOGY_DB_PATH 环境变量 → DEFAULT_DB_PATH，
+         **逐字等价于升级前**（byte-identical 向后兼容：既有测试/启动脚本零感知）。ONTOLOGY_DB_PATH
+         是 agent/mcp_server.py 的既有同名变量，兼容识别、ONTOLOGY_DB 优先——只加不减。
+    DEFAULT_DB_PATH/SIMWORLD_DB_PATH 用模块全局在调用时解析——测试 monkeypatch 这两个常量即可用
+    临时副本验证 X-World 路由，不碰真库（GET 全 mode=ro，读真库也不改 md5，但用副本更守纪律）。
+    既有测试用 app.dependency_overrides 整体替换本依赖（lambda 无参），X-World 形参不影响其生效。
+    裸函数直调兼容：FastAPI 只在真实请求的 DI 流程里才会把 Header(...) 哨兵替换成实际请求头值/None；
+    脱离 DI 直接 Python 调用 get_db_path() 时，x_world 会绑定到 Header(...) 这个 FieldInfo 哨兵对象本身
+    （非 str），故先归一化为 None 再判断，使裸调用与 DI 调用行为一致（test_api.py 显式覆盖此路径）。"""
+    if not isinstance(x_world, str):
+        x_world = None
+    if x_world and x_world.strip():
+        world = _WORLD_DB_ALIASES.get(x_world.strip().lower())
+        if world == "verification":
+            return str(DEFAULT_DB_PATH)
+        if world == "simulation":
+            return str(SIMWORLD_DB_PATH)
+        raise HTTPException(
+            422, detail=f"未知 X-World 值 '{x_world}'——仅支持 verify（验证世界）/ sim（模拟世界）"
+                        f"（大小写不敏感；也认 verification/simulation/simworld）。")
     return os.environ.get("ONTOLOGY_DB", os.environ.get("ONTOLOGY_DB_PATH", str(DEFAULT_DB_PATH)))
 
 
@@ -234,7 +261,8 @@ def get_ontology_summary(db_path: str = Depends(get_db_path)) -> dict:
 @app.get("/objects/{type}")
 def list_objects(type: str, request: Request,
                   x_role: str = Header(default="ops", alias="X-Role"),
-                  con: sqlite3.Connection = Depends(get_ro_connection)) -> dict:
+                  con: sqlite3.Connection = Depends(get_ro_connection),
+                  db_path: str = Depends(get_db_path)) -> dict:
     _require_known_type(type)
     qp = dict(request.query_params)
     raw_limit = qp.pop("limit", None)
@@ -262,7 +290,9 @@ def list_objects(type: str, request: Request,
     model = MODEL_BY_TYPE[type]
     items = [model.model_validate(dict(r)).model_dump(mode="json") for r in rows]
     SensitiveFieldMasker(get_ontology_dict(), x_role).mask_value(items)
-    return {"type": type, "count": len(items), "limit": limit, "items": items}
+    # world 信封字段（U1）：既有字段全不动，仅附加所连世界标识；单对象端点无信封故不加（保对象契约）。
+    return {"type": type, "world": _infer_world(db_path),
+            "count": len(items), "limit": limit, "items": items}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -298,13 +328,15 @@ def get_object(type: str, id: str,
 # ═══════════════════════════════════════════════════════════════════════════
 @app.get("/objects/{type}/{id}/links/{link}")
 def get_object_links(type: str, id: str, link: str,
-                      con: sqlite3.Connection = Depends(get_ro_connection)) -> dict:
+                      con: sqlite3.Connection = Depends(get_ro_connection),
+                      db_path: str = Depends(get_db_path)) -> dict:
     _require_known_type(type)
     try:
         neighbor_ids = onto_traverse(con, type, id, link)
     except ValueError as exc:                      # declared_only / 未知关系 / 端点不符
         raise HTTPException(422, detail=str(exc))
-    return {"source_type": type, "source_id": id, "link_type": link,
+    return {"source_type": type, "world": _infer_world(db_path),     # world 信封字段（U1）
+            "source_id": id, "link_type": link,
             "count": len(neighbor_ids), "neighbor_ids": neighbor_ids}
 
 
@@ -371,3 +403,17 @@ app.include_router(build_cockpit_router(get_db_path, get_ro_connection, _infer_w
 from apps.api.decisions import build_decisions_router                    # noqa: E402
 
 app.include_router(build_decisions_router(get_db_path, _resolve_action_func, AS_OF))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 波U 新只读端点（同 cockpit/decisions 注入式挂载，零循环导入）：
+#   · U3 GET /governance/gating       —— AI 放权档位摘要（只读 data/gating_report.json，不 import gating）
+#   · U6 GET /collaboration/threads   —— 协作流 coordination_threads（X-World 双世界 + X-Role 脱敏）
+# governance 无 DB 依赖（读世界无关的离线治理产物）；collaboration 复用 get_db_path/get_ro_connection/
+# _infer_world ⇒ X-World 双世界与测试 dependency_overrides 自动生效。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.governance import build_governance_router                  # noqa: E402
+from apps.api.collaboration import build_collaboration_router            # noqa: E402
+
+app.include_router(build_governance_router())
+app.include_router(build_collaboration_router(get_db_path, get_ro_connection, _infer_world))

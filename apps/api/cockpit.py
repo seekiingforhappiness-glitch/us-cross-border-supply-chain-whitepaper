@@ -1370,6 +1370,118 @@ def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) 
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 数字溯源（provenance，U2）：?provenance=1 时为每指标附 {caliber(口径白话), sources(来源
+# 表/对象), sample_ids(≤3 样例 id 供跳透视镜)}。缺省关 → 无此键，载荷 byte-identical。
+# caliber 白话由各 _zone_* / _build_* docstring 的 SQL 口径提炼成用户语言（不新造口径，只翻译）；
+# sample_ids 按当前世界现查（sim/verify 自然各异），缺数/查询异常 → [] 如实空，绝不编造 id。
+# provenance 无敏感字段键（caliber/sources/sample_ids 及区名），过 _apply_role_masks 原样穿透。
+# ═══════════════════════════════════════════════════════════════════════════
+def _sample_ids(con, sql: str, params: tuple = ()) -> list:
+    """样例 id 现查（SQL 自带 LIMIT）：取首列。任何 sqlite 异常（缺表/坏 JSON/列缺）→ [] 兜底
+    ——provenance 是附加提示，绝不因取样失败让主端点 500，也绝不用假 id 冒充。"""
+    try:
+        return [r[0] for r in con.execute(sql, params).fetchall()]
+    except sqlite3.Error:
+        return []
+
+
+def _prov(caliber: str, sources: list, sample_ids: list) -> dict:
+    return {"caliber": caliber, "sources": sources, "sample_ids": sample_ids}
+
+
+def _provenance_vitals(con, tables: set[str], clock: str | None) -> dict:
+    """七区卡 headline 指标的溯源（U2 前端范围=七区卡）。每区 caliber=该区 headline 口径白话，
+    sources=来源表/对象，sample_ids=当前世界现查的 ≤3 样例（可跳透视镜）。缺数世界样例自然为空。"""
+    ph = ",".join("?" * len(_COST_RULES))
+    cust_samples = _sample_ids(con, f"""
+        SELECT DISTINCT so.customer_id FROM risk_events r, json_each(r.affected_so_line_ids) je
+        JOIN sales_order_lines sol ON sol.so_line_id = je.value
+        JOIN sales_orders so ON so.so_id = sol.so_id
+        WHERE r.status='open' AND r.affected_so_line_ids IS NOT NULL
+          AND r.affected_so_line_ids NOT IN ('', '[]') LIMIT 3""")
+    ai_samples = _sample_ids(con, "SELECT risk_event_id FROM risk_events "
+                                  "WHERE date(detected_at)=? ORDER BY risk_event_id LIMIT 3",
+                             (clock,)) if clock else []
+    return {
+        "money": _prov(
+            "费用异常敞口 = 当前未闭环（open）的超收/计划外/重复计费风险（规则 R4/R5/R6）影响金额合计"
+            "——'系统这一刻替你盯着、还没消掉的可疑费用'。",
+            ["risk_events（rule_id∈R4/R5/R6 且 status=open）"],
+            _sample_ids(con, f"SELECT risk_event_id FROM risk_events WHERE rule_id IN ({ph}) "
+                             f"AND status='open' ORDER BY risk_event_id LIMIT 3", _COST_RULES)),
+        "fulfillment": _prov(
+            "准交率 OTD = 已履约订单行里，实际到货不晚于承诺交期的比例；分母只算有到货信息的行"
+            "（没到货信息的不硬算）。",
+            ["sales_order_lines（line_status=fulfilled）", "shipments.ata / shipment_milestones（到货日）"],
+            _sample_ids(con, "SELECT so_line_id FROM sales_order_lines "
+                             "WHERE line_status='fulfilled' ORDER BY so_line_id LIMIT 3")),
+        "customers": _prov(
+            "风险敞口客户 = open 风险波及的订单行回溯到的客户去重计数；每户敞口=其被波及行的 "
+            "qty×单价 去重合计。",
+            ["risk_events.affected_so_line_ids → sales_order_lines → sales_orders → customers"],
+            cust_samples),
+        "suppliers": _prov(
+            "交期达成率 = 有收货记录的采购单里，首次收货不晚于预期就绪日的比例；未收货的采购单不进"
+            "分母。缺收货域的世界该指标不点亮（如实标 null）。",
+            ["purchase_orders", "goods_receipts（首张 GRN 收货日）"],
+            _sample_ids(con, "SELECT DISTINCT po.supplier_id FROM purchase_orders po "
+                             "JOIN goods_receipts g ON g.po_id=po.po_id "
+                             "ORDER BY po.supplier_id LIMIT 3")),
+        "inventory": _prov(
+            "安全库存击穿 = 可用量低于安全库存的库存头寸计数（缺口=安全库存−可用量，缺口大者优先）。",
+            ["inventory_positions（available_qty < safety_stock）"],
+            _sample_ids(con, "SELECT inventory_position_id FROM inventory_positions "
+                             "WHERE available_qty < safety_stock "
+                             "ORDER BY (safety_stock-available_qty) DESC, inventory_position_id LIMIT 3")),
+        "ai": _prov(
+            "AI 今日 = 世界时钟当天的风险检测数与提案数（检测=detected_at 当天的风险；提案=当天的 "
+            "AI 提案/批/驳）。验证世界过去日为单日批量快照，故过去日恒 0 属账本如实。",
+            ["risk_events（detected_at=世界时钟当天）", "action_log / sim_ai_activity（当天动作）"],
+            ai_samples),
+        "decisions": _prov(
+            "待批提案 = 审批状态为 pending 的任务件数（老板收件箱里等着拍板的处置提案）。",
+            ["tasks（approval_status=pending）"],
+            _sample_ids(con, "SELECT task_id FROM tasks WHERE approval_status='pending' "
+                             "ORDER BY task_id LIMIT 3")),
+    }
+
+
+def _provenance_panorama(con, tables: set[str]) -> dict:
+    """小全景三块（节点/边/异常锚定）的溯源。节点/边为拓扑无单一 id 样例（sample_ids=[]）；
+    异常锚定给 open 风险样例（可跳透视镜看该风险）。"""
+    return {
+        "nodes": _prov(
+            "五层节点=客户/订单/货件/供应商/仓库；单层实体>40 时聚合为分组节点（客户按州、供应商按"
+            "城市、货件按航线），保画面可渲染。",
+            ["customers", "sales_orders/sales_order_lines", "shipments", "suppliers", "warehouses"],
+            []),
+        "edges": _prov(
+            "边=本体关系投影（客户下单→订单→分配到货件→采购来源供应商→入目的仓），聚合层自动折叠"
+            "并累加 count。",
+            ["shipment_allocations", "purchase_orders", "shipments.po_ids"],
+            []),
+        "alerts": _prov(
+            "异常锚定=open 风险挂到其货件/仓/供应商节点；已交付货件的风险进 unanchored 如实列出。",
+            ["risk_events（status=open）"],
+            _sample_ids(con, "SELECT risk_event_id FROM risk_events WHERE status='open' "
+                             "ORDER BY risk_event_id LIMIT 3")),
+    }
+
+
+def _provenance_ai_flow(con, tables: set[str]) -> dict:
+    """AI 工作流时间线的溯源：四来源按时间倒序合并，sources 只列当前世界真实在库的来源。"""
+    present = sorted({"llm_calls", "action_log", "sim_ai_activity"} & tables)
+    return {
+        "timeline": _prov(
+            "AI 工作流时间线=LLM 调用遥测 + AI 动作审计（actor=ai-agent）+ 提案流转 + 模拟世界 AI "
+            "留痕，按时间戳倒序合并；缺表的来源自动跳过。",
+            present or ["（该世界无任一 AI 工作流来源表）"],
+            _sample_ids(con, "SELECT trace_id FROM llm_calls WHERE trace_id IS NOT NULL "
+                             "ORDER BY created_at DESC LIMIT 3") if "llm_calls" in tables else []),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 路由工厂：main.py 尾部挂载（cockpit 不 import main → 零循环导入；
 # 复用 main 的 get_db_path/get_ro_connection 依赖 ⇒ 测试 dependency_overrides 自动生效）
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1380,13 +1492,17 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
     @router.get("/vitals")
     def cockpit_vitals(as_of: str | None = Query(
                            default=None, description="回放时点 YYYY-MM-DD；缺省=世界时钟今天=现状不变"),
+                       provenance: bool = Query(
+                           default=False, description="?provenance=1 为七区卡 headline 附口径白话/"
+                                                      "来源表/样例id；缺省关=byte-identical"),
                        x_role: str = Header(default="ops", alias="X-Role"),
                        con: sqlite3.Connection = Depends(get_ro_connection),
                        db_path: str = Depends(get_db_path)) -> dict:
         """公司体征带：七掌控区各一枚体征块（zone/headline/trend/alert_count/detail）。
         指标 SQL 口径见模块 docstring 总表与各 _zone_* builder docstring；脱敏两层见 _apply_role_masks；
         trend/世界无关性红线见模块 docstring。as_of 回放口径见模块 docstring「时间轴回放」节——缺省
-        byte-identical；回放态附 window/as_of 信封/每区 headline_as_of，clock 恒为世界今天不随拖动改。"""
+        byte-identical；回放态附 window/as_of 信封/每区 headline_as_of，clock 恒为世界今天不随拖动改。
+        provenance=1（U2）→ 附独立 provenance 键（每区 caliber/sources/sample_ids）；缺省无此键。"""
         tables = _tables(con)
         window_start, world_clock = _world_window(con, tables)
         effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
@@ -1410,17 +1526,23 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
                 z["headline_as_of"] = _headline_as_of(z["zone"], replay_risk)
             payload["as_of"] = _as_of_envelope(as_of, effective_clock, world_clock,
                                                (window_start, world_clock), world_is_sim, replay_risk)
+        if provenance:                     # U2：独立键，不动既有字段；缺省不加 → byte-identical
+            payload["provenance"] = _provenance_vitals(con, tables, world_clock)
         return _apply_role_masks(payload, x_role)
 
     @router.get("/panorama")
     def cockpit_panorama(as_of: str | None = Query(
                              default=None, description="回放时点 YYYY-MM-DD；缺省=现状"),
+                         provenance: bool = Query(
+                             default=False, description="?provenance=1 附节点/边/异常锚定的口径白话/"
+                                                        "来源；缺省关=byte-identical"),
                          x_role: str = Header(default="ops", alias="X-Role"),
                          con: sqlite3.Connection = Depends(get_ro_connection),
                          db_path: str = Depends(get_db_path)) -> dict:
         """小全景分层图数据：五层节点+关系投影边+异常锚定+迷你指标。
         口径与聚合规则（>40 分组）见 _build_panorama docstring。as_of 回放：仅异常锚定的风险集按时点
-        重建（sim），节点/边为当前态拓扑如实（无历史版本）；缺省 byte-identical。"""
+        重建（sim），节点/边为当前态拓扑如实（无历史版本）；缺省 byte-identical。
+        provenance=1（U2）→ 附独立 provenance 键（nodes/edges/alerts 溯源）；缺省无此键。"""
         tables = _tables(con)
         window_start, world_clock = _world_window(con, tables)
         effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
@@ -1433,18 +1555,24 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
         if replay:
             payload["as_of"] = _as_of_envelope(as_of, effective_clock, world_clock,
                                                (window_start, world_clock), world_is_sim, replay_risk)
+        if provenance:                     # U2：独立键，缺省不加 → byte-identical
+            payload["provenance"] = _provenance_panorama(con, tables)
         return _apply_role_masks(payload, x_role)
 
     @router.get("/ai-flow")
     def cockpit_ai_flow(limit: int = Query(default=50, ge=1, le=500),
                         as_of: str | None = Query(
                             default=None, description="回放时点 YYYY-MM-DD；缺省=现状"),
+                        provenance: bool = Query(
+                            default=False, description="?provenance=1 附时间线来源溯源；缺省关="
+                                                       "byte-identical"),
                         x_role: str = Header(default="ops", alias="X-Role"),
                         con: sqlite3.Connection = Depends(get_ro_connection),
                         db_path: str = Depends(get_db_path)) -> dict:
         """AI 工作流时间线：llm_calls / ai-agent 审计 / 提案流转 / sim 留痕按 ts 倒序合并。
         来源与排序口径见 _build_ai_flow docstring。limit 默认 50（1..500）。as_of 回放：各来源按自身
-        时间戳≤as_of 过滤（事件日志天然可回放）；缺省 byte-identical。"""
+        时间戳≤as_of 过滤（事件日志天然可回放）；缺省 byte-identical。
+        provenance=1（U2）→ 附独立 provenance 键（timeline 溯源）；缺省无此键。"""
         tables = _tables(con)
         window_start, world_clock = _world_window(con, tables)
         effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
@@ -1459,6 +1587,8 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
             payload["as_of"] = _as_of_envelope(as_of, effective_clock, world_clock,
                                                (window_start, world_clock), world_is_sim,
                                                replay and world_is_sim)
+        if provenance:                     # U2：独立键，缺省不加 → byte-identical
+            payload["provenance"] = _provenance_ai_flow(con, tables)
         return _apply_role_masks(payload, x_role)
 
     return router

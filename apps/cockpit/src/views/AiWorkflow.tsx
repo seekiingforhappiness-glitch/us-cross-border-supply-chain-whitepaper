@@ -1,12 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchAiFlow, type AiFlow, type ObjectRef, type Role } from "../api";
+import {
+  fetchAiFlow,
+  fetchCollaborationThreads,
+  type AiFlow,
+  type CollabThread,
+  type CollaborationThreads,
+  type ObjectRef,
+  type Role,
+  type World,
+} from "../api";
 import Icon, { type IconName } from "../components/Icons";
-import { buildStories, KIND_CN, type Story, type StoryState } from "./aiFlowModel";
+import StateHint from "../components/StateHint";
+import { buildStories, KIND_CN, SEV_CN, type Story, type StoryState } from "./aiFlowModel";
+import { SEV_RANK } from "./severityRank";
 
 // 页面第二主角：AI 工作流「用户故事卡」流（V10 补记：从事件日志重构为用户视角）。同一风险/任务链的
 // 检测→提案→审批/结案 折叠为一张卡——主句人话叙事（醒目金额），点展开=完整时间线（原始事件保序）。
 // [sim] 前缀清除（SIM 徽标已表达）、规则码/动作码/severity 人话化、裸 TSK/RSK id 收进「查看详情」。
-// 智能感：最新一条呼吸高亮 + 卡片滑入。底部两 tab：AI 工作流（默认）/ 协作流（预留态）。
+// 智能感：最新一条呼吸高亮 + 卡片滑入。底部两 tab：AI 工作流（默认）/ 协作流（U6 真数据）。
 
 type Tab = "ai" | "collab";
 
@@ -131,17 +142,143 @@ function StoryCard({ story, latest, onOpenObject }: { story: Story; latest: bool
   );
 }
 
+// ═══════════════════════════ 协作流真身（U6）═══════════════════════════
+// 右栏「协作流」标签：GET /collaboration/threads 真数据——对外协调的跟进线程（改配船期 / 工厂确认
+// 交期 / 客户接受拆单…），按风险聚合展示（参与角色 / 最后动态 / 条数）。缺表世界 → available:false
+// 空态；0 条 → 空态白话（验证世界 0 条属正常）；有数据 → 按 by_risk 分组渲染。X-World 双世界随顶栏切。
+// 留飞书 / 企微 / Slack 实时接入的 UI 形状——数据已真，实时 IM 是后期路线（脚注标注）。
+
+function sevChip(sev: string | null | undefined): { cls: string; text: string } | null {
+  if (!sev) return null;
+  const rank = SEV_RANK[sev] ?? 0;
+  const cls = rank >= 2 ? "cp-chip red" : rank >= 1 ? "cp-chip amber" : "cp-chip";
+  return { cls, text: SEV_CN[sev] ?? sev };
+}
+
+function ThreadRow({ t }: { t: CollabThread }) {
+  const owner = t.owner || "我方";
+  const counterparty = t.counterparty || t.counterparty_type || "对方";
+  const esc = (t.escalation_level ?? 0) > 0;
+  const taskTitle = t.task && typeof t.task.title === "string" ? (t.task.title as string) : null;
+  return (
+    <div className={`cp-thread ${esc ? "is-esc" : ""}`}>
+      <div className="cp-thread__top">
+        <span className="cp-thread__parties">
+          <Icon name="users" size={11} /> <span className="num">{owner}</span>
+          <Icon name="arrow-right" size={9} />
+          <span className="num">{counterparty}</span>
+        </span>
+        {esc && <span className="cp-thread__esc">升级 L{t.escalation_level}</span>}
+        {t.state && <span className="cp-thread__state">{t.state}</span>}
+      </div>
+      {taskTitle && <div className="cp-thread__task">{taskTitle}</div>}
+      <div className="cp-thread__meta num">
+        {t.counterparty_type ? `${t.counterparty_type} · ` : ""}
+        最后动态 {t.last_update || t.opened_at || "—"}
+        {t.next_action_due ? ` · 待办截止 ${t.next_action_due}` : ""}
+      </div>
+    </div>
+  );
+}
+
+function CollabPanel({ role, world }: { role: Role; world?: World | null }) {
+  const [data, setData] = useState<CollaborationThreads | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setErr(null);
+    fetchCollaborationThreads(role)
+      .then((d) => !cancelled && setData(d))
+      .catch((e) => !cancelled && setErr((e as Error).message));
+    return () => {
+      cancelled = true;
+    };
+  }, [role, world, reload]);
+
+  if (err)
+    return (
+      <StateHint
+        kind="error"
+        title="协作流加载失败"
+        message="没能取到协作线程。确认 apps/api 服务已启动，再重试。"
+        onRetry={() => setReload((n) => n + 1)}
+      />
+    );
+  if (!data) return <StateHint kind="loading" title="协作流加载中…" />;
+  if (!data.available)
+    return (
+      <StateHint
+        kind="empty"
+        title="协作流未接入"
+        reason={data.reason ?? "该世界无协作线程域。"}
+        suggestion="切到模拟世界看真实协调线程"
+      />
+    );
+  if (data.count === 0)
+    return (
+      <StateHint
+        kind="empty"
+        title="暂无协作线程"
+        reason="当前世界没有对外协调的跟进线程（验证世界 0 条属正常）。"
+        suggestion="切到模拟世界看真实协作流"
+      />
+    );
+
+  // 按风险聚合（复用后端 by_risk 排序：条数降序），组内取该风险的线程明细。
+  const groups = data.by_risk.map((g) => {
+    const key = g.risk_event_id ?? "(未关联风险)";
+    const items = data.threads.filter((t) => (t.risk_event_id ?? "(未关联风险)") === key);
+    return { g, key, items };
+  });
+
+  return (
+    <div className="cp-collab-live">
+      <div className="cp-collab-bar">
+        <span className="cp-collab-bar__n num">{data.count} 条协作线程 · {data.by_risk.length} 个风险</span>
+        {data.summary.escalated > 0 && <span className="cp-collab-bar__esc num">{data.summary.escalated} 条已升级</span>}
+      </div>
+      <div className="cp-collab-groups">
+        {groups.map(({ g, key, items }) => {
+          const sev = sevChip(g.severity);
+          return (
+            <div key={key} className="cp-thread-group">
+              <div className="cp-thread-group__head">
+                <span className="cp-thread-group__risk num">{key}</span>
+                {g.rule_id && <span className="cp-thread-group__rule num">{g.rule_id}</span>}
+                {sev && <span className={sev.cls}>{sev.text}</span>}
+                <span className="cp-thread-group__count">{g.thread_count} 条</span>
+              </div>
+              {items.map((t) => (
+                <ThreadRow key={t.coordination_id} t={t} />
+              ))}
+            </div>
+          );
+        })}
+      </div>
+      <div className="cp-collab-foot">
+        <Icon name="chat" size={12} /> 数据来自本体协调线程（coordination_threads）。飞书 / 企微 / Slack 实时对话接入是后期路线。
+      </div>
+    </div>
+  );
+}
+
 export default function AiWorkflow({
   role,
   asOf,
+  world,
   onOpenObject,
 }: {
   role: Role;
   asOf?: string | null;
+  world?: World | null; // U1：世界切换的重取信号（本组件常驻右栏、不随切世界卸载，故要入 deps）
   onOpenObject: (r: ObjectRef) => void;
 }) {
   const [data, setData] = useState<AiFlow | null>(null);
   const [err, setErr] = useState(false);
+  const [reload, setReload] = useState(0); // 错误态重试计数（StateHint 重试按钮驱动）
   const [tab, setTab] = useState<Tab>("ai");
 
   useEffect(() => {
@@ -151,13 +288,14 @@ export default function AiWorkflow({
     // 抓取窗口放大到 200：故事卡按 risk_event 链折叠，链首 detect/propose 可能早于结案数周，
     // 窗口过小会把老链截成只剩 approve/close（主句退化为泛称）——放大窗口让近期链完整重建。
     // asOf（世界时钟回放）：带上则各来源按时间戳≤asOf 过滤，故事卡只呈现"截至当日已发生"的留痕。
+    // world 入 deps：切世界时本组件不卸载，靠它触发重取（X-World 头已由 api 模块级单例带上）。
     fetchAiFlow(role, 200, asOf)
       .then((d) => !cancelled && setData(d))
       .catch(() => !cancelled && setErr(true));
     return () => {
       cancelled = true;
     };
-  }, [role, asOf]);
+  }, [role, asOf, world, reload]);
 
   const stories = useMemo(() => (data ? buildStories(data.items) : []), [data]);
 
@@ -173,29 +311,23 @@ export default function AiWorkflow({
       </div>
 
       {tab === "collab" ? (
-        <div className="cp-collab">
-          <div className="cp-collab__icons">
-            <Icon name="chat" size={26} />
-            <Icon name="mail" size={26} />
-            <Icon name="users" size={26} />
-          </div>
-          <div className="cp-collab__title">人与人的沟通，将在此同屏</div>
-          <div className="cp-collab__body">
-            飞书 / 企微 / Slack / 邮箱接入后，围绕一个风险的人的对话会与 AI 的处置在同一条时间线上并排。
-            本体已有协调线程对象承载，画面先留位——后期路线。
-          </div>
-          <div className="cp-collab__tag">预留 · 未接入</div>
-        </div>
+        <CollabPanel role={role} world={world} />
       ) : err ? (
-        <div className="cp-fill-msg">AI 工作流加载失败——确认 API 已启动</div>
+        <StateHint
+          kind="error"
+          title="AI 工作流加载失败"
+          message="没能取到 AI 活动留痕。确认 apps/api 服务已启动，再重试。"
+          onRetry={() => setReload((n) => n + 1)}
+        />
       ) : !data ? (
-        <div className="cp-fill-msg">AI 工作流加载中…</div>
+        <StateHint kind="loading" title="AI 工作流加载中…" />
       ) : stories.length === 0 ? (
-        <div className="cp-flow__empty">
-          该世界暂无 AI 活动留痕
-          <br />
-          <span style={{ color: "var(--ink-3)" }}>来源探测：{data.sources_present.join(" / ") || "无"}</span>
-        </div>
+        <StateHint
+          kind="empty"
+          title="该世界暂无 AI 活动留痕"
+          reason={`来源探测：${data.sources_present.join(" / ") || "无"}`}
+          suggestion="切到模拟世界看连续 14 个月的 AI 处置流"
+        />
       ) : (
         <div className="cp-flow__list">
           {stories.map((s, i) => (

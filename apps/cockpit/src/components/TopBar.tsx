@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import type { Role, DataWindow } from "../api";
+import type { Role, DataWindow, World } from "../api";
 import Icon from "./Icons";
 
-// 顶栏常驻：世界徽标（verification/simulation）+ 世界时钟时间轴（可拖回放，A-2/V13②）+ 角色切换器。
+// 顶栏常驻：世界切换钮（验证世界 ⇄ 模拟世界，U1）+ 世界时钟时间轴（可拖回放，A-2/V13②）+ 角色切换器。
 // 时间轴：范围=数据窗口 windowRange（start=最早真实事件日、end=世界今天），拖动/播放到过去某天 →
 // App 带 as_of 令三聚合端点重算（诚实边界：能真回放的重算、存量类如实显当前值，服务端标注）。
 // asOf=null 即"今天"（现状不变，不带 as_of 参数）；clock（世界今天）不随拖动改，恒为右端锚。
 interface Props {
-  world: string | null;
+  activeWorld: World | null; // 当前生效世界（null=首屏尚未确定，跟随服务端默认）——驱动切换钮高亮
+  onWorld: (w: World) => void; // 切世界（App 会回今天 + 清下钻）
   clock: string | null;
   windowRange: DataWindow | null;
   asOf: string | null;
@@ -23,11 +24,14 @@ const ROLE_HINT: Record<Role, string> = {
   ops: "可操作粒度 · 金额脱敏",
 };
 
-function worldLabel(world: string | null): { cls: string; text: string } {
-  if (world === "verification") return { cls: "cp-world--verification", text: "验证世界" };
-  if (world === "simulation") return { cls: "cp-world--simulation", text: "模拟世界" };
-  return { cls: "cp-world--simulation", text: world ?? "未连接" };
-}
+// 世界切换钮两档（U1）：验证世界=datagen 种子库（规则档案 R/P=1.000 对照源，静态快照）；
+// 模拟世界=14 个月连续活世界（时间回放完整威力）。颜色沿用既有 cp-world 语义（绿=验证、蓝=模拟）。
+const WORLDS: { id: World; label: string; cls: string; hint: string }[] = [
+  { id: "verify", label: "验证世界", cls: "cp-world-seg--verification",
+    hint: "验证世界：datagen 种子库，规则档案对照源（静态快照，回放退化为时钟）" },
+  { id: "sim", label: "模拟世界", cls: "cp-world-seg--simulation",
+    hint: "模拟世界：14 个月连续活世界，时间回放完整威力" },
+];
 
 // —— 纯日期工具（UTC，避开时区漂移；窗口为日粒度）——
 const DAY = 86_400_000;
@@ -125,13 +129,24 @@ function TimeScrubber({ start, end, asOf, onAsOf }: { start: string; end: string
   );
 }
 
-export default function TopBar({ world, clock, windowRange, asOf, onAsOf, replayNote, role, onRole }: Props) {
-  const w = worldLabel(world);
+export default function TopBar({ activeWorld, onWorld, clock, windowRange, asOf, onAsOf, replayNote, role, onRole }: Props) {
   const scrubbable = !!(windowRange && windowRange.start && windowRange.end && windowRange.start < windowRange.end);
   return (
     <header className="cp-topbar">
       <span className="cp-topbar__brand">控制塔驾驶舱</span>
-      <span className={`cp-world ${w.cls}`}>{w.text}</span>
+      <div className={`cp-worlds cp-worlds--${activeWorld ?? "pending"}`} role="group" aria-label="世界切换">
+        {WORLDS.map((wd) => (
+          <button
+            key={wd.id}
+            className={`cp-world-seg ${wd.cls} ${activeWorld === wd.id ? "is-active" : ""}`}
+            onClick={() => onWorld(wd.id)}
+            aria-pressed={activeWorld === wd.id}
+            title={wd.hint}
+          >
+            {wd.label}
+          </button>
+        ))}
+      </div>
       {scrubbable ? (
         <span title={replayNote ?? "拖动或播放回放世界时钟；能真回放的重算，存量类显当前值"}>
           <TimeScrubber start={windowRange!.start!} end={windowRange!.end!} asOf={asOf} onAsOf={onAsOf} />

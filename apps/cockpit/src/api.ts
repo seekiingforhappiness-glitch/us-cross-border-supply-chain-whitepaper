@@ -1,12 +1,38 @@
-// 薄 API 客户端：fetch + 类型 + 角色头（X-Role）。不做缓存/重试——组件层用 useEffect 自管。
+// 薄 API 客户端：fetch + 类型 + 角色头（X-Role）+ 世界头（X-World）。不做缓存/重试——组件层用
+// useEffect 自管。
 //
 // 请求路径固定用相对前缀 /api，由 vite.config.ts 的 server.proxy / preview.proxy 转发到
 // apps/api 的真实地址 http://localhost:8100（走同源代理，不触发 CORS，不碰 apps/api 一行）。
-// 双世界切换（验证世界 ⇄ 模拟世界）由 apps/api 进程的 ONTOLOGY_DB 环境变量决定，前端不变。
+// 双世界切换（验证世界 ⇄ 模拟世界）U1：由驾驶舱顶栏切换钮控制，经 X-World 头传导到 apps/api 的
+// get_db_path 依赖（verify→data/ontology.sqlite、sim→data/simworld.sqlite），不重启进程即切库。
 export const API_BASE_URL = "/api";
 
 // 角色缩放：X-Role 头全局生效（体征带脱敏 + 全景粒度）。二稿起步两档：老板/运营专员。
 export type Role = "manager" | "ops";
+
+// 世界切换（U1）：验证世界（datagen 种子库，R/P=1.000 对照源）⇄ 模拟世界（14 个月连续活世界，
+// 时间回放完整威力）。X-World 头值 verify/sim 与 apps/api::_WORLD_DB_ALIASES 契约一致。
+export type World = "verify" | "sim";
+
+// 驾驶舱当前选定的世界——所有请求的 X-World 头来源（模块级单例，App 的 world 状态经 setApiWorld
+// 同步到此）。为什么用模块级而非逐函数传参：全舱所有 fetch（含 RouteMap/ObjectCard 等未逐个改签名
+// 的既有调用）都要跟随世界切换，模块级单例让它们零改动自动带上当前世界头，是"App 状态 world 串所有
+// fetch"最小侵入的落法。null=未显式选择 → 不发 X-World 头（沿用 apps/api 启动环境变量，首屏
+// byte-identical 向后兼容）。切世界后 App 会同时清下钻状态并回今天（见 App.changeWorld）。
+let currentWorld: World | null = null;
+export function setApiWorld(w: World | null): void {
+  currentWorld = w;
+}
+export function getApiWorld(): World | null {
+  return currentWorld;
+}
+
+// 请求头组装：X-Role 恒带；X-World 仅当已显式选世界时带（null 不带 → 服务端用启动环境变量）。
+function reqHeaders(role: Role, extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { "X-Role": role, ...extra };
+  if (currentWorld) h["X-World"] = currentWorld;
+  return h;
+}
 
 // 无权查看的掩码值（与 agent/tools.py::MASK 逐字一致——服务端契约，不可改）。金额类 _usd 键与
 // margin_distribution 对无成本权限角色（ops）会被 apps/api 替换成这个字符串——渲染层需识别它、
@@ -35,9 +61,9 @@ export function isMasked(x: unknown): x is typeof MASK {
   return x === MASK;
 }
 
-// ── 通用 GET（带角色头）。非 2xx 一律抛错，调用方负责降级展示，这层不吞异常。 ──
+// ── 通用 GET（带角色头 + 世界头）。非 2xx 一律抛错，调用方负责降级展示，这层不吞异常。 ──
 async function apiGet<T>(path: string, role: Role): Promise<T> {
-  const resp = await fetch(`${API_BASE_URL}${path}`, { headers: { "X-Role": role } });
+  const resp = await fetch(`${API_BASE_URL}${path}`, { headers: reqHeaders(role) });
   if (!resp.ok) throw new Error(`GET ${path} 失败：HTTP ${resp.status}`);
   return (await resp.json()) as T;
 }
@@ -63,7 +89,9 @@ export async function postDecision(
 ): Promise<DecisionResult> {
   const resp = await fetch(`${API_BASE_URL}/decisions/${encodeURIComponent(name)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Role": role, "X-Actor": actor },
+    // 写通道同样跟随当前世界（X-World）：在模拟世界里拍板即写模拟库、验证世界即写验证库——
+    // apps/api::post_decision 经 get_db_path 解析世界，前后端一套世界语义。
+    headers: reqHeaders(role, { "Content-Type": "application/json", "X-Actor": actor }),
     body: JSON.stringify(body),
   });
   if (!resp.ok) {
@@ -133,6 +161,15 @@ export interface AsOfEnvelope {
   note: string; // 人话边界说明
 }
 
+// 数字溯源信封（U2）：?provenance=1 时后端为每区 headline 附一枚 {口径白话 / 来源表 / 样例 id}。
+// caliber=该指标口径的用户语言（"系统这一刻替你盯着、还没消掉的可疑费用"）；sources=来源表/对象；
+// sample_ids=当前世界现查的 ≤3 样例 id（可跳透视镜看完整血缘；缺数世界自然空数组，绝不编造）。
+export interface ZoneProvenance {
+  caliber: string;
+  sources: string[];
+  sample_ids: (string | number)[];
+}
+
 export interface Vitals {
   world: string;
   clock: string | null; // 世界今天（右端锚，不随拖动改）
@@ -140,11 +177,18 @@ export interface Vitals {
   window?: DataWindow;
   as_of?: AsOfEnvelope; // 仅回放态出现
   zones: Zone[];
+  provenance?: Record<ZoneId, ZoneProvenance>; // 仅 provenance=1 时出现（U2）
 }
 
-// asOf 缺省（null/undefined）=世界时钟今天=现状不变（byte-identical，不带 as_of 查询参数）。
-export const fetchVitals = (role: Role, asOf?: string | null) =>
-  apiGet<Vitals>(`/cockpit/vitals${asOf ? `?as_of=${encodeURIComponent(asOf)}` : ""}`, role);
+// asOf 缺省（null/undefined）=世界时钟今天=现状不变（不带 as_of 查询参数）。
+// provenance（U2）：驾驶舱恒开（七区卡溯源浮层要用），后端为纯附加键（不影响既有字段）。
+export const fetchVitals = (role: Role, asOf?: string | null, provenance = true) => {
+  const qs = new URLSearchParams();
+  if (asOf) qs.set("as_of", asOf);
+  if (provenance) qs.set("provenance", "1");
+  const q = qs.toString();
+  return apiGet<Vitals>(`/cockpit/vitals${q ? `?${q}` : ""}`, role);
+};
 
 // ═══════════════════════════════ /cockpit/panorama ═══════════════════════════════
 export interface PanoAlert {
@@ -246,6 +290,114 @@ export interface AiFlow {
 
 export const fetchAiFlow = (role: Role, limit = 60, asOf?: string | null) =>
   apiGet<AiFlow>(`/cockpit/ai-flow?limit=${limit}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ""}`, role);
+
+// ═══════════════════════════ /governance/gating（AI 可信度正脸，U3）═══════════════════════════
+// AI 放权档位摘要（display-only）：把 data/gating_report.json 翻成老板语言的"当前档位 + 白话为什么"。
+// display_only=true 意为"只算档不放权"——这条原样透传，绝不误读成"档位=已授权"。文件缺失/损坏时
+// 后端返回 {available:false, reason}（HTTP 200，不 404/500），前端画诚实空态。世界/角色无关（离线产物）。
+export interface GatingDomain {
+  domain: string;
+  name: string; // plain=老板语言域名（如"延误击穿承诺"）
+  group: string | null;
+  tier: string | null; // 当前档位
+  next_tier: string | null;
+  n: number | null; // 样本量
+  hits: number | null;
+  rate: number | null;
+  ci: [number, number] | number[] | null;
+  low_sample: boolean | null;
+  escalation: unknown;
+  gaps: string[]; // 白话差距清单（"缺样本：n=0 < 30"…），原样展示=白话为什么差一档
+}
+
+export interface GatingLadderStep {
+  tier?: string;
+  name?: string;
+  plain?: string;
+  [k: string]: unknown;
+}
+
+// 可用态与空态并集：available 判别。空态只有 available:false + reason。
+export type GovernanceGating =
+  | {
+      available: true;
+      display_only: boolean | null;
+      generated_at: string | null;
+      config_version: string | null;
+      config_status: string | null;
+      ladder: GatingLadderStep[];
+      promotions: Record<string, unknown>;
+      tier_distribution: Record<string, number>; // 整体档位分布（各档域数）
+      domain_count: number | null;
+      reached_auto: string[];
+      summary_note: string | null;
+      sources: Record<string, unknown>;
+      telemetry: Record<string, unknown>;
+      honest_note: string | null;
+      domains: GatingDomain[];
+    }
+  | { available: false; reason: string };
+
+export const fetchGovernanceGating = (role: Role) =>
+  apiGet<GovernanceGating>("/governance/gating", role);
+
+// ═══════════════════════════ /collaboration/threads（协作流真身，U6）═══════════════════════════
+// 对外协调的跟进线程（改配船期 / 工厂确认交期 / 客户接受拆单…），按风险聚合。X-World 双世界：
+// sim 有真数据（28 条）、verify 为 seed 演示条（可能 0 条=正常）。缺表世界 → available:false 空态。
+// X-Role 脱敏同 /objects（富化进来的 task.proposal_params.est_cost_usd 对无成本权限角色自动掩码）。
+export interface CollabRiskRef {
+  rule_id?: string | null;
+  type?: string | null;
+  severity?: string | null;
+  status?: string | null;
+}
+
+export interface CollabThread {
+  coordination_id: string;
+  risk_event_id?: string | null;
+  task_id?: string | null;
+  state?: string | null;
+  counterparty_type?: string | null;
+  counterparty?: string | null;
+  owner?: string | null;
+  escalation_level?: number | null;
+  opened_at?: string | null;
+  last_update?: string | null;
+  next_action_due?: string | null;
+  risk?: CollabRiskRef | null;
+  task?: Record<string, unknown> | null;
+  [k: string]: unknown; // 两世界 schema 有差异，未知列原样透传
+}
+
+export interface CollabByRisk {
+  risk_event_id: string | null;
+  rule_id: string | null;
+  severity: string | null;
+  thread_count: number;
+  states: Record<string, number>;
+  coordination_ids: (string | null)[];
+}
+
+export interface CollaborationThreads {
+  world: string;
+  role: string;
+  available: boolean;
+  reason?: string; // 仅 available:false 时
+  count: number;
+  threads: CollabThread[];
+  by_risk: CollabByRisk[];
+  summary: {
+    by_state: Record<string, number>;
+    by_counterparty_type: Record<string, number>;
+    escalated: number;
+  };
+}
+
+export const fetchCollaborationThreads = (role: Role, riskEventId?: string | null) =>
+  apiGet<CollaborationThreads>(
+    `/collaboration/threads${riskEventId ? `?risk_event_id=${encodeURIComponent(riskEventId)}` : ""}`,
+    role,
+  );
 
 // ═══════════════════════════ 对象卡：/objects/{Type}/{id}（+ links traverse）═══════════════════════════
 // 全景节点 id 用小写前缀（customer:/shipment:/supplier:/warehouse:/orders:/lane:…），

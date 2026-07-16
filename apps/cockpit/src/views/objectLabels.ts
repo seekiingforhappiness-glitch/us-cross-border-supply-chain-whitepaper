@@ -47,11 +47,18 @@
 // 用 pipeline/ontology_models.py 生成的 Pydantic 模型对 data/simworld.sqlite 全表跑过
 // model_validate 核验：Supplier 当前 0 违例（V12 提到的 compliance_docs_status='complete' /
 // uflpa_risk_flag='low' 残留已被 G5-sim 处置单清空，历史遗留，本文件仍保留其翻译作兜底防线，
-// 不因数据已修复而删除——防止未来同类残留复现时静默显示原始英文）。同批核验还发现其它对象
-// 类型存在类似残留（PurchaseOrder.status='open' 全量 3519/3519、Sku.category='seasonal_gift'
-// 42/300、RiskEvent.outcome='accepted' 43/257、Shipment 多字段），均属 sim/ 数据生成域（不在
-// 本任务改动范围，已在报告里另行提出）——本文件**不**为这些未经决策记录确认的残留值编造翻译，
-// 一律走"域外原样呈现 + 数据质量提示徽标解释"路径（见 enumLabel 的 domain 兜底分支）。
+// 不因数据已修复而删除——防止未来同类残留复现时静默显示原始英文）。同批核验还发现 PurchaseOrder.
+// status='open'（全量 3519/3519）、RiskEvent.outcome='accepted'（43/257）两类真实超出本体声明域
+// 的残留，均属 sim/ 数据生成域（不在本任务改动范围，已在报告里另行提出）——本文件不为这些未经
+// 决策记录确认的残留值编造翻译，一律走"域外原样呈现 + 数据质量提示徽标解释"路径（见 enumLabel
+// 的 domain 兜底分支）。
+// 〔U5 独立复核勘误，2026-07-16〕本节曾把 Sku.category='seasonal_gift'（42/300）、Shipment.
+// destination_port 的 new_york/savannah/rotterdam/hamburg 四值也算作同类域外残留——经复核脚本
+// 对 ontology/control-tower-ontology.json 全量 enum values 逐字段核对证伪：这 5 个值早已被
+// ontology.json（v0.11.3 "G6 enum-absorbs-reality" 决策，property description 原文可查）与
+// pipeline/ontology_models.py 的 Pydantic Literal 一并纳入声明域（sim 世界的节庆礼品 SKU、
+// 美东/欧洲目的港是真实设计数据，非残留）——是本文件 FIELD_ENUM_DOMAIN 的转录遗漏，不是数据
+// 问题，已在下方补全域值并补上中文译法，不再让这两个字段的真实业务值原样漏译成英文。
 //
 // ── ④ 已发现并顺手修正的 1 处小 bug（非本任务目标，但直接相关且高置信）───────
 // aiFlowModel.ts::RULE_TYPE_CN 里 R20 现金水位键写成了 "cash_runway"，但 engine/finance_rules.py
@@ -61,6 +68,22 @@
 // 修正，不改变任何既有调用路径的行为（原键从未匹配成功过，修正只会让它开始正确匹配，不会破坏
 // 任何依赖"匹配失败"的逻辑）。
 import { ACTION_CN, RULE_CN, SEV_CN } from "./aiFlowModel";
+// U5（35 类白话铺满）：核心 12 类之外另 23 类的字段名/分组/枚举翻译数据，物理上放在独立数据文件
+// 里（apps/cockpit/src/views/objectLabelsData.ts），本文件只 import 后在下方各查表函数里"先查
+// 原表、查不到再查 _EXT 表"合并使用——查表逻辑仍只有这一处，不搬动/不重复已审过的原 12 类内容。
+import {
+  CHARGE_CODE_CN,
+  ENUM_CN_EXT,
+  FIELD_ENUM_DOMAIN_EXT,
+  FIELD_ENUM_OVERRIDES_EXT,
+  FIELD_GROUP_ORDER,
+  FIELD_GROUPS,
+  FIELD_LABELS_EXT,
+  OBJECT_TYPE_DESC,
+  type FieldGroupName,
+} from "./objectLabelsData";
+
+export { OBJECT_TYPE_DESC, type FieldGroupName };
 
 // ═══════════════════════════ 对象类型中文名（本体全 35 类型）═══════════════════════════
 // 用于：① 对象卡抬头 ② 关系 chip 里邻居类型名。命名统一参考 docs/cross-border-ontology-manual.md /
@@ -188,10 +211,24 @@ export const FIELD_LABELS: Record<string, Record<string, string>> = {
   },
 };
 
-/** 字段名 → 中文标签；未登记（非核心 23 类型 / 遗漏字段）兜底原字段名，不编造。 */
+/** 字段名 → 中文标签；先查核心 12 类的 FIELD_LABELS，再查另 23 类的 FIELD_LABELS_EXT
+ *  （U5 铺满 35 类），仍未登记的（遗漏字段/未来新字段）兜底原字段名，不编造。 */
 export function fieldLabel(type: string, field: string): string {
-  return FIELD_LABELS[type]?.[field] ?? field;
+  return FIELD_LABELS[type]?.[field] ?? FIELD_LABELS_EXT[type]?.[field] ?? field;
 }
+
+/** (type, field) → 所属分组（标识/状态/时间/金额/业务），供 ObjectCard 分组渲染（U5）。
+ *  全 35 类已用程序化规则+人工复核跑满（见 objectLabelsData.ts 头部说明），理论上总能命中；
+ *  未登记的类型/字段（未来新增本体字段的过渡期）优雅降级到"业务"兜底组，不丢字段、不报错。 */
+export function fieldGroup(type: string, field: string): FieldGroupName {
+  const groups = FIELD_GROUPS[type];
+  if (!groups) return "业务";
+  for (const g of FIELD_GROUP_ORDER) {
+    if (groups[g]?.includes(field)) return g;
+  }
+  return "业务";
+}
+export { FIELD_GROUP_ORDER };
 
 // ═══════════════════════════ 角色中文短名（镜像 app/streamlit_app.py::ROLE_SHORT_CN）═══════════════════════════
 const ROLE_CN: Record<string, string> = {
@@ -225,6 +262,11 @@ const GENERIC_ENUM_CN: Record<string, string> = {
   planned: "计划中", arrived: "已到港", customs: "清关中", delivered: "已送达",
   ocean_fcl: "海运整柜", ocean_lcl: "海运拼箱",
   yantian: "盐田", shekou: "蛇口", ningbo: "宁波", los_angeles: "洛杉矶", long_beach: "长滩",
+  // new_york/savannah（美东）、rotterdam/hamburg（欧洲）：U5 独立复核脚本对照 ontology.json 发现
+  // Shipment.destination_port 声明域实际有 6 个值而非 2 个（v0.11.3 "G6" 决策新增，sim 世界美东/
+  // 欧洲航线真实设计数据），本文件先前只登记了 2 个——转录遗漏，非本任务改动范围外的数据残留，
+  // 见下方 FIELD_ENUM_DOMAIN.Shipment.destination_port 与文件头③勘误说明。
+  new_york: "纽约", savannah: "萨凡纳", rotterdam: "鹿特丹", hamburg: "汉堡",
   // —— 新增：PurchaseOrder 生命周期 ——
   placed: "已下单", ready: "备货完成", shipped: "已发运", closed: "已关闭",
   // —— 新增：Payment ——
@@ -235,6 +277,10 @@ const GENERIC_ENUM_CN: Record<string, string> = {
   due_today: "今日到期", overdue: "已逾期",
   // —— 新增：Sku 品类/平台 ——
   charger: "充电器", cable: "数据线", earbuds: "耳机", phone_case: "手机壳",
+  // seasonal_gift：U5 独立复核脚本对照 ontology.json 发现 Sku.category 声明域实际有 5 个值而非
+  // 4 个（v0.11.3 "G6" 决策新增，sim 世界真实设计品类：LED 节日灯/礼品套装/节庆装饰品）——转录
+  // 遗漏，非残留数据，见下方 FIELD_ENUM_DOMAIN.Sku.category 与文件头③勘误说明。
+  seasonal_gift: "节庆礼品",
   amazon: "亚马逊", walmart: "沃尔玛", tiktok_shop: "TikTok Shop", shopify: "Shopify", other: "其他",
   // —— 新增：Customer 分类 ——
   platform_seller: "平台卖家", brand_dtc: "品牌独立站", trader: "贸易商", service_provider: "服务商",
@@ -332,7 +378,7 @@ const FIELD_ENUM_DOMAIN: Record<string, Record<string, string[]>> = {
   Shipment: {
     mode: ["ocean_fcl", "ocean_lcl"],
     origin_port: ["yantian", "shekou", "ningbo"],
-    destination_port: ["los_angeles", "long_beach"],
+    destination_port: ["los_angeles", "long_beach", "new_york", "savannah", "rotterdam", "hamburg"],
     customs_status: ["not_filed", "filed", "hold", "released"],
     status: ["planned", "in_transit", "arrived", "customs", "delivered"],
     missing_docs: ["commercial_invoice", "packing_list", "bill_of_lading", "isf"],
@@ -376,7 +422,7 @@ const FIELD_ENUM_DOMAIN: Record<string, Record<string, string[]>> = {
     status: ["scheduled", "paid"],
   },
   Sku: {
-    category: ["charger", "cable", "earbuds", "phone_case"],
+    category: ["charger", "cable", "earbuds", "phone_case", "seasonal_gift"],
     sku_status: ["candidate", "active"],
     platform: ["amazon", "walmart", "tiktok_shop", "shopify", "other"],
   },
@@ -390,30 +436,37 @@ const FIELD_ENUM_DOMAIN: Record<string, Record<string, string[]>> = {
 };
 
 // 哪些 (type, field) 走枚举/角色人话翻译（安全闸门：只有登记过的字段才尝试翻译，防止自由文本
-// 字段——如城市名、客户名、ID——恰好撞上某个 token 而被误翻）。按 type 对两张表的字段名取并集
-// （注意：不能用 {...FIELD_ENUM_DOMAIN, ...FIELD_ENUM_OVERRIDES} 做对象浅展开——同一 type 的
-// value 会被整体覆盖而非按字段合并，浏览器实测抓到过这个坑：Supplier 的 factory_audit_status/
-// origin_evidence_status 只在 FIELD_ENUM_DOMAIN 里登记、不在 FIELD_ENUM_OVERRIDES 里，浅展开会
-// 让它们从合并结果里消失，导致这两个字段的枚举值原样显示英文——已改成逐 type 显式取键名并集）。
+// 字段——如城市名、客户名、ID——恰好撞上某个 token 而被误翻）。按 type 对四张表（含 U5 新增的
+// 另 23 类 _EXT 表）的字段名取并集（注意：不能用 {...FIELD_ENUM_DOMAIN, ...FIELD_ENUM_OVERRIDES}
+// 做对象浅展开——同一 type 的 value 会被整体覆盖而非按字段合并，浏览器实测抓到过这个坑：Supplier
+// 的 factory_audit_status/origin_evidence_status 只在 FIELD_ENUM_DOMAIN 里登记、不在
+// FIELD_ENUM_OVERRIDES 里，浅展开会让它们从合并结果里消失，导致这两个字段的枚举值原样显示
+// 英文——已改成逐 type 显式取键名并集；U5 延续同一写法，不重犯）。
 const ENUM_FIELDS: Record<string, Set<string>> = {};
-for (const type of new Set([...Object.keys(FIELD_ENUM_DOMAIN), ...Object.keys(FIELD_ENUM_OVERRIDES)])) {
+for (const type of new Set([
+  ...Object.keys(FIELD_ENUM_DOMAIN), ...Object.keys(FIELD_ENUM_OVERRIDES),
+  ...Object.keys(FIELD_ENUM_DOMAIN_EXT), ...Object.keys(FIELD_ENUM_OVERRIDES_EXT),
+])) {
   ENUM_FIELDS[type] = new Set([
     ...Object.keys(FIELD_ENUM_DOMAIN[type] ?? {}),
     ...Object.keys(FIELD_ENUM_OVERRIDES[type] ?? {}),
+    ...Object.keys(FIELD_ENUM_DOMAIN_EXT[type] ?? {}),
+    ...Object.keys(FIELD_ENUM_OVERRIDES_EXT[type] ?? {}),
   ]);
 }
 
 /**
- * 枚举/角色 token → 中文。优先级：① 字段专属覆盖（含已核验的域外残留值，见文件头③）
- * ② 若该字段有已知合法值域且当前值不在域内——判定为未经决策记录确认的脏数据，原样呈现
- *   （不借别的字段的同名 token 语义硬翻，交由 DQ 徽标另行解释）③ 通用词典 ④ 兜底原样。
+ * 枚举/角色 token → 中文。优先级：① 字段专属覆盖（含已核验的域外残留值，见文件头③；U5 起
+ * 也查另 23 类的 FIELD_ENUM_OVERRIDES_EXT）② 若该字段有已知合法值域且当前值不在域内——判定为
+ * 未经决策记录确认的脏数据，原样呈现（不借别的字段的同名 token 语义硬翻，交由 DQ 徽标另行解释；
+ * U5 起域表也查 FIELD_ENUM_DOMAIN_EXT）③ 通用词典（U5 起也查 ENUM_CN_EXT）④ 兜底原样。
  */
 function enumLabel(type: string, field: string, raw: string): string {
-  const override = FIELD_ENUM_OVERRIDES[type]?.[field];
+  const override = FIELD_ENUM_OVERRIDES[type]?.[field] ?? FIELD_ENUM_OVERRIDES_EXT[type]?.[field];
   if (override && Object.prototype.hasOwnProperty.call(override, raw)) return override[raw];
-  const domain = FIELD_ENUM_DOMAIN[type]?.[field];
+  const domain = FIELD_ENUM_DOMAIN[type]?.[field] ?? FIELD_ENUM_DOMAIN_EXT[type]?.[field];
   if (domain && !domain.includes(raw)) return raw;
-  return GENERIC_ENUM_CN[raw] ?? raw;
+  return GENERIC_ENUM_CN[raw] ?? ENUM_CN_EXT[raw] ?? raw;
 }
 
 /** 布尔值 → 是/否。 */
@@ -421,12 +474,20 @@ export function boolLabel(v: boolean): string {
   return v ? "是" : "否";
 }
 
-// 需要"code + 中文名"组合呈现的字段（而非纯替换）——目前仅 RiskEvent.rule_id：规则码本身
-// 在决策文档/对话里被频繁引用（"R7"），单独替换成中文会丢失这个可核对的锚点，故沿用
-// app/ux_copy.py::rule_label() 的"码+空格+中文"格式。
+// 需要"code + 中文名"组合呈现的字段（而非纯替换）——RiskEvent.rule_id 与 U5 新增的
+// InvoiceLine/ExpectedCost.charge_code：这些码本身在账单/决策文档里被频繁引用（"R7"/"THC"），
+// 单独替换成中文会丢失这个可核对的锚点，故沿用 app/ux_copy.py::rule_label()/charge_code_label()
+// 的"码+空格+中文"格式（charge_code 的中文表 CHARGE_CODE_CN 镜像自 ux_copy.py 同名表，见
+// objectLabelsData.ts 头部说明）。
 const SPECIAL_FIELD_RENDERERS: Record<string, Record<string, (raw: string) => string>> = {
   RiskEvent: {
     rule_id: (raw) => (RULE_CN[raw] ? `${raw} ${RULE_CN[raw]}` : raw),
+  },
+  InvoiceLine: {
+    charge_code: (raw) => (CHARGE_CODE_CN[raw] ? `${raw} ${CHARGE_CODE_CN[raw]}` : raw),
+  },
+  ExpectedCost: {
+    charge_code: (raw) => (CHARGE_CODE_CN[raw] ? `${raw} ${CHARGE_CODE_CN[raw]}` : raw),
   },
 };
 
@@ -497,7 +558,7 @@ export interface DqWarning {
 export function humanizeDqWarning(type: string, w: DqWarning, rawValue: unknown): string {
   const label = fieldLabel(type, w.field);
   const valueStr = rawValue === null || rawValue === undefined ? "空" : String(rawValue);
-  const domain = FIELD_ENUM_DOMAIN[type]?.[w.field];
+  const domain = FIELD_ENUM_DOMAIN[type]?.[w.field] ?? FIELD_ENUM_DOMAIN_EXT[type]?.[w.field];
   if (domain) {
     const domainCn = domain.map((v) => enumLabel(type, w.field, v)).join("、");
     return `〔${label}〕记录值 '${valueStr}' 与图纸标准写法不一致（标准值域：${domainCn}）——模拟数据历史遗留`;

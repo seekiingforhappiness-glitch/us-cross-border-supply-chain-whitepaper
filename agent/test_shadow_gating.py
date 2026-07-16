@@ -307,8 +307,8 @@ def test_c_gating_engine():
         check("C 全报告无任何域被判 auto（V15：结构上够不到自动档）",
               all(d["tier"] != "auto" for d in rep["domains"])
               and rep["summary"]["reached_auto"] == [], str(rep["summary"]["by_tier"]))
-        check("C 报告标 display_only=True + 阈值版本 draft-1（候人裁决）",
-              rep["display_only"] is True and rep["config"]["version"] == "draft-1")
+        check("C 报告标 display_only=True + 阈值版本 ratified-1（V16① 已裁决采纳）",
+              rep["display_only"] is True and rep["config"]["version"] == "ratified-1")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
