@@ -331,6 +331,13 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V13 — monday 审计裁决三项（2026-07-16，Daniel 原话"A：1.搬回；2.继续做；3.补全"）。**
+①**搬回**：驾驶舱"批准/驳回"按钮从"去 Streamlit 处置"占位搬回驾驶舱本身（追认审计发现的
+画面承诺）——需新开人类专用决策通道（frozen 动作的 HTTP 端点，X-Role+maker-checker 原封，
+**MCP/AI 工具面永不注册**，冻结区红线不破）。②**继续做**：两处回放（AI 思考轨迹逐步点亮回放+
+世界时钟时间轴回放）排期实现，不砍承诺。③"补全"经核查为已完成事项（V6 裁1 同日已解决，
+复盘勘误 571dbb3 在案），无需动作。执行序：A-1 搬回先行（安全敏感），A-2 回放随后。
+
 **V12 — 对象卡用户语言化（2026-07-14，Daniel 贴驾驶舱 Supplier 对象卡截图："这里不容易懂"）。**
 诊断三层：①_validation_warnings 原始 JSON 直接呈现（如实暴露做对了、形态错了——V10 补记
 "用户语言非工程日志"教训在对象卡重演）②字段名/值全英文代码无人话 ③关系词条英文名+
