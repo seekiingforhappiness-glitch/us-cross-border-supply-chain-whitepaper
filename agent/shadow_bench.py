@@ -78,7 +78,7 @@ DEFAULT_MAX_CONSECUTIVE_FAIL = 5  # 连续失败案数达此值中止该档（�
 
 # escalation recall（A5，Monday 吸收项C）"更保守/该转人"的 AI 动作集：escalate=转人工（最保守）、
 # accept_delay=不施加激进自动处置（维持现状）。放权视角下这两者="AI 没有擅自替人做激进决定"的一侧。
-# 说明：本集合是**草案操作化**（把"更保守"落成这两个动作），属业务语义判断，候 Daniel 确认（见报告残余风险）。
+# 说明：本操作化（"更保守"={escalate, accept_delay}）已经 Daniel 确认（V16② 2026-07-16"同意"），业务语义定案。
 ESCALATION_CONSERVATIVE = {"escalate", "accept_delay"}
 
 SHADOW_LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS shadow_llm_calls (
@@ -448,7 +448,7 @@ def escalation_recall(records: list) -> dict:
     return {"ref_n": len(ref), "caught": len(caught), "rate": b["rate"], "ci": b["ci"],
             "low_sample": b["low_sample"],
             "definition": "该转人/拒案(human=escalate 或 decision=rejected)中 AI 也保守"
-                          "(ai∈{escalate,accept_delay})的比例；草案操作化候人确认"}
+                          "(ai∈{escalate,accept_delay})的比例；操作化已裁决确认（V16②）"}
 
 
 def _sliced(records, key):

@@ -331,6 +331,15 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V16 — 放权治理三项裁决（2026-07-16，Daniel 原话"1.98%；2.同意；3.同意"）。**
+①**放权阶梯阈值采纳**：gating_config draft-1→**ratified-1**，自动档精确率门=98%（连同草案整梯照准：
+Shadow→Suggest 85%+recall≥95%；Suggest→Approve 95%；Approve→Auto 98%+n≥1000+纠正率<5%）。
+display-only 仍有效——把档位接线到工具授权是独立工程（候波2 Command 总线一起做，且当前样本量
+无域够到 auto，接线前置条件不满足）。②**escalation recall 操作化定义确认**："更保守"=
+{escalate, accept_delay}、参考集=人升级或人拒案，shadow_bench 标注由草案转定案。
+③**WAIVED 豁免通道设立**（release-checklist §W：签字人仅 Daniel/四要素登记/五条不可豁免清单）+
+**执行者纪律六行入宪**（AGENTS.md §6.1，含硬边界：自检单绝不替代主会话复核门）。
+
 **V15 — Monday 对标提升路线裁决：路线丙「三波纵向切片」（2026-07-16，Daniel 裁"C"）。**
 依据：docs/research/2026-07-16-monday-uplift-gap-diagnosis.md（五维度诊断+三路线候选）。
 波1 AI 可信度可测可放权（放权门禁引擎+G-Shadow 勘误修复+prompt 版本机+eval 升级）；

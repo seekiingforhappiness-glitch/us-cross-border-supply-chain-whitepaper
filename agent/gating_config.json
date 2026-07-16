@@ -1,6 +1,6 @@
 {
-  "_status": "草案默认值，候 Daniel 正式裁决（V15 保护条款）",
-  "version": "draft-1",
+  "_status": "已裁决采纳（V16①，2026-07-16，Daniel 原话\"98%\"＝确认自动档精确率门 98%，阶梯整体照准）；display-only 仍有效，接线到工具授权是独立工程（候波2）",
+  "version": "ratified-1",
   "_note": "放权阶梯阈值。agent/gating.py 只读本文件算各域当前档位（display-only），绝不改任何工具授权/build_tool_defs（V15 保护条款）。改阈值＝改本文件并递增 version；数字来源＝Monday 基准，属业务裁决，AI 不自定。",
   "_plain": "这是一把'尺子'：给定一个域（某条规则/某类题）AI 测出来的可靠度，尺子说它现在该处在放权阶梯的哪一档。只展示不放权——真正改权限永远是人的事。",
   "ladder": [
