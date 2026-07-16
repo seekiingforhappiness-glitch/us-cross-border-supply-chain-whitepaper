@@ -307,11 +307,15 @@ def main():
 
     # ===== 红线：ROLE_PERMS 未改 + 真库 md5 未变 =====
     print("== 红线：ROLE_PERMS 未改（对齐真源不放宽）+ 真库 md5 未变 ==")
-    check("ROLE_PERMS 四键与基线一致（导航/UI 对齐真源，硬 gate 未削弱）",
+    # 基线只增不改：原四键一字未动；F1 财务回路（RecordPayment/ProposeCollection）落地时
+    # 漏补此基线，2026-07-16 波1 验收时发现补齐（波1 未改 ROLE_PERMS，git diff 为证）。
+    check("ROLE_PERMS 六键与基线一致（导航/UI 对齐真源，硬 gate 未削弱）",
           ROLE_PERMS == {"AssignTask": {"ops", "system"},
                          "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
                          "ApproveMitigation": {"manager"},
-                         "CloseRiskEvent": {"ops"}}, str(ROLE_PERMS))
+                         "CloseRiskEvent": {"ops"},
+                         "RecordPayment": {"finance", "system"},
+                         "ProposeCollection": {"cs", "finance"}}, str(ROLE_PERMS))
     md5_after = hashlib.md5(open(DB, "rb").read()).hexdigest()
     check("真实 DB md5 逐字节一致（AppTest 纯读；临时副本已删）", md5_before == md5_after,
           f"{md5_before} != {md5_after}")
