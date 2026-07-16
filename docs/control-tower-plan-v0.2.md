@@ -331,6 +331,11 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V17 — 波U 用户正脸全量开工（2026-07-16，Daniel 原话"启动workflows模式，按任务分层用不同的模型执行所有任务"）。**
+U1-U6 全量实现+U7 出评估方案（specs/2026-07-16-waveU-user-facing.md）；执行形态=Workflow 编排，
+Opus 扛复杂件（后端契约层/前端整装）、Sonnet 扛常规件（三态底座/对象卡白话/协作流/U7 文档/回归），
+末端对抗复核（Opus），主会话浏览器验收后统一提交。
+
 **V16 — 放权治理三项裁决（2026-07-16，Daniel 原话"1.98%；2.同意；3.同意"）。**
 ①**放权阶梯阈值采纳**：gating_config draft-1→**ratified-1**，自动档精确率门=98%（连同草案整梯照准：
 Shadow→Suggest 85%+recall≥95%；Suggest→Approve 95%；Approve→Auto 98%+n≥1000+纠正率<5%）。
