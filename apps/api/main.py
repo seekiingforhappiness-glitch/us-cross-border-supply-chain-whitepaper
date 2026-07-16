@@ -33,6 +33,7 @@ from typing import Any
 
 import yaml
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 # ── 路径解析：不依赖 uvicorn 启动时的 cwd，一律相对本文件定位仓库根（同 agent/mcp_server.py 惯例）──
 _HERE = Path(__file__).resolve().parent                      # apps/api/
@@ -165,6 +166,17 @@ app = FastAPI(
     title="控制塔 Ontology API",
     version=_ONTO["version"],
     description="M5 FastAPI 服务层骨架——驾驶舱与透视镜 v3 的数据/动作底座；全部路由消费本体/运行时层。",
+)
+
+# CORS：仅放行本地两个开发端口（驾驶舱 5174、透视镜 5173，见 apps/cockpit/vite.config.ts /
+# apps/builder-console 同款端口约定）——驾驶舱当前经 Vite dev/preview 代理同源访问，不依赖这层；
+# 补上是为未来生产环境静态部署（不经 Vite 代理）、以及本地直连调试预留。生产部署时应改成从配置/
+# 环境变量读取允许源，而非像现在这样硬编码 localhost（挂账，不在本单授权范围内一并做）。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5174", "http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

@@ -13,6 +13,7 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import { RULE_CN, RULE_TYPE_CN, SEV_CN } from "./aiFlowModel";
+import { SEV_RANK } from "./severityRank";
 
 // 影响分析面板（下钻第三段"详情"，右栏滑出）——V10 方案 C 直接复用 B3 资产、解耦全景依赖。
 // 风险类队列条目（区队列/航线队列的风险条）点开 → 这里：风险摘要 → 受影响订单行（N 条/金额合计/
@@ -36,10 +37,11 @@ interface CustRow {
   masked: boolean;
 }
 
-const SEV_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
 // 规则/severity 译名改从 aiFlowModel 权威映射表取（原地重复定义且部分错译/错键——如
 // R1 曾显示"延误击穿承诺"而非权威源 ux_copy.py 的"延误传导"，"missing_docs"键名也与
 // ontology 实际枚举值"docs_missing"不符，从未真正命中过——B5 归一为一处映射全端共享）。
+// SEV_RANK（严重度排序权重表）改从 severityRank 模块取——原地重复定义，B 批归一为一处
+// 全端共享（同 corridorModel.ts / LaneQueue.tsx）。
 
 function sevChipClass(sev: string): string {
   if (SEV_RANK[sev] >= 2) return "cp-chip red";

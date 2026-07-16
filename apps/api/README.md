@@ -37,6 +37,15 @@ ONTOLOGY_DB=data/simworld.sqlite uvicorn apps.api.main:app --port 8100
 
 启动后可访问 `http://127.0.0.1:8100/docs`（FastAPI 自带 OpenAPI 交互文档）。
 
+### CORS（跨源资源共享，浏览器阻止网页直连别的端口/域名的默认安全机制）
+
+已内置 `CORSMiddleware`（`main.py`），当前仅放行本地两个开发端口——驾驶舱
+`http://localhost:5174`、透视镜 `http://localhost:5173`（`apps/cockpit`、`apps/builder-console`
+的 `vite.config.ts` 固定端口）。日常开发驾驶舱走 Vite dev/preview server 自带的同源代理
+（`/api` 前缀转发），不触发也不依赖这层 CORS；补上是为独立部署（前端脱离 Vite 代理、
+直连 `apps/api` 真实地址）与本地直连调试预留。生产部署时应把允许源改成从配置/环境变量
+读取，而非沿用这里硬编码的 localhost 列表。
+
 已实测：`uvicorn apps.api.main:app --port 8100` 真实起服后，`GET /ontology`、
 `GET /objects/Supplier?limit=2`、`GET /objects/BogusType`（422）、
 `POST /actions/ApproveMitigation`（404，冻结区）、

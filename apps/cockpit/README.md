@@ -71,13 +71,14 @@ API 未连接（uvicorn 启动命令见 README）
 ### 技术细节：为什么走 `/api` 代理而不直连 `http://localhost:8100`
 
 `src/api.ts` 请求路径固定用相对前缀 `/api`（如 `/api/ontology`），由 `vite.config.ts` 的
-`server.proxy` / `preview.proxy` 转发到 `apps/api` 的真实地址。**不直接 fetch 绝对地址**
-是因为实测浏览器跨源直连会被 CORS 拦截——`apps/api` 当前未配置 CORS 中间件（`curl -H
-"Origin: http://localhost:5174" http://localhost:8100/ontology` 可复现：响应缺
-`access-control-allow-origin` 头），而加 CORS 中间件超出本单「`apps/api` 只许参数化小改」
-的授权范围。走 dev/preview server 自带的同源代理不触发 CORS，也不用碰 `apps/api` 一行代码——
-这是刻意的范围收敛决策，未来如需支持生产环境静态部署（不经 Vite 代理），`apps/api` 侧仍需
-补 CORS 中间件（挂账，见交付报告歧义清单）。
+`server.proxy` / `preview.proxy` 转发到 `apps/api` 的真实地址——走 dev/preview server 自带的
+同源代理不触发 CORS，是刻意的范围收敛决策，日常开发不依赖 CORS 也能跑。
+
+`apps/api` 现已内置 CORS 中间件（`apps/api/main.py` 的 `CORSMiddleware`），当前仅放行本地两个
+开发端口——驾驶舱 `http://localhost:5174`、透视镜 `http://localhost:5173`
+（`curl -H "Origin: http://localhost:5174" http://localhost:8100/ontology` 可验证响应带
+`access-control-allow-origin` 头）。生产环境静态部署（不经 Vite 代理）如需直连，仍应把允许源
+改成从配置/环境变量读取，而非沿用这里硬编码的 localhost 列表。
 
 ## 目录
 

@@ -8,6 +8,7 @@
 // origin/dest 由 lane 串 "CNNGB→USLAX" 拆得（真数据）；港口中文名仅为已知 UN/LOCODE 的展示译名
 // （稳定事实，非业务数据），未知码原样显示 LOCODE，不编造。
 import { nodeToObjectRef, type ObjectRef, type Panorama as PanoData, type PanoAlert, type PanoNode } from "../api";
+import { severityRank } from "./severityRank";
 
 export interface LaneAlert extends PanoAlert {
   shipment_id?: string;
@@ -46,8 +47,9 @@ export interface CorridorModel {
   totalAlerts: number;
 }
 
-const SEV_RANK: Record<string, number> = { critical: 3, high: 2, medium: 1, low: 0 };
-export const laneSevRank = (s: string): number => SEV_RANK[s] ?? 1;
+// laneSevRank 对外导出的函数名不变（外部调用点不用改）——内部实现改调用 severityRank 权威模块
+// （B 批去重：原地重复定义的 SEV_RANK 表已归一到 severityRank.ts，同 ImpactPanel.tsx / LaneQueue.tsx）。
+export const laneSevRank = (s: string): number => severityRank(s);
 
 function toneOf(hasCritical: boolean, alertCount: number): LaneTone {
   if (hasCritical) return "red";
