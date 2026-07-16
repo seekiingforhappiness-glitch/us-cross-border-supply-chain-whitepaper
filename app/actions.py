@@ -144,6 +144,11 @@ DEMO_ROSTER = [
 ]
 
 
+class _StateConflict(Exception):
+    """洞1.2 TOCTOU 收窄：事务内（BEGIN IMMEDIATE 写锁下）状态机复检失败时抛出，
+    由动作的 except 捕获转 _fail——业务写随事务回滚，审计留痕（_fail 另起事务）不被吞。"""
+
+
 def _log(cur, actor, role, action, target, params, as_of, result):
     cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
                    as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
@@ -296,14 +301,16 @@ def _fail(con, action, target, actor, role, as_of, msg, params=None):
 
 
 def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role, as_of):
-    """A3：派单。前置：风险 open 且无非终态任务。成功：Task=assigned，Risk→acknowledged。"""
+    """A3：派单。前置：风险 open 且无非终态任务。成功：Task=assigned，Risk→acknowledged。
+    洞1.2：状态机检查先在事务外快速失败（干净错误消息、非并发路径行为不变），再在
+    BEGIN IMMEDIATE 事务内写锁下复检，堵住"两并发都读到 open 都派单"的 TOCTOU 窗口。"""
     if role not in ROLE_PERMS["AssignTask"]:
         return _denied(con, "AssignTask", risk_event_id, actor, role, as_of)
     cur = con.cursor()
     risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?", (risk_event_id,)).fetchone()
     if not risk:
         return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, "风险事件不存在")
-    # 先查既有任务（manual A3：已有非终态 Task → 拒绝并返回其 id），再查状态
+    # 事务外快速前置校验（manual A3：已有非终态 Task → 拒绝并返回其 id；再查状态）
     ex = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=? AND status NOT IN (?,?)""",
                      (risk_event_id, *TASK_TERMINAL)).fetchone()
     if ex:
@@ -317,29 +324,42 @@ def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role
         assignment = _work_queue_assignment(cur, risk, assignee_role, due_at, as_of)
     except ValueError as exc:
         return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, str(exc))
-    tid = _next_task_id(cur, risk_event_id, as_of)
-    with transaction(con):
-        cur.execute("""INSERT INTO tasks
-                       (task_id, risk_event_id, title, assignee_role, priority, due_at,
-                        proposed_action, proposal_params, approval_status, approved_by_role,
-                        action_taken, status, assigned_by_actor_id, assignee_user_id,
-                        assignee_team_id, sla_state, escalation_level, policy_version)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
-                     assignee_role, priority, due_at, None, None, None, None, None, "assigned",
-                     actor, assignment["assignee_user_id"], assignment["assignee_team_id"],
-                     assignment["sla_state"], assignment["escalation_level"],
-                     assignment["policy_version"]))
-        cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
-                    (risk_event_id,))
-        _log(cur, actor, role, "AssignTask", tid,
-             {"risk_event_id": risk_event_id, "assignee_role": assignee_role,
-              "priority": priority, "assignee_user_id": assignment["assignee_user_id"],
-              "assignee_team_id": assignment["assignee_team_id"],
-              "sla_state": assignment["sla_state"],
-              "escalation_level": assignment["escalation_level"],
-              "policy_version": assignment["policy_version"]},
-             as_of, "ok")
+    try:
+        with transaction(con, immediate=True):
+            # 写锁下复检状态机（洞1.2）：并发下另一方已派单 / 风险已被推进则拒绝并回滚
+            ex2 = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
+                                 AND status NOT IN (?,?)""",
+                              (risk_event_id, *TASK_TERMINAL)).fetchone()
+            if ex2:
+                raise _StateConflict(f"已存在非终态任务 {ex2['task_id']}（单风险单任务，D9/C4）")
+            rk = cur.execute("SELECT status FROM risk_events WHERE risk_event_id=?",
+                             (risk_event_id,)).fetchone()
+            if rk["status"] != "open":
+                raise _StateConflict(f"风险状态为 {rk['status']}，仅 open 可派单")
+            tid = _next_task_id(cur, risk_event_id, as_of)
+            cur.execute("""INSERT INTO tasks
+                           (task_id, risk_event_id, title, assignee_role, priority, due_at,
+                            proposed_action, proposal_params, approval_status, approved_by_role,
+                            action_taken, status, assigned_by_actor_id, assignee_user_id,
+                            assignee_team_id, sla_state, escalation_level, policy_version)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
+                         assignee_role, priority, due_at, None, None, None, None, None, "assigned",
+                         actor, assignment["assignee_user_id"], assignment["assignee_team_id"],
+                         assignment["sla_state"], assignment["escalation_level"],
+                         assignment["policy_version"]))
+            cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
+                        (risk_event_id,))
+            _log(cur, actor, role, "AssignTask", tid,
+                 {"risk_event_id": risk_event_id, "assignee_role": assignee_role,
+                  "priority": priority, "assignee_user_id": assignment["assignee_user_id"],
+                  "assignee_team_id": assignment["assignee_team_id"],
+                  "sla_state": assignment["sla_state"],
+                  "escalation_level": assignment["escalation_level"],
+                  "policy_version": assignment["policy_version"]},
+                 as_of, "ok")
+    except (_StateConflict, sqlite3.Error) as exc:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, str(exc))
     return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged",
                             f"Task {tid} assigned to {assignment['assignee_user_id']}"])
 
@@ -410,16 +430,24 @@ def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, ro
             return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
                          f"新承诺日必须晚于受影响行当前承诺日（最晚 {rows['m']}）", proposal_params)
     _ensure_task_governance_columns(con, cur)
-    with transaction(con):
-        cur.execute("""UPDATE tasks SET status='in_progress', proposed_action=?, proposal_params=?,
-                       approval_status='pending', proposal_actor_id=?, proposal_actor_role=?
-                       WHERE task_id=?""",
-                    (proposed_action, json.dumps(proposal_params, ensure_ascii=False),
-                     actor, role, task_id))
-        cur.execute("UPDATE risk_events SET status='mitigating' WHERE risk_event_id=?",
-                    (task["risk_event_id"],))
-        _log(cur, actor, role, "ProposeMitigation", task_id,
-             {"proposed_action": proposed_action, **proposal_params}, as_of, "ok")
+    try:
+        with transaction(con, immediate=True):
+            # 写锁下复检任务态（洞1.2）：并发下已被他人提案（status≠assigned）则拒绝并回滚
+            st = cur.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not st or st["status"] != "assigned":
+                raise _StateConflict(
+                    f"任务状态为 {st['status'] if st else '不存在'}，仅 assigned 可提案")
+            cur.execute("""UPDATE tasks SET status='in_progress', proposed_action=?, proposal_params=?,
+                           approval_status='pending', proposal_actor_id=?, proposal_actor_role=?
+                           WHERE task_id=?""",
+                        (proposed_action, json.dumps(proposal_params, ensure_ascii=False),
+                         actor, role, task_id))
+            cur.execute("UPDATE risk_events SET status='mitigating' WHERE risk_event_id=?",
+                        (task["risk_event_id"],))
+            _log(cur, actor, role, "ProposeMitigation", task_id,
+                 {"proposed_action": proposed_action, **proposal_params}, as_of, "ok")
+    except (_StateConflict, sqlite3.Error) as exc:
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of, str(exc), proposal_params)
     return _res(True, task_id, [f"Task {task_id}: assigned→in_progress (pending approval)",
                                 f"RiskEvent {task['risk_event_id']}: →mitigating"])
 
@@ -485,7 +513,13 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of,
         return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
                      "decision 必须是 approved/rejected")
     try:
-        with transaction(con):
+        with transaction(con, immediate=True):
+            # 写锁下复检审批态（洞1.2）：并发下提案已被他人审批（approval_status≠pending）则拒绝并
+            # 回滚，防止处置副作用被重复执行（双批）。
+            fresh = cur.execute("SELECT approval_status FROM tasks WHERE task_id=?",
+                                (task_id,)).fetchone()
+            if not fresh or fresh["approval_status"] != "pending":
+                raise _StateConflict("任务不存在或无待审批提案（并发已被处理）")
             if decision == "rejected":
                 cur.execute("""UPDATE tasks SET status='assigned', approval_status='rejected',
                                proposed_action=NULL, proposal_params=NULL WHERE task_id=?""", (task_id,))
@@ -612,9 +646,10 @@ def approve_mitigation(con, task_id, decision, comment, actor, role, as_of,
             _log(cur, actor, role, "ApproveMitigation", task_id,
                  {"decision": decision, "comment": comment, "proposal": params,
                   "offsite_basis": offsite_basis, "memory_id": memory_id}, as_of, "ok")
-    except (ValueError, sqlite3.Error) as exc:
+    except (_StateConflict, ValueError, sqlite3.Error) as exc:
         # M7 加固：outbox 入队等异常先经 transaction 回滚（业务状态与写回一起撤销），
         # 再转结构化失败返回，守住 actions.py 顶部“从不抛异常给调用方”契约。
+        # 洞1.2：并发复检失败（_StateConflict）同路径转 _fail，业务回滚、审计留痕。
         return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
                      f"审批执行失败（已回滚）：{exc}", {"decision": decision})
     return _res(True, task_id, effects)
@@ -640,15 +675,8 @@ def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, rol
     open_tasks = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
                                 AND status NOT IN (?,?)""",
                              (risk_event_id, *TASK_TERMINAL)).fetchall()
-    effects = []
-    if outcome == "false_alarm":
-        for tr in open_tasks:
-            cur.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?", (tr["task_id"],))
-            effects.append(f"Task {tr['task_id']} cancelled（误报联动）")
-        for lid in json.loads(risk["affected_so_line_ids"]):  # 误报回滚行状态
-            cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
-                           WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
-    elif open_tasks:
+    # 前置校验（只读 + _fail，保持事务外——不产生写）：非误报不得有未结任务；mitigated 须已批提案。
+    if outcome != "false_alarm" and open_tasks:
         return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
                      f"存在非终态任务 {[t['task_id'] for t in open_tasks]}，仅 false_alarm 可强制关闭")
     if outcome == "mitigated":
@@ -658,16 +686,41 @@ def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, rol
             return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
                          "outcome=mitigated 需要存在已批准并执行的提案")
     status = "escalated" if outcome == "escalated" else "resolved"
-    cur.execute("""UPDATE risk_events SET status=?, outcome=?, resolution_summary=?, resolved_at=?
-                   WHERE risk_event_id=?""",
-                (status, outcome, resolution_summary, as_of, risk_event_id))
-    # C1：关闭时回填处置记忆的实际结果（同一 commit；无记忆行则 0 行回填，兼容无提案关闭路径）
-    n_mem = backfill_outcome(con, risk_event_id, quality_label, closed_by=actor,
-                             as_of=as_of, outcome=outcome)
-    _log(cur, actor, role, "CloseRiskEvent", risk_event_id,
-         {"outcome": outcome, "resolution_summary": resolution_summary,
-          "quality_label": quality_label}, as_of, "ok")
-    con.commit()
+    ensure_resolution_memory_table(con)  # 事务外幂等建表（对齐 approve_mitigation，避免事务内 DDL）
+    effects = []
+    n_mem = 0
+    # 洞1.1：把全部写操作（取消任务/回滚行/更新风险/回填记忆/审计）套进 BEGIN IMMEDIATE 事务
+    # + try/except→_fail，与 approve_mitigation 对齐——中途异常整体回滚、不留半成品、不穿透抛给
+    # 调用方（守 actions.py 顶部"从不抛异常给调用方"契约）。洞1.2：写锁下复检终态。
+    try:
+        with transaction(con, immediate=True):
+            rk = cur.execute("SELECT status FROM risk_events WHERE risk_event_id=?",
+                             (risk_event_id,)).fetchone()
+            if not rk or rk["status"] in RISK_TERMINAL:
+                raise _StateConflict("风险不存在或已终态（并发已被处理）")
+            if outcome == "false_alarm":
+                live_tasks = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
+                                            AND status NOT IN (?,?)""",
+                                         (risk_event_id, *TASK_TERMINAL)).fetchall()
+                for tr in live_tasks:
+                    cur.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?",
+                                (tr["task_id"],))
+                    effects.append(f"Task {tr['task_id']} cancelled（误报联动）")
+                for lid in json.loads(risk["affected_so_line_ids"]):  # 误报回滚行状态
+                    cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
+                                   WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
+            cur.execute("""UPDATE risk_events SET status=?, outcome=?, resolution_summary=?,
+                           resolved_at=? WHERE risk_event_id=?""",
+                        (status, outcome, resolution_summary, as_of, risk_event_id))
+            # C1：关闭时回填处置记忆的实际结果（同一事务；无记忆行则 0 行回填，兼容无提案关闭路径）
+            n_mem = backfill_outcome(con, risk_event_id, quality_label, closed_by=actor,
+                                     as_of=as_of, outcome=outcome)
+            _log(cur, actor, role, "CloseRiskEvent", risk_event_id,
+                 {"outcome": outcome, "resolution_summary": resolution_summary,
+                  "quality_label": quality_label}, as_of, "ok")
+    except (_StateConflict, ValueError, sqlite3.Error) as exc:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                     f"关闭执行失败（已回滚）：{exc}", {"outcome": outcome})
     effects.append(f"RiskEvent {risk_event_id}: →{status} ({outcome})")
     if n_mem:
         effects.append(f"处置记忆结果已回填 {n_mem} 条"

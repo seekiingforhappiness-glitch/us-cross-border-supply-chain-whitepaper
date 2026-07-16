@@ -178,25 +178,43 @@ def apply_procurement_candidates(con, cands, as_of):
         return (is_rich, anchor, x["rule_id"])
 
     for c in sorted(cands, key=_order):
-        seq += 1
-        rid = f"RSK-{seq:04d}"
-        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
-                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
-                       root_cause, status, resolved_at, outcome, resolution_summary,
-                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
-                     c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
-                     None, None, None, c.get("affected_invoice_line_ids"),
-                     c["po_id"], c["supplier_id"], c["affected_po_line_ids"]))
+        # 洞1.3 幂等：自然键 = (rule_id, po_id, supplier_id, affected_po_line_ids,
+        # affected_invoice_line_ids)——R7-R11 锚 po_line（±invoice 行区分 R10/R11），R12 锚 po_id、
+        # R13 锚 supplier_id。查非终态既有事件命中则 UPDATE（复用 id、不新增行、不动 seq），未命中
+        # 才 INSERT 续号。重跑同数据全部命中 → risk_events 不翻倍（对齐 apply_candidates 合并语义）。
+        ex = cur.execute("""SELECT risk_event_id FROM risk_events
+                            WHERE rule_id=? AND po_id IS ? AND supplier_id IS ?
+                              AND affected_po_line_ids=? AND affected_invoice_line_ids IS ?
+                              AND status NOT IN ('resolved','escalated')""",
+                         (c["rule_id"], c.get("po_id"), c.get("supplier_id"),
+                          c["affected_po_line_ids"], c.get("affected_invoice_line_ids"))).fetchone()
+        if ex:
+            rid = ex["risk_event_id"]
+            cur.execute("""UPDATE risk_events SET severity=?, affected_value_usd=?, root_cause=?
+                           WHERE risk_event_id=?""",
+                        (c["severity"], c["affected_value_usd"], c["root_cause"], rid))
+            result = "merged"
+        else:
+            seq += 1
+            rid = f"RSK-{seq:04d}"
+            cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                           shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                           root_cause, status, resolved_at, outcome, resolution_summary,
+                           affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
+                         c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
+                         None, None, None, c.get("affected_invoice_line_ids"),
+                         c["po_id"], c["supplier_id"], c["affected_po_line_ids"]))
+            result = "created"
+            created += 1
         cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
                        params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
                     ("engine", "system", "CreateRiskEvent", rid,
                      json.dumps({"rule_id": c["rule_id"], "po_id": c["po_id"],
                                  "po_line_ids": json.loads(c["affected_po_line_ids"]),
                                  "severity": c["severity"]}, ensure_ascii=False),
-                     as_of.isoformat(), ts, "created"))
-        created += 1
+                     as_of.isoformat(), ts, result))
     con.commit()
     return created
 
@@ -213,25 +231,40 @@ def apply_warehouse_candidates(con, cands, as_of):
     created = 0
     for c in sorted(cands, key=lambda x: (x["rule_id"],
                                           json.loads(x["affected_object_ids"])[0])):
-        seq += 1
-        rid = f"RSK-{seq:04d}"
-        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
-                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
-                       root_cause, status, resolved_at, outcome, resolution_summary,
-                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
-                       warehouse_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (rid, c["type"], c["rule_id"], c["severity"], None,
-                     c["affected_object_ids"], c["affected_value_usd"], c["detected_at"],
-                     c["root_cause"], "open", None, None, None, None, None, None, None,
-                     c["warehouse_id"]))
+        # 洞1.3 幂等：自然键 = (rule_id, affected_object_ids)——R16 锚 inventory_position_id、
+        # R17 锚 so_line_id、R18 锚 cycle_count_id（affected_object_ids 存入 affected_so_line_ids 列）。
+        # 查非终态既有事件命中则 UPDATE（复用 id、不新增行、不动 seq），未命中才 INSERT 续号。
+        ex = cur.execute("""SELECT risk_event_id FROM risk_events
+                            WHERE rule_id=? AND affected_so_line_ids=?
+                              AND status NOT IN ('resolved','escalated')""",
+                         (c["rule_id"], c["affected_object_ids"])).fetchone()
+        if ex:
+            rid = ex["risk_event_id"]
+            cur.execute("""UPDATE risk_events SET severity=?, affected_value_usd=?, root_cause=?
+                           WHERE risk_event_id=?""",
+                        (c["severity"], c["affected_value_usd"], c["root_cause"], rid))
+            result = "merged"
+        else:
+            seq += 1
+            rid = f"RSK-{seq:04d}"
+            cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                           shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                           root_cause, status, resolved_at, outcome, resolution_summary,
+                           affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
+                           warehouse_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (rid, c["type"], c["rule_id"], c["severity"], None,
+                         c["affected_object_ids"], c["affected_value_usd"], c["detected_at"],
+                         c["root_cause"], "open", None, None, None, None, None, None, None,
+                         c["warehouse_id"]))
+            result = "created"
+            created += 1
         cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
                        params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
                     ("engine", "system", "CreateRiskEvent", rid,
                      json.dumps({"rule_id": c["rule_id"], "warehouse_id": c["warehouse_id"],
                                  "affected": json.loads(c["affected_object_ids"]),
                                  "severity": c["severity"]}, ensure_ascii=False),
-                     as_of.isoformat(), ts, "created"))
-        created += 1
+                     as_of.isoformat(), ts, result))
     con.commit()
     return created
 
@@ -259,22 +292,40 @@ def apply_sourcing_candidates(con, cands, as_of):
         return (x["rule_id"], anchor)
 
     for c in sorted(cands, key=_order):
-        seq += 1
-        rid = f"RSK-{seq:04d}"
         # V6-裁1：affected_sku_ids 正式承载 risk_affects_sku。R14 锚定 SKU（sku_id 载于
         # affected_po_line_ids），并行写入正式列；R15 非 SKU 锚 → None。见函数 docstring 证据链。
         sku_ids = c["affected_po_line_ids"] if c["rule_id"] == "R14" else None
-        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
-                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
-                       root_cause, status, resolved_at, outcome, resolution_summary,
-                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
-                       affected_sku_ids)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
-                     c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
-                     None, None, None, c.get("affected_invoice_line_ids"),
-                     c["po_id"], c["supplier_id"], c["affected_po_line_ids"],
-                     sku_ids))
+        # 洞1.3 幂等：自然键 = (rule_id, po_id, supplier_id, affected_po_line_ids,
+        # affected_invoice_line_ids)——R14 锚 supplier_id + sku（载于 affected_po_line_ids）、
+        # R15 锚 po_id + maverick 发票行（affected_invoice_line_ids）。命中则 UPDATE 复用 id。
+        ex = cur.execute("""SELECT risk_event_id FROM risk_events
+                            WHERE rule_id=? AND po_id IS ? AND supplier_id IS ?
+                              AND affected_po_line_ids=? AND affected_invoice_line_ids IS ?
+                              AND status NOT IN ('resolved','escalated')""",
+                         (c["rule_id"], c.get("po_id"), c.get("supplier_id"),
+                          c["affected_po_line_ids"], c.get("affected_invoice_line_ids"))).fetchone()
+        if ex:
+            rid = ex["risk_event_id"]
+            cur.execute("""UPDATE risk_events SET severity=?, affected_value_usd=?, root_cause=?
+                           WHERE risk_event_id=?""",
+                        (c["severity"], c["affected_value_usd"], c["root_cause"], rid))
+            result = "merged"
+        else:
+            seq += 1
+            rid = f"RSK-{seq:04d}"
+            cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                           shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                           root_cause, status, resolved_at, outcome, resolution_summary,
+                           affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
+                           affected_sku_ids)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (rid, c["type"], c["rule_id"], c["severity"], None, "[]",
+                         c["affected_value_usd"], c["detected_at"], c["root_cause"], "open",
+                         None, None, None, c.get("affected_invoice_line_ids"),
+                         c["po_id"], c["supplier_id"], c["affected_po_line_ids"],
+                         sku_ids))
+            result = "created"
+            created += 1
         cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
                        params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
                     ("engine", "system", "CreateRiskEvent", rid,
@@ -282,8 +333,7 @@ def apply_sourcing_candidates(con, cands, as_of):
                                  "supplier_id": c["supplier_id"],
                                  "affected": json.loads(c["affected_po_line_ids"] or "[]"),
                                  "severity": c["severity"]}, ensure_ascii=False),
-                     as_of.isoformat(), ts, "created"))
-        created += 1
+                     as_of.isoformat(), ts, result))
     con.commit()
     return created
 
@@ -299,25 +349,41 @@ def apply_finance_candidates(con, cands, as_of):
     seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
     created = 0
     for c in sorted(cands, key=lambda x: (x["rule_id"], x["anchor"])):
-        seq += 1
-        rid = f"RSK-{seq:04d}"
-        cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
-                       shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
-                       root_cause, status, resolved_at, outcome, resolution_summary,
-                       affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
-                       warehouse_id, affected_sku_ids)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (rid, c["type"], c["rule_id"], c["severity"], None,
-                     json.dumps([c["anchor"]]), c["affected_value_usd"], c["detected_at"],
-                     c["root_cause"], "open", None, None, None, None, None, None, None,
-                     None, None))
+        # 洞1.3 幂等：自然键 = (rule_id, affected_so_line_ids=json([anchor]))——R19/R21 锚
+        # payment_id、R20 锚合成窗口键 CASH14D-<as_of>（anchor 存入 affected_so_line_ids 列）。
+        # 命中非终态既有事件则 UPDATE（复用 id、不新增行、不动 seq），未命中才 INSERT 续号。
+        anchor_json = json.dumps([c["anchor"]])
+        ex = cur.execute("""SELECT risk_event_id FROM risk_events
+                            WHERE rule_id=? AND affected_so_line_ids=?
+                              AND status NOT IN ('resolved','escalated')""",
+                         (c["rule_id"], anchor_json)).fetchone()
+        if ex:
+            rid = ex["risk_event_id"]
+            cur.execute("""UPDATE risk_events SET severity=?, affected_value_usd=?, root_cause=?
+                           WHERE risk_event_id=?""",
+                        (c["severity"], c["affected_value_usd"], c["root_cause"], rid))
+            result = "merged"
+        else:
+            seq += 1
+            rid = f"RSK-{seq:04d}"
+            cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                           shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                           root_cause, status, resolved_at, outcome, resolution_summary,
+                           affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
+                           warehouse_id, affected_sku_ids)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (rid, c["type"], c["rule_id"], c["severity"], None,
+                         anchor_json, c["affected_value_usd"], c["detected_at"],
+                         c["root_cause"], "open", None, None, None, None, None, None, None,
+                         None, None))
+            result = "created"
+            created += 1
         cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
                        params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
                     ("engine", "system", "CreateRiskEvent", rid,
                      json.dumps({"rule_id": c["rule_id"], "anchor": c["anchor"],
                                  "severity": c["severity"]}, ensure_ascii=False),
-                     as_of.isoformat(), ts, "created"))
-        created += 1
+                     as_of.isoformat(), ts, result))
     con.commit()
     return created
 

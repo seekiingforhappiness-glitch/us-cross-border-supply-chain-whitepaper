@@ -39,7 +39,11 @@ def next_stable_id(prefix: str, entropy: str) -> str:
 
 
 @contextmanager
-def transaction(conn: sqlite3.Connection) -> Iterator[None]:
+def transaction(conn: sqlite3.Connection, immediate: bool = False) -> Iterator[None]:
+    """写事务包装器。immediate=True 用 BEGIN IMMEDIATE 立即取写锁（洞1.2 TOCTOU 收窄）：
+    让"事务内状态机 SELECT 复检 + 写"在写锁下原子化，堵住"两并发都读到同状态都写入"的窗口
+    （单连接单线程下与 BEGIN 行为一致，故既有测试不受影响）。嵌套事务走 SAVEPOINT，immediate
+    对嵌套无意义（外层已持锁）。"""
     if conn.in_transaction:
         savepoint = "m1_action_context_transaction"
         conn.execute(f"SAVEPOINT {savepoint}")
@@ -53,7 +57,7 @@ def transaction(conn: sqlite3.Connection) -> Iterator[None]:
             conn.execute(f"RELEASE {savepoint}")
         return
 
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
     try:
         yield
     except Exception:
