@@ -331,6 +331,12 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V19 — 波2 收尾批：智能化正脸 + 生产级标准（2026-07-17，Daniel 原话"继续。记住：智能化和
+生产级落地标准"）。**范围：①runtime 治理 API+驾驶舱正脸（"让 AI 处置"一键起 run/状态徽章/
+预算条/步时间线/等审批联动 Z7/批后续跑/kill 开关 manager 专属人类通道）②ApproveQuoteDecision
+产物指纹绑定（沿 2b 动作名不可知原则扩到准入域）③Streamlit 余量写调用全量收编入总线
+④B-1 按钮 UI 点穿终验。生产级硬门=白话错误/幂等/审计/权限双层/诚实空态/对抗复核，缺一不收。
+
 **V18 — U7 裁决 + 波2 开工（2026-07-16 晚，Daniel 原话"你来决定"授权主会话裁决）。**
 ①U7 采纳评估书推荐（specs/2026-07-16-u7-console-migration-assessment.md §四）：**C 为主 + B-1**
 ——补齐 3 个冻结动作按钮（CloseRiskEvent/ApproveQuoteDecision/RejectOrRequestMoreInfo，零新写路，
