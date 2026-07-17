@@ -1,8 +1,19 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-17 凌晨（波2-2b 接缝列落地：35 表乐观锁+租户预留；确定性尺子精化 db_digest 新基线 9582dcb0）
+更新时间：2026-07-17（波2-2c 持久 Agent runtime 收官：状态机/幂等步/预算/等审批/kill；波2 主体工程齐）
 
 ## 当前位置
+
+> **波2-2c 持久 Agent runtime 收官（2026-07-17，Opus 执行断连后 SendMessage 原地续命完成，主会话
+> 独立复核全绿）**：agent/runtime.py 状态机（created→running→waiting_approval→…→done|failed|
+> timeout|budget_exhausted|killed，白名单迁移+CHECK 约束）；**写步骤全走 Command 总线**（幂等键
+> run:{run_id}:{step_no}，崩溃恢复重放同键恰一次，测试实证）；硬预算（步数/工具次数/真实执行秒，
+> 等审批不烧预算）+loop guard 防打转；等审批三分支（pending 如实等/approved 做写后复读三项核实/
+> rejected 白话失败）；kill switch CLI；think 步 LLM 不可用优雅降级如实标 mode。冻结区零可达
+> （读 approval_status 观察审批、永不能造成审批——6 处冻结字样全为读侧/文档，主会话亲查）。
+> as-built spec 落 specs/2026-07-17-wave2c-agent-runtime.md 候 Daniel 审。60 项 runtime 测试+
+> 全量回归绿，digest 确定性门在豁免登记后守住（9582dcb0）。**波2 余量**：runtime 驾驶舱接线、
+> ApproveQuoteDecision 绑定扩展、Streamlit 余量收编、B-1 按钮 UI 点穿。
 
 > **波2-2b 接缝列落地（2026-07-16 深夜，主会话贴身执行）**：35 对象表全员 **version 乐观锁列
 > （触发器自增：普通 UPDATE 自动+1、显式设值让位——未来乐观锁写路径零改造地基）+ tenant_id

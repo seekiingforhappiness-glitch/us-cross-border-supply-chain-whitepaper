@@ -28,6 +28,8 @@ TELEMETRY_TABLES = {
     "rule_run_ledger",   # G-Ledger：规则每次执行的真实 run_ts（何时真的跑过，本身就是证据）
     "llm_calls",         # 出境审计：真实调用时刻（D8 遥测例外，egress_gate 注释在案）
     "commands",          # Command 总线台账：created_at 真实 UTC（运行态命令痕，非 build 产物）
+    "agent_runs",        # 波2-2c Agent runtime：run 生命周期 created_at/updated_at 真实 UTC（运行态，非 build 产物）
+    "agent_run_steps",   # 波2-2c Agent runtime：每步 created_at 真实 UTC（运行痕，重建库中根本不存在，运行时自建）
 }
 
 

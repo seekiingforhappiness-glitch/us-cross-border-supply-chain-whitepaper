@@ -168,6 +168,8 @@ class AgentSession:
         # Warehouse focus（仓储对象工作台切片）：仓储 RiskEvent(R16-R18) 无 shipment/po_id，
         # 用 warehouse_id 锚点做对象 scoping（检索聚焦本仓的库存/预留/盘点及锚定风险）。
         self.focus_warehouse_id = focus_warehouse_id
+        # 波2-2c：本次 dispatch 的幂等键（runtime 恰一次通道），per-call 设置、finally 复位（同 trace 模式）。
+        self._idempotency_key = None
         self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
@@ -637,8 +639,11 @@ class AgentSession:
     # 波2：七个写动作全部经 execute_command（写总线，spec §一.4 dispatch 门）——落 commands 台账 +
     # 透传 G-Trace，再原样调既有函数。dispatch 不传 idempotency_key（AI 不去重），总线对结果透明。
     def _bus(self, action, params, action_func):
+        # 波2-2c：透传本次 dispatch 的幂等键（runtime 写步骤传 run:{run_id}:{step_no}，崩溃后 resume
+        # 重放同键拿首次结果=恰一次；其余调用方不传 → None → 现状不变，AI 仍不去重）。
         return execute_command(self.con, action=action, params=params, actor=AI_ACTOR,
-                               role=self.role, as_of=self.as_of, action_func=action_func)
+                               role=self.role, as_of=self.as_of, action_func=action_func,
+                               idempotency_key=self._idempotency_key)
 
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
         return self._bus("AssignTask", {"risk_event_id": risk_event_id,
@@ -683,14 +688,18 @@ class AgentSession:
         self.con.commit()
 
     # ---------- 统一调度 ----------
-    def dispatch(self, tool_name, args, trace_id=None):
+    def dispatch(self, tool_name, args, trace_id=None, idempotency_key=None):
         # G-Trace：AI 触发的写动作（含被拒的越权写）在本次 dispatch 期间把 trace_id 透传给 app.actions._log，
         #   使 action_log 该行 trace_id == 触发它的 LLM 调用 trace_id（血缘可拼）。trace_id=None（人工/测试
         #   直调 dispatch 不传）时不设置上下文 → _log 写 NULL。finally 复位防跨调用泄漏。
+        # 波2-2c idempotency_key：runtime 写步骤经此透传总线（run:{run_id}:{step_no}，恰一次）；
+        #   缺省 None = 既有调用方语义一字不变（不去重）。finally 复位防跨调用泄漏（同 trace 模式）。
         token = set_action_trace_id(trace_id) if trace_id is not None else None
+        self._idempotency_key = idempotency_key
         try:
             return self._dispatch(tool_name, args)
         finally:
+            self._idempotency_key = None
             if token is not None:
                 reset_action_trace_id(token)
 
