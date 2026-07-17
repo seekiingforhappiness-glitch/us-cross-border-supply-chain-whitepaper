@@ -331,6 +331,14 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V20 — 证据链智能波（2026-07-17，Daniel 原话"还不够智能，信息似乎也不够多"）。**
+诊断：AI 提案只给结论不给证据——系统已有三座金矿未接上提案卡：resolution_memory 186 条先例、
+bench1 180 例分域一致率、影响图谱全量。决议：**让 AI 的每一个建议自带证据链**——
+①提案证据包只读聚合端点（影响量化/同类先例统计与结局/该域信任档+一致率/备选方案代价对比，
+纯读零写路）②runtime 提案引用证据摘要+「用真模型」按趟开关（默认省钱模式白话标注）
+③提案详情卡四块证据可视化+AI 运营账卡补进行中 runs。V4 画面欠账（"同航线同类 8 例，
+7 例改期获批"式先例引用）就此清偿。
+
 **V19 — 波2 收尾批：智能化正脸 + 生产级标准（2026-07-17，Daniel 原话"继续。记住：智能化和
 生产级落地标准"）。**范围：①runtime 治理 API+驾驶舱正脸（"让 AI 处置"一键起 run/状态徽章/
 预算条/步时间线/等审批联动 Z7/批后续跑/kill 开关 manager 专属人类通道）②ApproveQuoteDecision
