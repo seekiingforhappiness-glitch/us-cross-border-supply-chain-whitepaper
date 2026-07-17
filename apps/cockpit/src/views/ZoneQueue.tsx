@@ -30,6 +30,10 @@ export default function ZoneQueue({ zone, onBack, onMap, onDrill, activeKey }: P
       crumbs={[{ label: "指挥墙", onClick: onBack }, { label: ZONE_SHORT[zone.zone] }]}
       title={zone.headline_label}
       alertCount={zone.alert_count}
+      alertLabel={zone.zone === "decisions" ? "超时/升级告警" : undefined}
+      alertTitle={zone.zone === "decisions"
+        ? "告警数=超期任务+升级件，不是待批提案数（待批数见卡片大数字与下方列表行数）"
+        : undefined}
       headerActions={
         zone.zone === "fulfillment" && onMap ? (
           <button className="cp-switch-btn" onClick={onMap}>

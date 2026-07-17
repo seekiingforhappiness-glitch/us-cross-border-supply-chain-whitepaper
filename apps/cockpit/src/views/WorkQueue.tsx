@@ -17,6 +17,10 @@ interface Props {
   crumbs: Crumb[];
   title: string;
   alertCount?: number;
+  /** 徽章文案（缺省"告警"）。可读性修正 2026-07-17：待拍板区徽章=超期+升级数，贴着"待批提案"
+      标题放会被读成待批数（Daniel 实测困惑）——由调用方按区传消歧文案与 title 白话。 */
+  alertLabel?: string;
+  alertTitle?: string;
   headerActions?: ReactNode;
   spec: QueueSpec | null;
   onDrill: (t: DrillTarget, key: string) => void;
@@ -27,7 +31,7 @@ interface Props {
 
 const badgeClass = (tone: "red" | "amber" | "neutral") => (tone === "red" ? "cp-chip red" : tone === "amber" ? "cp-chip amber" : "cp-chip");
 
-export default function WorkQueue({ crumbs, title, alertCount, headerActions, spec, onDrill, emptyHint, context, activeKey }: Props) {
+export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alertTitle, headerActions, spec, onDrill, emptyHint, context, activeKey }: Props) {
   const rows = spec?.rows ?? [];
   return (
     <div className="cp-zone">
@@ -47,7 +51,9 @@ export default function WorkQueue({ crumbs, title, alertCount, headerActions, sp
           ))}
         </nav>
         <span className="cp-panel-head__title">{title}</span>
-        {alertCount != null && alertCount > 0 && <span className="cp-chip red">{alertCount} 告警</span>}
+        {alertCount != null && alertCount > 0 && (
+          <span className="cp-chip red" title={alertTitle}>{alertCount} {alertLabel ?? "告警"}</span>
+        )}
         <span className="cp-panel-head__spacer" />
         {headerActions}
       </div>
