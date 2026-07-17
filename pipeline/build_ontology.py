@@ -25,7 +25,7 @@ from engine.resolution_memory import ensure_resolution_memory_table
 from agent.egress_gate import ensure_llm_calls_table
 # 桥3 结构生成（API 层 plan M3）：34 对象表 DDL 与 Pydantic 模型均从本体生成——本模块不再散落
 # 硬编码列清单，改为消费生成产物（object_ddls 现取 DDL；MODEL_BY_TABLE 供插入前契约校验）。
-from pipeline.generate_ddl import object_ddls
+from pipeline.generate_ddl import object_ddls, version_trigger_sql
 from pipeline.ontology_lint import load_ontology as _load_ontology_json
 from pipeline.ontology_models import MODEL_BY_TABLE
 
@@ -426,6 +426,7 @@ def main():
         if gen is not None:
             create_sql, colnames = gen
             cur.execute(create_sql)
+            cur.execute(version_trigger_sql(name))   # 波2-2b：乐观锁 version 自增触发器随表而生
             model = MODEL_BY_TABLE.get(name)
             if model is not None and validate_mode != "off":
                 for r in rows:
@@ -434,8 +435,11 @@ def main():
                     except ValidationError as e:
                         rid = r.get(colnames[0], "?") if colnames else "?"
                         validation_violations.append((name, rid, str(e).replace("\n", " ")[:240]))
+            # 显式列名插入（波2-2b）：表尾新增的系统列（version/tenant_id）由 DEFAULT 填充，
+            # 业务列仍按本体声明序定位——无列名的全行插入在表有系统列后必然错位。
             cur.executemany(
-                f"INSERT INTO {name} VALUES ({','.join('?' * len(colnames))})",
+                f"INSERT INTO {name} ({','.join(colnames)}) "
+                f"VALUES ({','.join('?' * len(colnames))})",
                 [[r.get(c, "") for c in colnames] for r in rows])
         else:
             cur.execute(f"CREATE TABLE {name} ({', '.join(cols)}, PRIMARY KEY ({pk}))")

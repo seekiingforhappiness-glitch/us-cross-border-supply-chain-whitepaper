@@ -1,8 +1,19 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-16 深夜（波2 第一批收官：Command 写总线+审批绑指纹+API 硬化+B-1；对抗复核 F1-F3 全修）
+更新时间：2026-07-17 凌晨（波2-2b 接缝列落地：35 表乐观锁+租户预留；确定性尺子精化 db_digest 新基线 9582dcb0）
 
 ## 当前位置
+
+> **波2-2b 接缝列落地（2026-07-16 深夜，主会话贴身执行）**：35 对象表全员 **version 乐观锁列
+> （触发器自增：普通 UPDATE 自动+1、显式设值让位——未来乐观锁写路径零改造地基）+ tenant_id
+> 预留（恒 'default'，V14 接缝①）**。桥3 生成器出系统列（本体保持业务纯净，lint/影子对账共用
+> SYSTEM_COLUMNS 单一豁免源）；引擎自建表（tasks/risk_events 等）经**链尾幂等迁移步**
+> pipeline/apply_seam_columns 补齐（engine/ 零改动），同脚本完成 simworld 迁移（70 列+35 触发器）。
+> **诚实发现**：两次重建对照暴露"文件 md5 逐字节一致"不变量自 G-Ledger（真实 run_ts）起已不成立
+> ——尺子精化为 pipeline/db_digest 业务逻辑指纹（遥测表 rule_run_ledger/llm_calls/commands 豁免+
+> 理由在案），新基线 9582dcb0 两次全链重建实证一致；文件 md5 继续管"测试期间未触库"守恒。
+> 回归全绿：pytest 80/lint strict/影子 0 差异/安全 288/闭环/ux_p0/mcp/seam 六项堵门测试。
+> 验证世界重建致运行态遥测清零（llm_calls 等，属已知重建语义）；shadow.sqlite 旁路账本完整保留。
 
 > **波2 第一批收官（2026-07-16 深夜，workflows：Opus×2/Sonnet×2，首轮6次停滞后精简任务书续跑成功）**：
 > **Command 写总线**（app/command_bus.py：commands 台账/幂等键 claim-first 双发只执行一次/参数指纹/

@@ -169,6 +169,13 @@ def strip_role_annotation(executor: str) -> str:
     return executor.split("(")[0].strip()
 
 
+# V14 接缝①②/V18 波2-2b：**系统列**（乐观锁 version + 租户预留 tenant_id）由桥3 生成器统一
+# 追加到全部对象表，不进业务本体 properties（本体保持业务纯净；基础设施列在生成层声明）。
+# 本常量是 lint A 类断言与 generate_ddl 影子对比共用的唯一豁免源——除此二列外，任何"表有列
+# 但本体未声明"仍照常报差异（豁免面最小化）。
+SYSTEM_COLUMNS = {"version", "tenant_id"}
+
+
 def extract_module_literal(path: Path, name: str):
     """静态（AST）解析源码文件，取出顶层赋值 `name = <字面量>` 的值。
     只用 ast.literal_eval，从不执行模块——这是本工具"只读、零副作用"的关键保证。"""
@@ -233,7 +240,7 @@ def assert_a_objects_tables(onto: dict, schema: dict) -> tuple[list[Diff], list[
             diffs.append(Diff("A", MISSING, otype,
                               f"本体属性 {otype}.{missing} 在表 `{table}` 无对应列"))
         # 多列：表有列但本体未声明为属性
-        for extra in sorted(col_names - prop_names):
+        for extra in sorted(col_names - prop_names - SYSTEM_COLUMNS):
             diffs.append(Diff("A", EXTRA, otype,
                               f"表 `{table}` 有列 `{extra}`，本体对象 {otype} 未声明该属性"))
         # 主键不符

@@ -38,6 +38,9 @@ python3 -m engine.detect
 python3 -m engine.evaluate && python3 -m engine.evaluate_cost \
   && python3 -m engine.evaluate_procurement && python3 -m engine.evaluate_warehouse
 python3 -m datagen.seed_demo_ops
+python3 -m pipeline.apply_seam_columns    # 波2-2b 接缝列链尾幂等步（tasks/risk_events 等引擎表补 version/tenant_id）
+# 重建确定性门（尺子=业务逻辑指纹，遥测表豁免见 pipeline/db_digest.py 头注）：两次全链重建
+# python3 -m pipeline.db_digest 输出必须一致（2026-07-16 起文件 md5 因 G-Ledger 真实时间戳在重建间合法不同）
 # ④ 五场景闭环
 python3 -m app.test_closed_loop && python3 -m app.test_cost_loop && python3 -m app.test_admission_loop \
   && python3 -m app.test_procurement_loop && python3 -m app.test_sourcing_loop && python3 -m app.test_warehouse_loop

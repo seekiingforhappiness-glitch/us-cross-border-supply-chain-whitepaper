@@ -27,9 +27,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from pipeline.ontology_lint import (expected_affinities, load_db_schema,
-                                    load_ontology, object_table_name,
-                                    sqlite_affinity)
+from pipeline.ontology_lint import (SYSTEM_COLUMNS, expected_affinities,
+                                    load_db_schema, load_ontology,
+                                    object_table_name, sqlite_affinity)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = REPO_ROOT / "data" / "ontology.sqlite"
@@ -65,9 +65,25 @@ def object_ddls(onto: dict) -> dict[str, tuple[str, list[str]]]:
         colnames = [p["name"] for p in obj["properties"]]
         col_defs = [f"{p['name']} {ddl_type(p.get('type'))}" for p in obj["properties"]]
         pk = obj.get("primaryKey")
+        # V18 波2-2b 系统列（V14 接缝①②）：乐观锁 version（触发器自增，见 version_trigger_sql）+
+        # tenant_id 预留（单租户期恒 'default'，不做隔离逻辑）。只进 DDL 不进 colnames——
+        # build_ontology 按 colnames 显式列名插入，系统列由 DEFAULT 填充。
+        col_defs += ["version INTEGER NOT NULL DEFAULT 0",
+                     "tenant_id TEXT NOT NULL DEFAULT 'default'"]
         create = f"CREATE TABLE {table} ({', '.join(col_defs)}, PRIMARY KEY ({pk}))"
         out[table] = (create, colnames)
     return out
+
+
+def version_trigger_sql(table: str) -> str:
+    """乐观锁 version 自增触发器：任何未显式改 version 的 UPDATE 自动 +1。
+    WHEN NEW.version = OLD.version 三重作用：① 应用层显式设 version（未来乐观锁写路径
+    expected_version+1）时触发器让位不干预；② 内层 UPDATE 使 NEW.version≠OLD.version，
+    天然终止递归；③ 现有全部写路径零改动即获得版本递增。确定性：同一操作序列 → 同一版本序
+    → 重建 md5 稳定（实测两次重建逐字节一致后方可入基线）。"""
+    return (f"CREATE TRIGGER IF NOT EXISTS trg_{table}_version AFTER UPDATE ON {table} "
+            f"WHEN NEW.version = OLD.version "
+            f"BEGIN UPDATE {table} SET version = OLD.version + 1 WHERE rowid = NEW.rowid; END")
 
 
 def _shadow(onto: dict) -> tuple[list[tuple], list[str]]:
@@ -95,7 +111,7 @@ def _shadow(onto: dict) -> tuple[list[tuple], list[str]]:
         db_names = set(db_type_of)
         for col in sorted(gen_names - db_names):
             diffs.append((table, col, "MISSING", f"生成列 `{col}` 在实库表无对应列"))
-        for col in sorted(db_names - gen_names):
+        for col in sorted(db_names - gen_names - SYSTEM_COLUMNS):
             diffs.append((table, col, "EXTRA", f"实库列 `{col}` 本体未声明"))
         for col in sorted(gen_names & db_names):
             otype_col = prop_by_name[col].get("type")
