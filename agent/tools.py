@@ -16,6 +16,10 @@ from app.actions import (assign_task, propose_mitigation, propose_collection, _l
                          set_action_trace_id, reset_action_trace_id)
 from app.admission_actions import (ADM_PERMS, create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario)
+# 波2 写总线（spec §一.4「三门贯通」之 dispatch 门）：AI 写动作经此落 commands 台账再原样调
+# app.actions/app.admission_actions（函数本体一行不改）。dispatch 不传幂等键（AI 不去重），故总线
+# 对成功路径透明——结果与副作用与直调一字不差，只多记一条命令行 + 透传 G-Trace 到台账。
+from app.command_bus import execute_command
 from engine.graph import explain_path
 # C1 只读检索处置记忆（写入函数不 import——AI 永远拿不到写工具）
 from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
@@ -630,36 +634,44 @@ class AgentSession:
         }
 
     # ---------- 写动作（仅 proposal-only 白名单；role 随会话注入，动作层再校验一次） ----------
+    # 波2：七个写动作全部经 execute_command（写总线，spec §一.4 dispatch 门）——落 commands 台账 +
+    # 透传 G-Trace，再原样调既有函数。dispatch 不传 idempotency_key（AI 不去重），总线对结果透明。
+    def _bus(self, action, params, action_func):
+        return execute_command(self.con, action=action, params=params, actor=AI_ACTOR,
+                               role=self.role, as_of=self.as_of, action_func=action_func)
+
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
-        return assign_task(self.con, risk_event_id, assignee_role, priority, due_at,
-                           actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("AssignTask", {"risk_event_id": risk_event_id,
+                         "assignee_role": assignee_role, "priority": priority, "due_at": due_at},
+                         assign_task)
 
     def _propose_mitigation(self, task_id, proposed_action, proposal_params):
-        return propose_mitigation(self.con, task_id, proposed_action, proposal_params,
-                                  actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("ProposeMitigation", {"task_id": task_id, "proposed_action": proposed_action,
+                         "proposal_params": proposal_params}, propose_mitigation)
 
     def _propose_collection(self, payment_id, note=None):
-        return propose_collection(self.con, payment_id, note=note,
-                                  actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("ProposeCollection", {"payment_id": payment_id, "note": note},
+                         propose_collection)
 
     # 准入准备动作 B1-B4：role 随会话注入，动作层 ADM_PERMS + 门禁再校验一次（双闸）。
     def _create_admission_case(self, customer_id, sku_id, request_type, incoterm_candidate,
                                target_launch_date, monthly_order_estimate):
-        return create_admission_case(self.con, customer_id, sku_id, request_type, incoterm_candidate,
-                                     target_launch_date, monthly_order_estimate,
-                                     actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("CreateAdmissionCase", {"customer_id": customer_id, "sku_id": sku_id,
+                         "request_type": request_type, "incoterm_candidate": incoterm_candidate,
+                         "target_launch_date": target_launch_date,
+                         "monthly_order_estimate": monthly_order_estimate}, create_admission_case)
 
     def _run_compliance_precheck(self, admission_case_id, findings):
-        return run_compliance_precheck(self.con, admission_case_id, findings,
-                                       actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("RunCompliancePrecheck", {"admission_case_id": admission_case_id,
+                         "findings": findings}, run_compliance_precheck)
 
     def _build_logistics_plan(self, admission_case_id, plan):
-        return build_logistics_plan(self.con, admission_case_id, plan,
-                                    actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("BuildLogisticsPlan", {"admission_case_id": admission_case_id,
+                         "plan": plan}, build_logistics_plan)
 
     def _calculate_cost_scenario(self, logistics_plan_id, scenario):
-        return calculate_cost_scenario(self.con, logistics_plan_id, scenario,
-                                       actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("CalculateCostScenario", {"logistics_plan_id": logistics_plan_id,
+                         "scenario": scenario}, calculate_cost_scenario)
 
     def _audit_denied(self, tool_name, args, result):
         """把一次被拒的调用写入 action_log（越权/越域一律留痕，AI 没有静默后门）。"""

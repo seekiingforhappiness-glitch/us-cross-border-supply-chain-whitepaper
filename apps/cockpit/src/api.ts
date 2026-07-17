@@ -81,19 +81,64 @@ export interface DecisionResult {
   error: string | null;
 }
 
+// 幂等键（B-1/V18）：优先用浏览器原生 crypto.randomUUID（现代浏览器 + localhost/https 安全上下文
+// 皆支持）；极端环境缺失时退化为时间戳+随机数拼接，不阻断提交——生成失败只是失去"同键重放只执行
+// 一次"的保护，不影响功能。后端 /decisions 早已透传 Idempotency-Key 头给写总线（波2 §一.4，本次
+// 未改一行后端），此前 postDecision 一直没发这个头，四个冻结按钮（含既有 ApproveMitigation）都
+// 补上；不改函数签名，调用方零改动自动获得保护。
+function genIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// 对抗复核 F3 修正：随机键每次调用重生 → 真正的网络重试各拿新键，"同键重放"形同虚设。
+// 改为**按意图记键**：同一（动作+请求体+操作者）在网络失败/在飞 409 期间复用同一个键（重试
+// 命中总线重放）；成功或业务性拒绝（权限/指纹/状态机）后意图即完成，删记录——下一次同体请求
+// 是新意图拿新键，不会永远重放旧结果。键仍是随机 UUID，意图签名只在本模块内存活。
+const pendingIntentKeys = new Map<string, string>();
+
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(",")}]`;
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+function intentKeyFor(name: string, body: Record<string, unknown>, actor: string): { sig: string; key: string } {
+  const sig = `${name}|${actor}|${stableStringify(body)}`;
+  let key = pendingIntentKeys.get(sig);
+  if (!key) {
+    key = genIdempotencyKey();
+    pendingIntentKeys.set(sig, key);
+  }
+  return { sig, key };
+}
+
 export async function postDecision(
   name: string,
   body: Record<string, unknown>,
   role: Role,
   actor: string,
 ): Promise<DecisionResult> {
-  const resp = await fetch(`${API_BASE_URL}/decisions/${encodeURIComponent(name)}`, {
-    method: "POST",
-    // 写通道同样跟随当前世界（X-World）：在模拟世界里拍板即写模拟库、验证世界即写验证库——
-    // apps/api::post_decision 经 get_db_path 解析世界，前后端一套世界语义。
-    headers: reqHeaders(role, { "Content-Type": "application/json", "X-Actor": actor }),
-    body: JSON.stringify(body),
-  });
+  const { sig, key } = intentKeyFor(name, body, actor);
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE_URL}/decisions/${encodeURIComponent(name)}`, {
+      method: "POST",
+      // 写通道同样跟随当前世界（X-World）：在模拟世界里拍板即写模拟库、验证世界即写验证库——
+      // apps/api::post_decision 经 get_db_path 解析世界，前后端一套世界语义。
+      headers: reqHeaders(role, { "Content-Type": "application/json", "X-Actor": actor, "Idempotency-Key": key }),
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    // 网络级失败（fetch 未拿到响应）：保留意图键——用户重试同一意图时复用同键，总线保证只执行一次。
+    throw e;
+  }
+  // 409=在飞（另一并发请求已认领）：保留键，稍后同键重试可取回首次结果；其余任何已决响应
+  // （成功/业务拒绝）都意味着这个意图已了结，删记录换新意图。
+  if (resp.status !== 409) pendingIntentKeys.delete(sig);
   if (!resp.ok) {
     // 后端 HTTPException detail 为白话中文（如"缺少 X-Actor…""角色无权…""提案人不能审批自己…"）。
     let detail = `提交失败：HTTP ${resp.status}`;

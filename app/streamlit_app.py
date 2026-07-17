@@ -37,6 +37,7 @@ try:
     from app.coordination_actions import (COORD_PERMS, is_overdue, record_outreach,
                                           record_response, escalate_coordination,
                                           resolve_coordination, mark_dead_ended)
+    from app.command_bus import execute_command   # 波2 写总线（spec §一.4 Streamlit 门，本批仅任务处理台）
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from actions import (ROLE_PERMS, assign_task, propose_mitigation, approve_mitigation,
                          close_risk_event, ensure_task_work_queue_columns)
@@ -47,6 +48,7 @@ except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys
     from coordination_actions import (COORD_PERMS, is_overdue, record_outreach,
                                       record_response, escalate_coordination,
                                       resolve_coordination, mark_dead_ended)
+    from command_bus import execute_command       # 波2 写总线（脚本目录上下文）
 
 try:
     from app.rbac_nav import (CONTROL_GROUP_LABELS, CONTROL_GROUP_OF, ROLE_WORKSPACE_META,
@@ -983,8 +985,11 @@ def render_task_tab():
                                "accept_charge": {"reason": creason},
                                "rebill_customer": {"rebill_amount_usd": rebill_amt,
                                                    "incoterm_basis": incoterm}}[cact]
-                    _r = propose_mitigation(db(), tsel, cact, cparams,
-                                            actor=actor, role=role, as_of=AS_OF)
+                    _r = execute_command(db(), action="ProposeMitigation",  # 波2 写总线（任务处理台）
+                                         params={"task_id": tsel, "proposed_action": cact,
+                                                 "proposal_params": cparams},
+                                         actor=actor, role=role, as_of=AS_OF,
+                                         action_func=propose_mitigation)
                     _label = {"dispute": f"发起费用争议 ${disputed}", "accept_charge": "接受该笔费用",
                              "rebill_customer": f"转嫁客户 ${rebill_amt}"}[cact]
                     show_result(_r, human=(f"提案已提交：{tsel} {_label}，等待经理审批"
@@ -1006,8 +1011,11 @@ def render_task_tab():
                                "raise_supplier_claim": {"claim_amount_usd": pamt, "reason": preason},
                                "dispute_supplier_invoice": {"reason": preason,
                                                             "disputed_amount_usd": pamt}}[pact]
-                    _r = propose_mitigation(db(), tsel, pact, pparams,
-                                            actor=actor, role=role, as_of=AS_OF)
+                    _r = execute_command(db(), action="ProposeMitigation",  # 波2 写总线（任务处理台）
+                                         params={"task_id": tsel, "proposed_action": pact,
+                                                 "proposal_params": pparams},
+                                         actor=actor, role=role, as_of=AS_OF,
+                                         action_func=propose_mitigation)
                     _label = {"expedite_po": "催单加急", "accept_receipt_variance": "接受收货差异",
                              "raise_supplier_claim": f"发起供应商索赔 ${pamt}",
                              "dispute_supplier_invoice": f"争议供应商发票 ${pamt}"}[pact]
@@ -1031,8 +1039,11 @@ def render_task_tab():
                               "expedite": {"new_mode": "air", "est_cost_usd": cost,
                                            "expected_new_eta": new_eta.isoformat()},
                               "accept_delay": {"reason": reason}}[act]
-                    _r = propose_mitigation(db(), tsel, act, params,
-                                            actor=actor, role=role, as_of=AS_OF)
+                    _r = execute_command(db(), action="ProposeMitigation",  # 波2 写总线（任务处理台）
+                                         params={"task_id": tsel, "proposed_action": act,
+                                                 "proposal_params": params},
+                                         actor=actor, role=role, as_of=AS_OF,
+                                         action_func=propose_mitigation)
                     _label = {"reschedule": f"改期至 {new_date.isoformat()}",
                              "expedite": f"加急空运，预计费用 ${cost}",
                              "accept_delay": "接受延误"}[act]
@@ -1052,9 +1063,12 @@ def render_task_tab():
                 if st.form_submit_button("提交审批"):
                     _act = t["proposed_action"]
                     _params = json.loads(t["proposal_params"] or "{}")
-                    _r = approve_mitigation(db(), tsel, decision, comment,
-                                            actor=actor, role=role, as_of=AS_OF,
-                                            offsite_basis=offsite.strip() or None)
+                    _r = execute_command(db(), action="ApproveMitigation",  # 波2 写总线（任务处理台，含审批绑指纹）
+                                         params={"task_id": tsel, "decision": decision,
+                                                 "comment": comment,
+                                                 "offsite_basis": offsite.strip() or None},
+                                         actor=actor, role=role, as_of=AS_OF,
+                                         action_func=approve_mitigation)
                     show_result(_r, human=(_approve_human(t, _act, _params, decision)
                                            if _r["ok"] else None))
         # 对象工作台入口：点选的 task → 进入 Task 富工作台（同 RiskEvent 的 focus 机制）

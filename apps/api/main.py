@@ -34,6 +34,8 @@ from typing import Any
 import yaml
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # ── 路径解析：不依赖 uvicorn 启动时的 cwd，一律相对本文件定位仓库根（同 agent/mcp_server.py 惯例）──
 _HERE = Path(__file__).resolve().parent                      # apps/api/
@@ -43,6 +45,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import app.actions as app_actions                                       # noqa: E402
 import app.admission_actions as app_admission_actions                    # noqa: E402
+from app.command_bus import execute_command                             # noqa: E402  波2 写总线（三门贯通）
 from agent.mcp_server import SensitiveFieldMasker                        # noqa: E402
 from pipeline.ontology_models import MODEL_BY_TABLE, MODEL_BY_TYPE       # noqa: E402
 from pipeline.ontology_runtime import (                                  # noqa: E402
@@ -207,6 +210,47 @@ app.add_middleware(
 )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# §二 API 契约硬化：统一错误信封（向后兼容——既有 detail 键**逐字保留**，仅新增 error 对象）。
+# error = {code(机器码), message(白话), detail?(原始非字符串 detail 的容器)}；既有测试读 detail 不受影响。
+# _StateConflict（写锁复检 / 幂等在飞冲突，spec §二）→ HTTP 409。
+# ═══════════════════════════════════════════════════════════════════════════
+_ERROR_CODE_BY_STATUS = {
+    400: "bad_request", 403: "forbidden", 404: "not_found",
+    409: "state_conflict", 422: "unprocessable_entity", 500: "internal_error",
+}
+_GENERIC_ERROR_MSG = {
+    400: "请求有误", 403: "无权执行", 404: "资源不存在",
+    409: "状态冲突（并发写或提案已变更）", 422: "请求无法处理", 500: "服务内部错误",
+}
+
+
+def _error_envelope(status_code: int, detail) -> dict:
+    """{detail:<原样保留>, error:{code,message,detail?}}。detail 为字符串（现存全部情形）时
+    error.message 即该白话；非字符串（如校验错误列表）时 message 用通用白话、原 detail 落 error.detail。"""
+    code = _ERROR_CODE_BY_STATUS.get(status_code, f"http_{status_code}")
+    if isinstance(detail, str):
+        error = {"code": code, "message": detail}
+    else:
+        error = {"code": code, "message": _GENERIC_ERROR_MSG.get(status_code, "请求未成功"),
+                 "detail": detail}
+    return {"detail": detail, "error": error}
+
+
+@app.exception_handler(StarletteHTTPException)
+def _http_exception_envelope(request: Request, exc: StarletteHTTPException):
+    """既有 HTTPException 响应统一裹信封：detail 逐字保留 + 附 error 对象。透传原 headers（如有）。"""
+    return JSONResponse(status_code=exc.status_code,
+                        content=_error_envelope(exc.status_code, exc.detail),
+                        headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(app_actions._StateConflict)
+def _state_conflict_envelope(request: Request, exc: app_actions._StateConflict):
+    """写锁复检 / 幂等在飞冲突 → 409（spec §二 _StateConflict→HTTP 409）。总线抛出即到这。"""
+    return JSONResponse(status_code=409, content=_error_envelope(409, str(exc)))
+
+
 # 所连库文件名 → 世界标识（驾驶舱地基单：双世界切换的可见锚点）：ontology.sqlite=验证世界
 # （datagen 种子库，规则档案 R/P=1.000 对照源）；simworld.sqlite=模拟世界（14 个月连续活世界，
 # 见 sim/store.py 头注）；其他文件名原样回退成自己——新库先诚实标注文件名，不强行归类成
@@ -265,6 +309,9 @@ def list_objects(type: str, request: Request,
                   db_path: str = Depends(get_db_path)) -> dict:
     _require_known_type(type)
     qp = dict(request.query_params)
+    # §二 keyset 游标翻页：cursor 参数**在场**才启用（缺省行为逐字节不变，见下方 not cursor_mode 分支）。
+    cursor_mode = "cursor" in qp
+    cursor = qp.pop("cursor", None)
     raw_limit = qp.pop("limit", None)
     if raw_limit in (None, ""):
         limit = 100
@@ -283,16 +330,40 @@ def list_objects(type: str, request: Request,
             422, detail=f"未知过滤字段 {bad_cols}——{type} 合法属性：{sorted(valid_cols)}")
 
     table = TABLE_BY_TYPE[type]
-    where_sql = " AND ".join(f'"{k}"=?' for k in qp)
-    sql = f'SELECT * FROM "{table}"' + (f" WHERE {where_sql}" if where_sql else "") + " LIMIT ?"
-    rows = con.execute(sql, (*qp.values(), limit)).fetchall()
-
     model = MODEL_BY_TYPE[type]
+    masker = SensitiveFieldMasker(get_ontology_dict(), x_role)
+
+    if not cursor_mode:
+        # 无 cursor：与升级前**逐字节一致**（无 ORDER BY、响应无 next_cursor 字段）——加用例钉死。
+        where_sql = " AND ".join(f'"{k}"=?' for k in qp)
+        sql = f'SELECT * FROM "{table}"' + (f" WHERE {where_sql}" if where_sql else "") + " LIMIT ?"
+        rows = con.execute(sql, (*qp.values(), limit)).fetchall()
+        items = [model.model_validate(dict(r)).model_dump(mode="json") for r in rows]
+        masker.mask_value(items)
+        # world 信封字段（U1）：既有字段全不动，仅附加所连世界标识；单对象端点无信封故不加（保对象契约）。
+        return {"type": type, "world": _infer_world(db_path),
+                "count": len(items), "limit": limit, "items": items}
+
+    # cursor 在场 → keyset：ORDER BY 主键 + WHERE pk > cursor（cursor 非空时）。主键全序稳定 ⇒
+    # 逐页 next_cursor 串联的并集 = 全量、无重漏（加用例钉死）。首页传空 cursor（cursor=）即从头翻。
+    pk = PK_BY_TYPE[type]
+    where_clauses, params = [], []
+    if cursor:                                        # 空串=从头，不加下界；非空=严格大于上页末键
+        where_clauses.append(f'"{pk}" > ?')
+        params.append(cursor)
+    for k, v in qp.items():                           # 保留既有等值过滤（与无 cursor 分支同白名单）
+        where_clauses.append(f'"{k}"=?')
+        params.append(v)
+    where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    sql = f'SELECT * FROM "{table}"{where_sql} ORDER BY "{pk}" LIMIT ?'
+    params.append(limit)
+    rows = con.execute(sql, params).fetchall()
+    # 满页才给下页游标（末行主键）；不足一页即到底（next_cursor=None）。游标取自原始行主键，不受脱敏影响。
+    next_cursor = rows[-1][pk] if len(rows) == limit else None
     items = [model.model_validate(dict(r)).model_dump(mode="json") for r in rows]
-    SensitiveFieldMasker(get_ontology_dict(), x_role).mask_value(items)
-    # world 信封字段（U1）：既有字段全不动，仅附加所连世界标识；单对象端点无信封故不加（保对象契约）。
+    masker.mask_value(items)
     return {"type": type, "world": _infer_world(db_path),
-            "count": len(items), "limit": limit, "items": items}
+            "count": len(items), "limit": limit, "items": items, "next_cursor": next_cursor}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -346,6 +417,7 @@ def get_object_links(type: str, id: str, link: str,
 @app.post("/actions/{name}")
 def post_action(name: str, body: dict = Body(default={}),
                  x_role: str = Header(default="ops", alias="X-Role"),
+                 idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                  db_path: str = Depends(get_db_path)) -> dict:
     action = ACTION_BY_ALIAS.get(name)
     if action is None:                              # 冻结区/其余 25 个动作 = 路由生成层就不存在
@@ -367,10 +439,15 @@ def post_action(name: str, body: dict = Body(default={}),
     allowed_roles = build_role_perms(get_ontology_dict()).get(permission_key, set())
     permitted = x_role in allowed_roles
 
+    # 波2：写入经 execute_command（写总线，spec §一.4）——落 commands 台账 + Idempotency-Key 透传总线，
+    # 再原样调既有 fn（maker-checker/门禁语义原封）。幂等键命中 → 原样回首次结果；在飞冲突 → 总线抛
+    # _StateConflict → 上面注册的处理器映射 409。签名不匹配的 TypeError 仍就地映射 422（向后兼容）。
     con = app_actions.connect(db_path)
     try:
         try:
-            result = fn(con, **body, actor=API_ACTOR, role=x_role, as_of=AS_OF)
+            result = execute_command(con, action=action["name"], params=body,
+                                     actor=API_ACTOR, role=x_role, as_of=AS_OF,
+                                     action_func=fn, idempotency_key=idempotency_key)
         except TypeError as exc:
             raise HTTPException(
                 422, detail=f"请求体参数与动作 '{action['name']}' 签名不匹配：{exc}")

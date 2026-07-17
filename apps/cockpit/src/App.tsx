@@ -254,7 +254,16 @@ export default function App() {
         </div>
       </div>
 
-      {card && <ObjectCard target={card} role={role} links={links} onOpenObject={setCard} onClose={() => setCard(null)} />}
+      {card && (
+        <ObjectCard
+          target={card}
+          role={role}
+          links={links}
+          onOpenObject={setCard}
+          onClose={() => setCard(null)}
+          onActed={refreshVitalsData} // B-1：准入案批准/驳回后刷新体征（准入漏斗/准入毛利率分布随之变化）
+        />
+      )}
     </div>
   );
 }

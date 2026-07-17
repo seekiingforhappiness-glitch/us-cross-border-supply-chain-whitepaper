@@ -1,8 +1,20 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-16 晚（波U 用户正脸七件全量收官+档1 首份真一致率 53.9%/critical 27.3%）
+更新时间：2026-07-16 深夜（波2 第一批收官：Command 写总线+审批绑指纹+API 硬化+B-1；对抗复核 F1-F3 全修）
 
 ## 当前位置
+
+> **波2 第一批收官（2026-07-16 深夜，workflows：Opus×2/Sonnet×2，首轮6次停滞后精简任务书续跑成功）**：
+> **Command 写总线**（app/command_bus.py：commands 台账/幂等键 claim-first 双发只执行一次/参数指纹/
+> **审批绑提案指纹**——批的那一刻校验"你看到的方案就是库里这一版"；三门 MCP dispatch+/actions+
+> /decisions 全贯通，Streamlit 本批仅任务处理台其余登记欠账；app/actions.py 一行未改）+**API 契约
+> 硬化**（统一错误信封/_StateConflict→409/Idempotency-Key/objects 游标分页）+**B-1 三冻结按钮**
+> （关闭风险[ops 按本体 executors 核正]/批准报价/驳回补件，零新写路复用 /decisions）。对抗复核
+> F1-F3 全修：绑定基线改**动作名不可知**的规范提案指纹列（ProposeCollection 族纳入覆盖）、异常
+> 撤坑防幂等键毒化、前端按意图记键防"每调换键去重虚设"+BUSY 窄窗闭合，新增 2 堵门用例。回归
+> 80 passed+安全套件+闭环+lint 零差异+tsc/build 干净+双库 md5 未动。**第二批挂账**：2b 乐观锁
+> version 列+tenant_id 预留（主会话贴身，涉真值新基线）、2c 持久 Agent runtime、ApproveQuoteDecision
+> 绑定扩展、Streamlit 余量收编。
 
 > **波U 用户正脸全量收官 + 档1 首份真一致率（2026-07-16 晚，V17 workflows 编排：7 代理三阶段，
 > Opus×3/Sonnet×4，进程中断后断点续跑意外收获"生成与验证物理隔离"双层质检）**：

@@ -1721,6 +1721,50 @@ body {
   line-height: 1.5;
 }
 
+/* B-1（V18）关闭风险 / 准入决策的表单元件（结果选择/处理小结/审批理由等）——复用 .cp-decide
+   视觉语境，新增 select/textarea 两种输入控件，配色对齐既有 --bg-3/--line-strong/--ink-* 暗色
+   主题变量，不引入新色板。 */
+.cp-decide--form {
+  display: flex;
+  flex-direction: column;
+}
+.cp-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.cp-form-row__k {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+.cp-form-select,
+.cp-form-textarea {
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-0);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 6px 8px;
+}
+.cp-form-textarea {
+  resize: vertical;
+  min-height: 44px;
+  line-height: 1.45;
+}
+.cp-form-select:focus,
+.cp-form-textarea:focus {
+  outline: none;
+  border-color: var(--beacon);
+}
+.cp-form-select:disabled,
+.cp-form-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ═══════════════════════════ 履约航线夜景地图（SVG 手绘零依赖） ═══════════════════════════ */
 .cp-map-wrap {
   flex: 1;

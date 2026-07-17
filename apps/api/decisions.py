@@ -30,6 +30,7 @@ from typing import Callable
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 import app.actions as app_actions                                       # 写连接管理（connect，与 /actions 同源）
+from app.command_bus import execute_command                            # 波2 写总线（spec §一.4 /decisions 门）
 from pipeline.ontology_runtime import build_role_perms, load_ontology, snake_case
 
 
@@ -74,6 +75,7 @@ def build_decisions_router(get_db_path: Callable, resolve_action_func: Callable,
     def post_decision(name: str, body: dict = Body(default={}),
                       x_role: str = Header(default="ops", alias="X-Role"),
                       x_actor: str | None = Header(default=None, alias="X-Actor"),
+                      idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
                       db_path: str = Depends(get_db_path)) -> dict:
         """人类决策通道：仅冻结区四动作。X-Role 鉴权 + X-Actor 必填（真实决策人）；写入原样走 app
         层既有函数（maker-checker/门禁/审计不变）。冻结区/白名单外动作 → 404；无权 → 403；参数或
@@ -106,10 +108,17 @@ def build_decisions_router(get_db_path: Callable, resolve_action_func: Callable,
         allowed_roles = build_role_perms(load_ontology()).get(permission_key, set())
         permitted = x_role in allowed_roles
 
+        # 波2：写入经 execute_command（写总线，spec §一.4 /decisions 门）——落 commands 台账 +
+        # 审批绑提案指纹（approve 执行前反查 propose 命令指纹 vs 任务当前提案现算指纹，不一致=提案
+        # 在审批间隙被改 → ok=False 白话错误，下方按既有 ok=False 路径映射 422）+ Idempotency-Key 透传。
+        # maker-checker / 门禁 / 审计仍在 fn 原函数内（总线不代判）。在飞幂等冲突 → 总线抛 _StateConflict
+        # → main.py 注册的处理器映射 409。签名不匹配 TypeError 仍就地映射 422（向后兼容）。
         con = app_actions.connect(db_path)
         try:
             try:
-                result = fn(con, **body, actor=actor, role=x_role, as_of=as_of)
+                result = execute_command(con, action=action["name"], params=body,
+                                         actor=actor, role=x_role, as_of=as_of,
+                                         action_func=fn, idempotency_key=idempotency_key)
             except TypeError as exc:
                 # 请求体键与动作签名不匹配（缺字段/多字段/在 body 里私带 actor/role/as_of 均落此）。
                 raise HTTPException(

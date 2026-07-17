@@ -12,6 +12,7 @@ import {
   type UsableLink,
 } from "../api";
 import Icon from "../components/Icons";
+import AdmissionDecisionBar from "./AdmissionDecisionBar";
 import {
   fieldGroup,
   fieldLabel,
@@ -45,6 +46,7 @@ interface Props {
   links: OntologyLink[];
   onOpenObject: (r: ObjectRef) => void;
   onClose: () => void;
+  onActed?: () => void; // B-1：准入案决策成功后通知父层刷新体征（语义同 ImpactPanel::onActed）
 }
 
 type Expanded = { state: "loading" } | { state: "done"; ids: string[] } | { state: "error" };
@@ -60,7 +62,7 @@ function renderVal(type: string, field: string, v: unknown): { text: string; cls
   return { text: String(v), cls: "" };
 }
 
-export default function ObjectCard({ target, role, links, onOpenObject, onClose }: Props) {
+export default function ObjectCard({ target, role, links, onOpenObject, onClose, onActed }: Props) {
   const [fields, setFields] = useState<ObjectFields | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, Expanded>>({});
@@ -79,6 +81,15 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
       cancelled = true;
     };
   }, [target, role]);
+
+  // B-1：准入决策提交成功后只重取本对象字段本身（案件 status/decision 等会变）——不重置关系
+  // 展开态/DQ 折叠态，避免刚展开的关系面板被决策动作意外收起（与上面 target/role 触发的整体
+  // 重置效果区分开：那是"换了一个对象"，这是"同一个对象的字段变了"）。
+  const refetchFields = () => {
+    fetchObject(target.type, target.id, role)
+      .then((f) => setFields(f))
+      .catch((e: Error) => setErr(e.message));
+  };
 
   // Esc 关闭
   useEffect(() => {
@@ -245,6 +256,20 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose 
                   );
                 })}
               </div>
+
+              {/* B-1（V18）：准入案对象卡动作区——批准报价 / 驳回或要补件，仅 AdmissionCase 类型渲染，
+                  其余 34 类对象卡不受影响。组件内部按案件状态/角色自行判断是否有可拍板动作。 */}
+              {target.type === "AdmissionCase" && (
+                <AdmissionDecisionBar
+                  caseId={target.id}
+                  caseStatus={String(fields.status ?? "")}
+                  role={role}
+                  onDecided={() => {
+                    refetchFields();
+                    onActed?.();
+                  }}
+                />
+              )}
             </>
           )}
         </div>

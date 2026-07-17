@@ -136,6 +136,152 @@ function DecisionButtons({ decision, role, onActed }: { decision: PendingDecisio
   );
 }
 
+// A6（B-1/V18）关闭风险：处置完成后在此确认闭环。CloseRiskEvent 本体 executors=[ops]——与
+// ApproveMitigation 的 manager 正相反（专员处置执行、经理审批把关，两条通道两种身份），故这里
+// canDecide 判 role==="ops"，manager 置灰（前端只做体验预判，真正闸门仍在后端 app 层原函数）。
+// 表单字段收窄到 close_risk_event 的必填契约（app/actions.py 同名函数签名：risk_event_id/
+// outcome/resolution_summary 必填，quality_label 可空三选一，C1 专员关闭时顺手打）。
+// "二次点击确认"防误触：先点"关闭风险"只展开表单，真正提交要再点一次"确认关闭"——不用浏览器
+// confirm()（与项目其余交互一致，一律走内联态而非原生弹窗）。
+const RISK_TERMINAL = new Set(["resolved", "escalated"]); // 镜像 app/actions.py::RISK_TERMINAL（前端预判用，非权威源）
+const CLOSE_OUTCOMES: { value: string; label: string }[] = [
+  { value: "mitigated", label: "已处置（方案已批准并执行）" },
+  { value: "accepted_delay", label: "接受延误（不再处置）" },
+  { value: "false_alarm", label: "误报（强制关闭，联动取消未结任务）" },
+  { value: "escalated", label: "升级（转上级/外部处理，非已解决）" },
+];
+const CLOSE_QUALITY: { value: string; label: string }[] = [
+  { value: "", label: "不填" },
+  { value: "effective", label: "有效" },
+  { value: "partial", label: "部分有效" },
+  { value: "ineffective", label: "无效" },
+];
+
+function CloseRiskButton({
+  riskId,
+  riskStatus,
+  role,
+  onActed,
+}: {
+  riskId: string;
+  riskStatus: string | null;
+  role: Role;
+  onActed?: () => void;
+}) {
+  const [open, setOpen] = useState(false); // 展开态＝二次确认防误触
+  const [outcome, setOutcome] = useState("mitigated");
+  const [summary, setSummary] = useState("");
+  const [quality, setQuality] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const canDecide = role === "ops";
+
+  if (riskStatus && RISK_TERMINAL.has(riskStatus)) return null; // 已终态（resolved/escalated）：无按钮
+
+  if (!canDecide) {
+    return (
+      <div className="cp-decide">
+        <button className="cp-decide-btn" disabled>
+          关闭风险
+        </button>
+        <StateHint
+          kind="no-permission"
+          compact
+          title="需运营角色才能关闭"
+          roleHint="顶栏切到「运营 ops」才能关闭风险；当前是老板 manager，只能看不能关。"
+        />
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <div className="cp-decide">
+        <button className="cp-decide-btn" onClick={() => setOpen(true)}>
+          关闭风险
+        </button>
+        <div className="cp-decide__basis">处置完成后在此确认闭环——点开先展开结果与小结，不会一点就关。</div>
+      </div>
+    );
+  }
+
+  const submit = async () => {
+    if (busy || !summary.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await postDecision(
+        "CloseRiskEvent",
+        { risk_event_id: riskId, outcome, resolution_summary: summary.trim(), quality_label: quality || null },
+        role,
+        actorForRole(role),
+      );
+      onActed?.(); // 成功：刷新体征、收起详情（同 DecisionButtons）
+    } catch (e) {
+      setErr((e as Error).message); // 失败：后端白话中文原文，原样展示不吞不美化
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="cp-decide cp-decide--form">
+      <label className="cp-form-row">
+        <span className="cp-form-row__k">结果</span>
+        <select className="cp-form-select" value={outcome} disabled={busy} onChange={(e) => setOutcome(e.target.value)}>
+          {CLOSE_OUTCOMES.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="cp-form-row">
+        <span className="cp-form-row__k">处理小结*</span>
+        <textarea
+          className="cp-form-textarea"
+          value={summary}
+          disabled={busy}
+          placeholder="必填：简述怎么处置的 / 为什么可以关闭"
+          onChange={(e) => setSummary(e.target.value)}
+        />
+      </label>
+      <label className="cp-form-row">
+        <span className="cp-form-row__k">质量评估</span>
+        <select className="cp-form-select" value={quality} disabled={busy} onChange={(e) => setQuality(e.target.value)}>
+          {CLOSE_QUALITY.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="cp-decide__row">
+        <button className="cp-decide-btn cp-decide-btn--approve" disabled={busy || !summary.trim()} onClick={submit}>
+          {busy ? "关闭中…" : "确认关闭"}
+        </button>
+        <button
+          className="cp-decide-btn"
+          disabled={busy}
+          onClick={() => {
+            setOpen(false);
+            setErr(null);
+          }}
+        >
+          取消
+        </button>
+      </div>
+      {err && (
+        <div className="cp-decide__err">
+          <b>没提交成功</b> · {err}
+        </div>
+      )}
+      <div className="cp-decide__basis">
+        非"误报"结果需该风险名下任务全部终态；"已处置"还需已有批准并执行的方案。经手身份 {actorForRole(role)}（原型级，真实系统换 SSO）
+      </div>
+    </div>
+  );
+}
+
 export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActed }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void; onActed?: () => void }) {
   const alerts = [...focus.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
   const members = focus.members ?? [];
@@ -411,9 +557,9 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
           </div>
         )}
 
-        {/* 动作区（A-1/V13①：批准/驳回搬回驾驶舱）：待拍板提案在此直接拍板（走人类决策通道，
-            留痕到审计、maker-checker 不变）；非待拍板焦点仍只给指引 + AI 建议摘要。Streamlit 操作台
-            作为兜底入口保留（复杂处置 / 关闭 / 准入仍可去那边做）。 */}
+        {/* 动作区（A-1/V13①批准驳回 + B-1/V18 关闭风险）：待拍板提案在此直接拍板；无待拍板提案时
+            （已批/从未有提案）改渲染关闭风险（走同一条人类决策通道，留痕到审计、maker-checker 不变）。
+            Streamlit 操作台作为兜底入口保留（改期/加急等复杂处置提案仍需去那边发起）。 */}
         <div className="cp-action">
           <div className="cp-action__t">
             <Icon name="stamp" size={13} /> 动作区
@@ -424,11 +570,22 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
               <span className="cp-action__hint-v">{focus.actionHint}</span>
             </div>
           )}
-          {focus.decision && <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />}
+          {focus.decision ? (
+            <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />
+          ) : (
+            risk && (
+              <CloseRiskButton
+                riskId={String(risk.risk_event_id)}
+                riskStatus={risk.status != null ? String(risk.status) : null}
+                role={role}
+                onActed={onActed}
+              />
+            )
+          )}
           <div className="cp-action__note">
             {focus.decision
-              ? "批准 / 驳回在此直接拍板（人类决策通道，实时回写并留痕）。复杂处置、关闭风险、准入审批仍可去 Streamlit 操作台。"
-              : "处置动作（批准 / 驳回 / 关闭）在 Streamlit 操作台执行——驾驶舱专注「看清 + 拍板定位」，审批语义与 maker-checker 留在操作台，防单量爆炸。"}
+              ? "批准 / 驳回在此直接拍板（人类决策通道，实时回写并留痕）。处置完成后可在风险详情里关闭风险；改期/加急等复杂处置提案仍需去 Streamlit 操作台发起。"
+              : "关闭风险可在此直接操作（处置完成后确认闭环，人类决策通道，实时回写并留痕）。发起新的处置提案、准入预审仍需去 Streamlit 操作台，驾驶舱专注「看清 + 拍板定位」。"}
           </div>
         </div>
       </div>
