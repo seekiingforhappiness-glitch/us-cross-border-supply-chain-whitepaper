@@ -556,12 +556,18 @@ def test_simworld_panorama_and_ai_flow(sim_world):
     resp = c.get("/cockpit/ai-flow", params={"limit": 30}, headers={"X-Role": "manager"})
     assert resp.status_code == 200
     d = resp.json()
-    assert d["count"] == min(30, scon.execute(
-        "SELECT count(*) FROM sim_ai_activity").fetchone()[0])
+    # 2026-07-17 世界观更新：X-World 写路径 + Agent runtime 落地后，模拟世界不再只有仿真历史——
+    # 真实运营活动（action_log 的 ai_action/流转等）会如实合流进 ai-flow。断言改为分族校验：
+    # sim 徽标条目守仿真闭环词表；非 sim 条目是真实运营痕（ai_action 等），有自己的合法形状。
+    total_available = scon.execute("SELECT count(*) FROM sim_ai_activity").fetchone()[0]
+    assert d["count"] == min(30, total_available) if total_available < 30 else d["count"] == 30
     assert d["items"], "模拟世界应有 AI 闭环留痕条目"
+    assert any(i["sim"] for i in d["items"]), "仿真历史条目不应消失"
     for i in d["items"]:
-        assert i["sim"] is True, "sim_ai_activity 条目必须带 sim 徽标"
-        assert i["kind"] in ("detect", "propose", "approve", "reject", "close")
+        if i["sim"]:
+            assert i["kind"] in ("detect", "propose", "approve", "reject", "close")
+        else:
+            assert i["kind"] in ("ai_action", "flow", "llm"), f"真实运营条目 kind 异常：{i['kind']}"
     ts_list = [i["ts"] for i in d["items"]]
     assert ts_list == sorted(ts_list, reverse=True)
 
