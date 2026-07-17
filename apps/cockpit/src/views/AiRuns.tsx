@@ -448,6 +448,62 @@ function sortRuns(items: RuntimeRunListItem[]): RuntimeRunListItem[] {
 }
 
 // ═══════════════════════════ 右栏「AI 任务」主面板 ═══════════════════════════
+
+// ═══ 发起入口（2026-07-17 可发现性修复：Daniel 实测"找不到让 AI 处置的地方"）═══
+// 原发起点只藏在风险详情动作区（且仅无待批提案的风险显示）——语义对但可发现性差。
+// 正确的家=用户寻找它的地方：本标签页常驻一个轻量发起块。ops 可用；非 ops 灰态白话。
+function DispatchLauncher({ role, onStarted }: { role: Role; onStarted: () => void }) {
+  const [riskId, setRiskId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const canStart = role === "ops";
+  const start = async () => {
+    const rid = riskId.trim().toUpperCase();
+    if (!rid) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const env = await startRuntimeRun(role, actorForRole(role), rid);
+      setMsg(`已发起：${env.run_id}（${env.status === "waiting_approval" ? "提案已出，待拍板" : env.status}）`);
+      setRiskId("");
+      onStarted();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "发起失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="cp-dispatch-launcher">
+      <div className="cp-dispatch-launcher__head">发起 AI 处置</div>
+      {canStart ? (
+        <>
+          <div className="cp-dispatch-launcher__row">
+            <input
+              className="cp-form-input"
+              value={riskId}
+              placeholder="风险编号，如 RSK-SIM-00012"
+              onChange={(e) => setRiskId(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !busy && start()}
+              aria-label="要交给 AI 处置的风险编号"
+            />
+            <button className="cp-decide cp-decide--ai" disabled={busy || !riskId.trim()} onClick={start}>
+              {busy ? "发起中…" : "让 AI 处置"}
+            </button>
+          </div>
+          <div className="cp-dispatch-launcher__hint">
+            也可以在任何风险详情的动作区一键发起（仅对还没有待批提案的风险）。AI 只会查详情→派单→
+            提交提案，然后停在「待拍板」等人批——提案-only，绝不自行批准。
+          </div>
+          {msg && <div className="cp-dispatch-launcher__msg">{msg}</div>}
+        </>
+      ) : (
+        <StateHint kind="no-permission" compact title="由运营发起" roleHint="切到「运营 ops」角色即可在此发起 AI 处置；老板角色负责在待拍板区批它的提案。" />
+      )}
+    </div>
+  );
+}
+
 export default function AiRuns({ role, world, onOpenObject }: { role: Role; world?: World | null; onOpenObject: (r: ObjectRef) => void }) {
   const [data, setData] = useState<{ items: RuntimeRunListItem[]; note?: string } | null>(null);
   const [err, setErr] = useState(false);
@@ -477,17 +533,21 @@ export default function AiRuns({ role, world, onOpenObject }: { role: Role; worl
   if (!data) return <StateHint kind="loading" title="AI 任务加载中…" />;
   if (data.items.length === 0)
     return (
-      <StateHint
-        kind="empty"
-        title="本世界还没有 AI 处置任务"
-        reason={data.note ?? "还没有人启动过 AI 处置差事。"}
-        suggestion="在风险详情里点「让 AI 处置」发起一趟（运营角色）"
-      />
+      <div className="cp-runs">
+        <DispatchLauncher role={role} onStarted={() => setReload((n) => n + 1)} />
+        <StateHint
+          kind="empty"
+          title="本世界还没有 AI 处置任务"
+          reason={data.note ?? "还没有人启动过 AI 处置差事。"}
+          suggestion="就在上方输入风险编号发起第一趟（运营角色）"
+        />
+      </div>
     );
 
   const runs = sortRuns(data.items);
   return (
     <div className="cp-runs">
+      <DispatchLauncher role={role} onStarted={() => setReload((n) => n + 1)} />
       <div className="cp-runs__bar">
         <span className="cp-runs__n num">{runs.length} 趟 AI 处置</span>
         {runs.some((r) => r.status === "waiting_approval") && (
