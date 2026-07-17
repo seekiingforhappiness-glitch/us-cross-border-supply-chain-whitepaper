@@ -11,6 +11,7 @@ import {
 } from "../api";
 import Icon, { type IconName } from "../components/Icons";
 import StateHint from "../components/StateHint";
+import AiRuns from "./AiRuns";
 import { buildStories, KIND_CN, SEV_CN, type Story, type StoryState } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
 
@@ -19,7 +20,7 @@ import { SEV_RANK } from "./severityRank";
 // [sim] 前缀清除（SIM 徽标已表达）、规则码/动作码/severity 人话化、裸 TSK/RSK id 收进「查看详情」。
 // 智能感：最新一条呼吸高亮 + 卡片滑入。底部两 tab：AI 工作流（默认）/ 协作流（U6 真数据）。
 
-type Tab = "ai" | "collab";
+type Tab = "ai" | "runs" | "collab";
 
 // 故事状态 → 徽标（人话 + 图标 + 复用既有 data-kind 配色）
 const STATE_META: Record<StoryState, { label: string; icon: IconName; dataKind: string }> = {
@@ -305,12 +306,17 @@ export default function AiWorkflow({
         <button role="tab" className={`cp-flow__tab ${tab === "ai" ? "is-active" : ""}`} aria-selected={tab === "ai"} onClick={() => setTab("ai")}>
           <Icon name="chip" size={13} /> AI 工作流{data ? ` · ${stories.length}` : ""}
         </button>
+        <button role="tab" className={`cp-flow__tab ${tab === "runs" ? "is-active" : ""}`} aria-selected={tab === "runs"} onClick={() => setTab("runs")}>
+          <Icon name="action" size={13} /> AI 任务
+        </button>
         <button role="tab" className={`cp-flow__tab ${tab === "collab" ? "is-active" : ""}`} aria-selected={tab === "collab"} onClick={() => setTab("collab")}>
           <Icon name="users" size={13} /> 协作流
         </button>
       </div>
 
-      {tab === "collab" ? (
+      {tab === "runs" ? (
+        <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
+      ) : tab === "collab" ? (
         <CollabPanel role={role} world={world} />
       ) : err ? (
         <StateHint

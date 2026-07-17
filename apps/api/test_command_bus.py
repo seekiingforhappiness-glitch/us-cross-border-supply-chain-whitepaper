@@ -27,9 +27,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.actions as A
+import app.admission_actions as ADM
 from app.command_bus import (execute_command, ensure_commands_table,
                              check_approval_binding, fingerprint_params,
-                             FINGERPRINT_MISMATCH_MESSAGE)
+                             FINGERPRINT_MISMATCH_MESSAGE, BINDING_CHECKED_ACTIONS,
+                             _admission_case_fingerprint, _CASE_TERMINAL_STATUSES)
 from apps.api.main import AS_OF, REPO_ROOT, app, get_db_path
 
 REPO_DB = REPO_ROOT / "data" / "ontology.sqlite"
@@ -437,4 +439,210 @@ def test_failed_action_does_not_poison_idempotency_key(fresh_db):
     r = execute_command(con, action="AssignTask", params={"x": 1}, actor=OPS_ACTOR, role="ops",
                         as_of=AS_OF, action_func=ok_func, idempotency_key="poison-key-1")
     assert r["ok"] is True and calls["n"] == 1, "同键重试应正常执行恰一次"
+    con.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ② V19②：ApproveQuoteDecision / RejectOrRequestMoreInfo 产物指纹绑定（扩准入域，动作名不可知）
+#
+# 沿 2b「产物指纹、动作名不可知」原则扩到准入域：任何写命令 object_id 指向仍待决（非终态）的 admission
+# case → 落 case「决策关键字段」的规范指纹作基线；两个冻结准入决定（Approve/Reject）执行**前**校验案件
+# 当前指纹 vs 基线，不一致白话拒绝（同 mismatch 文案），no_baseline 放行留痕。
+#
+# 隔离纪律：全部对 data/ontology.sqlite 的 **function 级临时副本**（fresh_db）操作，绝不写真库。准入写动作
+# （create/precheck/plan/cost 的位置式 INSERT）在本 worktree 迁移后的库上与新增的 version/tenant_id 列
+# 不同构、当前不可用——故本组用例一律以**既有种子案件**为对象、以 fake/real（UPDATE 型的 approve/reject
+# 可用）动作函数驱动，不依赖那些位置式 INSERT 写动作（该欠账见交付报告，非本单范围）。
+# ═══════════════════════════════════════════════════════════════════════════
+def _one_priced_case_with_refs(con):
+    """取一个 priced（非终态、待经理拍板）且带有效方案/情景引用的种子案件——供审批链用例做对象锚点。"""
+    row = con.execute(
+        """SELECT ac.admission_case_id AS aid, lp.logistics_plan_id AS pid, cs.cost_scenario_id AS sid
+           FROM admission_cases ac
+           JOIN logistics_plans lp ON lp.admission_case_id=ac.admission_case_id
+           JOIN cost_scenarios cs ON cs.logistics_plan_id=lp.logistics_plan_id
+           WHERE ac.status='priced' ORDER BY ac.admission_case_id LIMIT 1""").fetchone()
+    assert row is not None, "测试库需要至少 1 个 priced 且带方案/情景的准入案件（seed 产物）"
+    return row["aid"], row["pid"], row["sid"]
+
+
+def _record_admission_baseline(con, aid):
+    """经总线跑一条 object_id 指向该案件的写命令，把案件当前「决策字段指纹」落成基线（动作名不可知：
+    用一个仅回 object_id=aid 的 fake 提案动作即可触发 _proposal_fingerprint_for 的准入域分支——案件本就
+    非终态，无需真去改它）。返回落库的 proposal_fingerprint。"""
+    def fake_quote_proposal(con2, admission_case_id, actor=None, role=None, as_of=None):
+        return {"ok": True, "object_id": admission_case_id, "side_effects": ["quote_drafted"],
+                "error": None}
+    r = execute_command(con, action="ProposeAdmissionQuote", params={"admission_case_id": aid},
+                        actor="u-fin-us", role="finance", as_of=AS_OF, action_func=fake_quote_proposal)
+    assert r["ok"] is True
+    fp = con.execute("SELECT proposal_fingerprint FROM commands WHERE object_id=? "
+                     "AND proposal_fingerprint IS NOT NULL ORDER BY rowid DESC LIMIT 1", (aid,)).fetchone()
+    assert fp and fp[0], "object_id 指向待决案件的命令必须落规范决策指纹作基线（动作名不可知）"
+    return fp[0]
+
+
+# ② 漂移守护：镜像常量与触发集与权威源一致（低耦合本地常量不得偷偷漂移）
+def test_admission_binding_constants_guard():
+    assert tuple(_CASE_TERMINAL_STATUSES) == tuple(ADM.CASE_TERMINAL), \
+        "command_bus._CASE_TERMINAL_STATUSES 必须与 admission_actions.CASE_TERMINAL 逐字相等（漂移守护）"
+    assert {"ApproveQuoteDecision", "RejectOrRequestMoreInfo"} <= BINDING_CHECKED_ACTIONS, \
+        "两个冻结准入决定必须都在指纹绑定触发集内（都要校验）"
+
+
+# ② 字段选择钉死：指纹只吃「商业条款」，工作流可变列（status/risk_level/decision/version）不参与；终态→None
+def test_admission_fingerprint_excludes_workflow_fields(fresh_db):
+    con = A.connect(fresh_db)
+    aid, _, _ = _one_priced_case_with_refs(con)
+    fp0 = _admission_case_fingerprint(con, aid)
+    assert fp0 is not None and len(fp0) == 64
+    # 工作流可变列变化（含触发器自增的 version）→ 指纹不变（否则合法状态推进会被误判 mismatch）
+    con.execute("UPDATE admission_cases SET risk_level='critical', decision='x', "
+                "decision_reason='y', conditions='z' WHERE admission_case_id=?", (aid,))
+    con.commit()
+    assert _admission_case_fingerprint(con, aid) == fp0, "工作流可变列变化不应改变决策指纹"
+    # 商业条款变化 → 指纹改变（篡改可被抓）
+    con.execute("UPDATE admission_cases SET monthly_order_estimate=monthly_order_estimate+1 "
+                "WHERE admission_case_id=?", (aid,))
+    con.commit()
+    assert _admission_case_fingerprint(con, aid) != fp0, "商业条款变化必须改变决策指纹"
+    # 终态案件 → None（决策已下，不再落/校验基线）
+    con.execute("UPDATE admission_cases SET status='approved' WHERE admission_case_id=?", (aid,))
+    con.commit()
+    assert _admission_case_fingerprint(con, aid) is None, "终态案件不参与指纹绑定"
+    con.close()
+
+
+# ② 三态直测：no_baseline（老案）/ match（未改）/ mismatch（篡改）——含"基线==现算指纹"钉死
+def test_check_approval_binding_admission_three_states(fresh_db):
+    con = A.connect(fresh_db)
+    ensure_commands_table(con)
+    aid, _, _ = _one_priced_case_with_refs(con)
+    # 老案：无经总线的产物命令 → no_baseline 放行留痕（不误杀既有种子案件）
+    assert check_approval_binding(con, {"admission_case_id": aid}) == (True, "no_baseline", None)
+    # 落基线（动作名不可知）→ 案件未改 → match（且基线逐字节==现算指纹）
+    base = _record_admission_baseline(con, aid)
+    assert base == _admission_case_fingerprint(con, aid), "未篡改时基线应逐字节等于现算指纹"
+    assert check_approval_binding(con, {"admission_case_id": aid}) == (True, "match", None)
+    # 篡改商业条款 → mismatch + 白话文案（同任务域同一句）
+    con.execute("UPDATE admission_cases SET incoterm_candidate='DDP' WHERE admission_case_id=?", (aid,))
+    con.commit()
+    allowed, fc, err = check_approval_binding(con, {"admission_case_id": aid})
+    assert allowed is False and fc == "mismatch" and err == FINGERPRINT_MISMATCH_MESSAGE
+    con.close()
+
+
+# ② 篡改拒（ApproveQuoteDecision，真动作经总线）：指纹门在 approve 执行前拦下，案件未被批准
+def test_approve_quote_decision_blocked_on_tamper(fresh_db):
+    con = A.connect(fresh_db)
+    aid, pid, sid = _one_priced_case_with_refs(con)
+    _record_admission_baseline(con, aid)
+    # 审批间隙篡改案件商业条款
+    con.execute("UPDATE admission_cases SET monthly_order_estimate=999999 WHERE admission_case_id=?", (aid,))
+    con.commit()
+    status_before = con.execute("SELECT status FROM admission_cases WHERE admission_case_id=?",
+                                (aid,)).fetchone()[0]
+    r = execute_command(con, action="ApproveQuoteDecision",
+                        params={"admission_case_id": aid, "approved_logistics_plan_id": pid,
+                                "approved_cost_scenario_id": sid, "decision": "approve",
+                                "decision_reason": "毛利为正", "conditions": ""},
+                        actor=MANAGER_ACTOR, role="manager", as_of=AS_OF,
+                        action_func=ADM.approve_quote_decision)
+    assert r["ok"] is False
+    assert r["error"] == FINGERPRINT_MISMATCH_MESSAGE
+    # approve 未执行：案件状态未变（仍 priced，未 approved），SKU 未被激活等副作用均未发生
+    status_after = con.execute("SELECT status, decision FROM admission_cases WHERE admission_case_id=?",
+                               (aid,)).fetchone()
+    assert status_after["status"] == status_before and status_after["decision"] in (None, ""), \
+        "指纹门拦下：approve_quote_decision 不应执行（案件仍待决）"
+    fc = con.execute("SELECT fingerprint_check, result_status FROM commands "
+                     "WHERE action='ApproveQuoteDecision' ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert fc["fingerprint_check"] == "mismatch" and fc["result_status"] == "rejected"
+    con.close()
+
+
+# ② 篡改拒（RejectOrRequestMoreInfo，真动作经总线）：两个冻结准入决定都校验——拒接同样被指纹门拦
+def test_reject_or_request_more_info_blocked_on_tamper(fresh_db):
+    con = A.connect(fresh_db)
+    aid, _, _ = _one_priced_case_with_refs(con)
+    _record_admission_baseline(con, aid)
+    con.execute("UPDATE admission_cases SET sku_id='SKU-TAMPERED' WHERE admission_case_id=?", (aid,))
+    con.commit()
+    r = execute_command(con, action="RejectOrRequestMoreInfo",
+                        params={"admission_case_id": aid, "decision": "reject",
+                                "missing_documents": [], "rejection_reason": "不接"},
+                        actor=MANAGER_ACTOR, role="manager", as_of=AS_OF,
+                        action_func=ADM.reject_or_request_more_info)
+    assert r["ok"] is False and r["error"] == FINGERPRINT_MISMATCH_MESSAGE
+    # reject 未执行：案件仍 priced（未 rejected）
+    assert con.execute("SELECT status FROM admission_cases WHERE admission_case_id=?",
+                       (aid,)).fetchone()[0] == "priced", "指纹门拦下：reject 不应执行"
+    fc = con.execute("SELECT fingerprint_check FROM commands "
+                     "WHERE action='RejectOrRequestMoreInfo' ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert fc["fingerprint_check"] == "mismatch"
+    con.close()
+
+
+# ② 未改过（match）与老案（no_baseline）都放行——证明新机制不误杀：动作被真正调用、指纹门不拦
+def test_admission_match_and_no_baseline_pass_through(fresh_db):
+    con = A.connect(fresh_db)
+    ensure_commands_table(con)
+    aid, pid, sid = _one_priced_case_with_refs(con)
+    approve_params = {"admission_case_id": aid, "approved_logistics_plan_id": pid,
+                      "approved_cost_scenario_id": sid, "decision": "approve",
+                      "decision_reason": "ok", "conditions": ""}
+
+    calls = {"n": 0}
+    def spy_approve(con2, **kw):
+        calls["n"] += 1
+        return {"ok": True, "object_id": kw.get("admission_case_id"), "side_effects": [], "error": None}
+
+    # 老案（无基线）→ 放行留痕（no_baseline），动作被调用
+    r = execute_command(con, action="ApproveQuoteDecision", params=approve_params,
+                        actor=MANAGER_ACTOR, role="manager", as_of=AS_OF, action_func=spy_approve)
+    assert r["error"] != FINGERPRINT_MISMATCH_MESSAGE and calls["n"] == 1, "无基线不得误杀"
+    fc = con.execute("SELECT fingerprint_check FROM commands "
+                     "WHERE action='ApproveQuoteDecision' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    assert fc == "no_baseline"
+
+    # 落基线、不篡改 → match，动作再次被调用（未被指纹门拦）
+    _record_admission_baseline(con, aid)
+    r = execute_command(con, action="ApproveQuoteDecision", params=approve_params,
+                        actor=MANAGER_ACTOR, role="manager", as_of=AS_OF, action_func=spy_approve)
+    assert r["error"] != FINGERPRINT_MISMATCH_MESSAGE and calls["n"] == 2, "未篡改不应被指纹门拦"
+    fc = con.execute("SELECT fingerprint_check FROM commands "
+                     "WHERE action='ApproveQuoteDecision' ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+    assert fc == "match"
+    con.close()
+
+
+# ⑧ 对抗复核（V19 收尾批·高危 finding）回归堵门：准入绑定必须经**真实通道**实证——
+#    真 CreateAdmissionCase 经总线建案即落基线（不许用合成动作造基线遮住真通道的坑），
+#    篡改商业条款后绑定即拒。此用例存在的原因：2b 接缝列曾令四处位置式 INSERT 崩溃，
+#    致真库上基线通道断绝、no_baseline 直放，而合成基线单测全绿掩盖之（规则6教训固化）。
+def test_admission_binding_real_channel(fresh_db):
+    import app.admission_actions as ADM
+    from app.command_bus import _check_binding, _admission_case_fingerprint
+    con = A.connect(fresh_db)
+    ensure_commands_table(con)
+    sku = con.execute("SELECT sku_id FROM skus WHERE sku_status='candidate' LIMIT 1").fetchone()[0]
+    cust = con.execute("SELECT customer_id FROM customers LIMIT 1").fetchone()[0]
+    r = execute_command(con, action="CreateAdmissionCase",
+                        params=dict(customer_id=cust, sku_id=sku, request_type="ddp_quote",
+                                    incoterm_candidate="DDP", target_launch_date="2026-10-01",
+                                    monthly_order_estimate=1200),
+                        actor="u-sales-us", role="sales", as_of=AS_OF,
+                        action_func=ADM.create_admission_case)
+    assert r["ok"] is True, f"真实建案必须成功（位置式 INSERT 勘误的回归锚）：{r}"
+    aid = r["object_id"]
+    fp = con.execute("SELECT proposal_fingerprint FROM commands WHERE object_id=?",
+                     (aid,)).fetchone()[0]
+    assert fp, "真通道建案必须落基线指纹（否则绑定对真库名存实亡）"
+    ok1, fc1, _ = _check_binding(con, aid, lambda: _admission_case_fingerprint(con, aid))
+    assert (ok1, fc1) == (True, "match")
+    con.execute("UPDATE admission_cases SET monthly_order_estimate=99999 "
+                "WHERE admission_case_id=?", (aid,))
+    con.commit()
+    ok2, fc2, err2 = _check_binding(con, aid, lambda: _admission_case_fingerprint(con, aid))
+    assert (ok2, fc2) == (False, "mismatch") and err2 == FINGERPRINT_MISMATCH_MESSAGE
     con.close()

@@ -15,6 +15,7 @@ import {
 import { actorForRole } from "../roleActors";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
+import { AiDispatchButton } from "./AiRuns";
 import { RULE_CN, RULE_TYPE_CN, SEV_CN } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
 import type { PendingDecision } from "./zoneModel";
@@ -574,18 +575,27 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
             <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />
           ) : (
             risk && (
-              <CloseRiskButton
-                riskId={String(risk.risk_event_id)}
-                riskStatus={risk.status != null ? String(risk.status) : null}
-                role={role}
-                onActed={onActed}
-              />
+              <>
+                {/* ④ 让 AI 处置：ops 可发起一趟 AI 处置差事（派单→提交处置提案→停在待拍板），
+                    manager 灰态"运营发起"。既有 run 则显状态徽章（幂等，不重复启动）。 */}
+                <AiDispatchButton
+                  riskId={String(risk.risk_event_id)}
+                  riskStatus={risk.status != null ? String(risk.status) : null}
+                  role={role}
+                />
+                <CloseRiskButton
+                  riskId={String(risk.risk_event_id)}
+                  riskStatus={risk.status != null ? String(risk.status) : null}
+                  role={role}
+                  onActed={onActed}
+                />
+              </>
             )
           )}
           <div className="cp-action__note">
             {focus.decision
               ? "批准 / 驳回在此直接拍板（人类决策通道，实时回写并留痕）。处置完成后可在风险详情里关闭风险；改期/加急等复杂处置提案仍需去 Streamlit 操作台发起。"
-              : "关闭风险可在此直接操作（处置完成后确认闭环，人类决策通道，实时回写并留痕）。发起新的处置提案、准入预审仍需去 Streamlit 操作台，驾驶舱专注「看清 + 拍板定位」。"}
+              : "「让 AI 处置」发起一趟 AI 差事（提案-only，停在待拍板）；「关闭风险」在处置完成后确认闭环——都实时回写并留痕。改期/加急等复杂处置提案仍需去 Streamlit 操作台发起，驾驶舱专注「看清 + 拍板定位」。"}
           </div>
         </div>
       </div>

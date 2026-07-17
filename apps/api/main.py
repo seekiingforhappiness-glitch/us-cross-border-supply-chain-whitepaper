@@ -494,3 +494,16 @@ from apps.api.collaboration import build_collaboration_router            # noqa:
 
 app.include_router(build_governance_router())
 app.include_router(build_collaboration_router(get_db_path, get_ro_connection, _infer_world))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ① runtime 治理 API（V19，spec 2026-07-17-wave2-final-smart-face §①）：
+#   GET/POST /runtime/runs{,/{id}{,/resume,/kill}} —— 持久 Agent runtime 的 HTTP 门面。
+# 同 governance/decisions/collaboration 注入式挂载（runtime 不反向 import main → 零循环导入）；
+# 复用本模块 get_db_path（X-World 双世界解析）/_infer_world（world 信封）/AS_OF（控制面审计 as_of）。
+# 红线：本路由只暴露 list/detail/start/resume/kill——无一能执行冻结区审批/关闭/报价裁决（runtime 写面恒
+# 为 Toolbox 7 写工具、经 dispatch 单门拦截，API 不新开通往冻结区的路）；GET 走 mode=ro（runtime.py 自管）。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.runtime import build_runtime_router                        # noqa: E402
+
+app.include_router(build_runtime_router(get_db_path, _infer_world, AS_OF))

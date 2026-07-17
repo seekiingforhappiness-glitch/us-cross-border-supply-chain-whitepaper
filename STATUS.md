@@ -1,8 +1,21 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-17（波2-2c 持久 Agent runtime 收官：状态机/幂等步/预算/等审批/kill；波2 主体工程齐）
+更新时间：2026-07-17（V19 收尾批收官：AI 处置正脸+runtime API+准入绑定真通道实证+Streamlit 全收编；Monday 对标三波全量落地）
 
 ## 当前位置
+
+> **V19 波2 收尾批收官（2026-07-17，workflows 5 代理 + 主会话修复对抗 findings）**：①**runtime 治理
+> API 五端点**（起 run/列表/详情/resume 三分支/kill manager 专属双层 403+幂等，X-Actor 强制、
+> 审计落 action_log、白话错误、游标翻页）②**AI 处置正脸**（AiRuns.tsx：ImpactPanel「让 AI 处置」
+> ops 发起→右栏 AI 任务卡（状态徽章/预算条/步时间线/mode 如实标注）→等审批高亮→批后「继续执行」
+> →写后复读结论；kill 二次确认）③**ApproveQuoteDecision/Reject 产物指纹绑定**扩准入域（决策关键
+> 字段=商业条款六项，工作流可变列刻意排除防误杀）④**Streamlit 17 写调用点全量收编**（grep 自证
+> 全仓零绕总线生产写，欠账清零）。**对抗复核高危修复**：2b 接缝列曾致 admission_actions 四处
+> 位置式 INSERT 崩溃→真库上绑定基线通道断绝、合成基线单测遮洞（规则6教训）——四处改显式列名
+> +真通道堵门测试固化（真 CreateAdmissionCase 落基线→篡改商业条款即拒实证）；runtime 列表稳定
+> 排序+start 异常路径审计补齐。回归：pytest 103/admission_loop 复活/全套件/digest 确定性/tsc+build
+> 全绿。**候 Daniel 首用亲验**：驾驶舱 AI 处置一键流（风险详情→让 AI 处置→Z7 批→继续执行→done）
+> 与 B-1 三按钮 UI 点穿（后端路径全测试覆盖，UI 渲染 tsc+代码级复核）。
 
 > **波2-2c 持久 Agent runtime 收官（2026-07-17，Opus 执行断连后 SendMessage 原地续命完成，主会话
 > 独立复核全绿）**：agent/runtime.py 状态机（created→running→waiting_approval→…→done|failed|

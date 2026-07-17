@@ -95,7 +95,7 @@ def create_admission_case(con, customer_id, sku_id, request_type, incoterm_candi
         return _fail(con, "CreateAdmissionCase", sku_id, actor, role, as_of,
                      f"SKU {sku_id} 状态为 {sku['sku_status']}，仅 candidate 可建准入案（在售复核属 v0.4）")
     aid = _next_id(cur, "admission_cases", "AC-2026-", 4, "admission_case_id")
-    cur.execute("INSERT INTO admission_cases VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    cur.execute("INSERT INTO admission_cases (admission_case_id,case_title,customer_id,sku_id,request_type,incoterm_candidate,target_launch_date,monthly_order_estimate,risk_level,status,decision,decision_reason,conditions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (aid, f"{sku['sku_name']} 准入报价（{cust['customer_name']}）", customer_id, sku_id,
                  request_type, incoterm_candidate, target_launch_date, monthly_order_estimate,
                  "", "draft", "", "", ""))
@@ -131,7 +131,7 @@ def run_compliance_precheck(con, admission_case_id, findings, actor, role, as_of
     ids = []
     for f in findings:
         cfid = _next_id(cur, "compliance_findings", "CF-", 5, "compliance_finding_id")
-        cur.execute("INSERT INTO compliance_findings VALUES (?,?,?,?,?,?,?,?,?,?)",
+        cur.execute("INSERT INTO compliance_findings (compliance_finding_id,admission_case_id,finding_title,finding_type,severity,hts_candidate,pga_agency,required_document,evidence_status,recommendation) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (cfid, admission_case_id, f.get("finding_title", f["finding_type"]),
                      f["finding_type"], f["severity"], f.get("hts_candidate", ""),
                      f.get("pga_agency", "none"), f.get("required_document", ""),
@@ -177,7 +177,7 @@ def build_logistics_plan(con, admission_case_id, plan, actor, role, as_of):
             return _fail(con, "BuildLogisticsPlan", admission_case_id, actor, role, as_of,
                          "DDP 门禁未过：" + "；".join(missing))
     pid = _next_id(cur, "logistics_plans", "LP-", 5, "logistics_plan_id")
-    cur.execute("INSERT INTO logistics_plans VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    cur.execute("INSERT INTO logistics_plans (logistics_plan_id,admission_case_id,plan_name,route_type,incoterm,origin_port_locode,destination_port_locode,us_warehouse_region,last_mile_method,estimated_transit_days,sla_risk,operational_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (pid, admission_case_id, plan["plan_name"], plan["route_type"], plan["incoterm"],
                  plan["origin_port_locode"], plan["destination_port_locode"],
                  plan["us_warehouse_region"], plan["last_mile_method"],
@@ -219,7 +219,7 @@ def calculate_cost_scenario(con, logistics_plan_id, scenario, actor, role, as_of
     quote = float(scenario["quote_price_usd"])
     margin = round(quote - total, 2)
     sid = _next_id(cur, "cost_scenarios", "CS-", 5, "cost_scenario_id")
-    cur.execute("INSERT INTO cost_scenarios VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    cur.execute("INSERT INTO cost_scenarios (cost_scenario_id,logistics_plan_id,scenario_type,quote_price_usd,product_cost_usd,first_mile_cost_usd,international_freight_usd,duty_tax_usd,customs_brokerage_usd,warehouse_cost_usd,last_mile_cost_usd,returns_allowance_usd,risk_buffer_usd,gross_margin_usd,gross_margin_rate) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (sid, logistics_plan_id, scenario["scenario_type"], quote,
                  *[float(scenario[k]) for k in COST_KEYS], margin,
                  round(margin / quote, 4) if quote else 0))

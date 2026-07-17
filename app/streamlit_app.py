@@ -37,7 +37,8 @@ try:
     from app.coordination_actions import (COORD_PERMS, is_overdue, record_outreach,
                                           record_response, escalate_coordination,
                                           resolve_coordination, mark_dead_ended)
-    from app.command_bus import execute_command   # 波2 写总线（spec §一.4 Streamlit 门，本批仅任务处理台）
+    from app.command_bus import execute_command   # 波2 写总线（spec §一.4 Streamlit 门，V19③ 全量收编完成：
+                                                    # risk/po/dq/adm/coord 剩余写调用点已全部经此，无绕总线残余）
 except ImportError:  # streamlit run app/streamlit_app.py 时脚本目录在 sys.path
     from actions import (ROLE_PERMS, assign_task, propose_mitigation, approve_mitigation,
                          close_risk_event, ensure_task_work_queue_columns)
@@ -594,6 +595,18 @@ def show_result(r, human=None, action_label=None):
         st.error(ux_copy.humanize_error(r["error"]))
 
 
+def _dispatch(action, params, action_func):
+    """波2 写总线薄封装（spec③ risk/po/dq/adm/coord 剩余写调用点全量收编，本批完成——欠账清零）。
+
+    为什么这样建（AGENTS §4，≤5 行）：17 处调用点若各自内联 execute_command 会重复 db()/actor/
+    role/AS_OF 四个模块级量的样板代码；薄封装只收敛调用形状，动作语义/参数/权限判定零改动
+    （判定仍在 app 层动作函数内部，总线不代判，同 command_bus.py 头注释）——action_func 原样
+    传给 execute_command，被包的动作函数本体一行不改。
+    """
+    return execute_command(db(), action=action, params=params, actor=actor, role=role,
+                           as_of=AS_OF, action_func=action_func)
+
+
 def render_command_header(role, n_open):
     critical = rows("""SELECT count(*) c FROM risk_events
                        WHERE severity='critical' AND status NOT IN ('resolved','escalated')""")[0]["c"]
@@ -875,8 +888,9 @@ def render_risk_tab():
                 st.markdown("**误报强制关闭（A6，运营 · false_alarm）**")
                 fa_summary = st.text_input("处理小结（说明为何判定误报）")
                 if st.form_submit_button("误报强制关闭"):
-                    _r = close_risk_event(db(), sel, "false_alarm", fa_summary,
-                                          actor=actor, role=role, as_of=AS_OF)
+                    _r = _dispatch("CloseRiskEvent",  # 波2 写总线（风险队列）
+                                  {"risk_event_id": sel, "outcome": "false_alarm",
+                                   "resolution_summary": fa_summary}, close_risk_event)
                     show_result(_r, human=(f"已关闭：{sel}（判定为误报）" if _r["ok"] else None))
         else:
             c1, c2 = st.columns(2)
@@ -888,8 +902,9 @@ def render_risk_tab():
                                     help="要求处理人完成处置的期限（默认 48 小时），"
                                          "不是货物交付日期，也不是客户承诺日")
                 if st.form_submit_button("派单"):
-                    _r = assign_task(db(), sel, a_role, prio, due.isoformat(),
-                                     actor=actor, role=role, as_of=AS_OF)
+                    _r = _dispatch("AssignTask",  # 波2 写总线（风险队列）
+                                  {"risk_event_id": sel, "assignee_role": a_role, "priority": prio,
+                                   "due_at": due.isoformat()}, assign_task)
                     _human = (f"已派单：{sel} 交给「{ROLE_SHORT_CN.get(a_role, a_role)}」处理，"
                               f"任务 {_r['object_id']}，截止 {due.isoformat()}") if _r["ok"] else None
                     show_result(_r, human=_human)
@@ -903,10 +918,10 @@ def render_risk_tab():
                                   ["（不打标）", "有效", "部分有效", "无效"],
                                   help="对本案已批提案的实际效果打标（3 秒）——一致率成绩单与评估集的原料")
                 if st.form_submit_button("关闭"):
-                    _r = close_risk_event(
-                        db(), sel, outcome, summary, actor=actor, role=role, as_of=AS_OF,
-                        quality_label={"有效": "effective", "部分有效": "partial",
-                                       "无效": "ineffective"}.get(_q))
+                    _r = _dispatch("CloseRiskEvent", {  # 波2 写总线（风险队列）
+                        "risk_event_id": sel, "outcome": outcome, "resolution_summary": summary,
+                        "quality_label": {"有效": "effective", "部分有效": "partial",
+                                         "无效": "ineffective"}.get(_q)}, close_risk_event)
                     _human = (f"已关闭：{sel}（{CLOSE_OUTCOME_CN.get(outcome, outcome)}）"
                               if _r["ok"] else None)
                     show_result(_r, human=_human)
@@ -1182,8 +1197,9 @@ def render_po_tab():
             due = st.date_input("任务处理截止日", date.fromisoformat(AS_OF) + timedelta(days=2))
             if st.form_submit_button("派单"):
                 rid = rsel.split(" ")[0]
-                show_result(assign_task(db(), rid, a_role, prio, due.isoformat(),
-                                        actor=actor, role=role, as_of=AS_OF))
+                show_result(_dispatch("AssignTask",  # 波2 写总线（采购工作台）
+                                      {"risk_event_id": rid, "assignee_role": a_role,
+                                       "priority": prio, "due_at": due.isoformat()}, assign_task))
     st.divider()
     st.session_state["focus_po_id"] = psel
     object_workbench.render_po_object_workbench(psel, role, actor, AS_OF, db, render_table)
@@ -1276,14 +1292,16 @@ def render_dq_tab():
             st.markdown("**分派待核对记录（运营/经理/系统）**")
             assignee = st.text_input("负责人 user_id", issue["assignee_user_id"] or "u-ops-us")
             if st.form_submit_button("分派"):
-                show_result(assign_dq_issue(db(), dqsel, assignee,
-                                            actor=actor, role=role, as_of=AS_OF))
+                show_result(_dispatch("AssignDQIssue",  # 波2 写总线（DQ，不在32动作本体内，内部动作名同 dq_actions._log）
+                                      {"dq_issue_id": dqsel, "assignee_user_id": assignee},
+                                      assign_dq_issue))
         with c2, st.form(f"dq_close_{dqsel}"):
             st.markdown("**核对完成，关闭记录（只记录处置，不修复源系统）**")
             resolution = st.text_input("处置说明")
             if st.form_submit_button("确认关闭"):
-                show_result(close_dq_issue(db(), dqsel, resolution,
-                                           actor=actor, role=role, as_of=AS_OF))
+                show_result(_dispatch("CloseDQIssue",  # 波2 写总线（DQ）
+                                      {"dq_issue_id": dqsel, "resolution": resolution},
+                                      close_dq_issue))
 
 # ---------- 准入工作台（v0.3）----------
 def render_adm_tab():
@@ -1301,9 +1319,10 @@ def render_adm_tab():
                 b1_dt = st.date_input("目标上线日", date.fromisoformat(AS_OF) + timedelta(days=60))
                 b1_qty = st.number_input("预估月单量", 100, 100000, 1000)
                 if st.form_submit_button("建案") and b1_k:
-                    show_result(create_admission_case(db(), b1_c, b1_k, b1_rt, b1_it,
-                                                      b1_dt.isoformat(), b1_qty,
-                                                      actor=actor, role=role, as_of=AS_OF))
+                    show_result(_dispatch("CreateAdmissionCase", {  # 波2 写总线（准入 B1）
+                        "customer_id": b1_c, "sku_id": b1_k, "request_type": b1_rt,
+                        "incoterm_candidate": b1_it, "target_launch_date": b1_dt.isoformat(),
+                        "monthly_order_estimate": b1_qty}, create_admission_case))
     acs = rows("""SELECT a.*, c.customer_name, k.sku_name FROM admission_cases a
                   JOIN customers c ON c.customer_id=a.customer_id
                   JOIN skus k ON k.sku_id=a.sku_id ORDER BY a.admission_case_id""")
@@ -1361,11 +1380,12 @@ def render_adm_tab():
                 ev = st.selectbox("证据状态", ["verified", "provided", "missing", "rejected"])
                 rec = st.selectbox("建议", ["accept", "more_docs", "dap_only", "reject", "escalate"])
                 if st.form_submit_button("提交预审"):
-                    show_result(run_compliance_precheck(db(), asel, [{
-                        "finding_title": f"{ft} review", "finding_type": ft, "severity": sev,
-                        "hts_candidate": hts if ft == "hts" else "", "pga_agency": pga,
-                        "evidence_status": ev, "recommendation": rec}],
-                        actor=actor, role=role, as_of=AS_OF))
+                    show_result(_dispatch("RunCompliancePrecheck", {  # 波2 写总线（准入 B2）
+                        "admission_case_id": asel, "findings": [{
+                            "finding_title": f"{ft} review", "finding_type": ft, "severity": sev,
+                            "hts_candidate": hts if ft == "hts" else "", "pga_agency": pga,
+                            "evidence_status": ev, "recommendation": rec}]},
+                        run_compliance_precheck))
         if role == "ops":
             with st.form(f"b3_{asel}"):
                 st.markdown("**物流方案（B3，运营）**")
@@ -1379,12 +1399,13 @@ def render_adm_tab():
                 td = st.number_input("预计总时效(天)", 3, 60, 32)
                 sr = st.selectbox("SLA 风险", ["low", "medium", "high"])
                 if st.form_submit_button("提交方案"):
-                    show_result(build_logistics_plan(db(), asel, {
-                        "plan_name": f"{rt}/{it}", "route_type": rt, "incoterm": it,
-                        "origin_port_locode": op, "destination_port_locode": dp,
-                        "us_warehouse_region": wr, "last_mile_method": lm,
-                        "estimated_transit_days": td, "sla_risk": sr},
-                        actor=actor, role=role, as_of=AS_OF))
+                    show_result(_dispatch("BuildLogisticsPlan", {  # 波2 写总线（准入 B3）
+                        "admission_case_id": asel, "plan": {
+                            "plan_name": f"{rt}/{it}", "route_type": rt, "incoterm": it,
+                            "origin_port_locode": op, "destination_port_locode": dp,
+                            "us_warehouse_region": wr, "last_mile_method": lm,
+                            "estimated_transit_days": td, "sla_risk": sr}},
+                        build_logistics_plan))
         if role == "finance" and aplans:
             with st.form(f"b4_{asel}"):
                 st.markdown("**成本情景（B4，财务）**")
@@ -1398,9 +1419,9 @@ def render_adm_tab():
                           ("last_mile_cost_usd", 900.0), ("returns_allowance_usd", 150.0),
                           ("risk_buffer_usd", 250.0))}
                 if st.form_submit_button("提交情景"):
-                    show_result(calculate_cost_scenario(db(), b4_p, {"scenario_type": b4_t,
-                                "quote_price_usd": quote, **costs},
-                                actor=actor, role=role, as_of=AS_OF))
+                    show_result(_dispatch("CalculateCostScenario",  # 波2 写总线（准入 B4）
+                        {"logistics_plan_id": b4_p, "scenario": {"scenario_type": b4_t,
+                         "quote_price_usd": quote, **costs}}, calculate_cost_scenario))
     with c2:
         if role == "manager" and aplans:
             with st.form(f"b5_{asel}"):
@@ -1412,8 +1433,10 @@ def render_adm_tab():
                 b5_r = st.text_input("审批理由")
                 b5_c = st.text_input("附加条件（quote_with_conditions）")
                 if st.form_submit_button("提交审批") and b5_s:
-                    show_result(approve_quote_decision(db(), asel, b5_p, b5_s, b5_d, b5_r, b5_c,
-                                                       actor=actor, role=role, as_of=AS_OF))
+                    show_result(_dispatch("ApproveQuoteDecision", {  # 波2 写总线（准入 B5，冻结动作）
+                        "admission_case_id": asel, "approved_logistics_plan_id": b5_p,
+                        "approved_cost_scenario_id": b5_s, "decision": b5_d,
+                        "decision_reason": b5_r, "conditions": b5_c}, approve_quote_decision))
         if role in ("compliance", "manager"):
             with st.form(f"b6_{asel}"):
                 st.markdown("**拒接 / 补资料（B6）**")
@@ -1422,9 +1445,10 @@ def render_adm_tab():
                 b6_m = st.text_input("缺失文件（more_info，分号分隔）")
                 b6_r = st.text_input("拒接原因（reject）")
                 if st.form_submit_button("提交"):
-                    show_result(reject_or_request_more_info(
-                        db(), asel, b6_d, [x.strip() for x in b6_m.split(";") if x.strip()],
-                        b6_r, actor=actor, role=role, as_of=AS_OF))
+                    show_result(_dispatch("RejectOrRequestMoreInfo", {  # 波2 写总线（准入 B6，冻结动作）
+                        "admission_case_id": asel, "decision": b6_d,
+                        "missing_documents": [x.strip() for x in b6_m.split(";") if x.strip()],
+                        "rejection_reason": b6_r}, reject_or_request_more_info))
     # 对象工作台入口：点选的准入案 → 进入 AdmissionCase 富工作台（同 RiskEvent 的 focus 机制）
     st.divider()
     st.session_state["focus_admission_case_id"] = asel
@@ -1507,32 +1531,36 @@ def render_coord_tab():
                                       key=f"coord_out_due_{cid}")
                     note = st.text_input("备注（可空）", key=f"coord_out_note_{cid}")
                     if st.form_submit_button("催办"):
-                        show_result(record_outreach(db(), cid, d.isoformat(), note,
-                                                    actor=actor, role=role, as_of=AS_OF))
+                        show_result(_dispatch("RecordOutreach",  # 波2 写总线（协调收件箱）
+                                              {"coordination_id": cid, "next_action_due": d.isoformat(),
+                                               "note": note}, record_outreach))
                 with st.form(f"coord_response_{cid}"):
                     st.markdown("**记回应**（记录对方回复，awaiting/escalated）")
                     resp = st.text_input("对方回应内容", key=f"coord_resp_txt_{cid}")
                     if st.form_submit_button("记录回应"):
-                        show_result(record_response(db(), cid, resp,
-                                                    actor=actor, role=role, as_of=AS_OF))
+                        show_result(_dispatch("RecordResponse",  # 波2 写总线（协调收件箱）
+                                              {"coordination_id": cid, "last_response": resp},
+                                              record_response))
                 with st.form(f"coord_escalate_{cid}"):
                     st.markdown("**升级**（escalation_level++，awaiting/responded）")
                     if st.form_submit_button("升级"):
-                        show_result(escalate_coordination(db(), cid,
-                                                          actor=actor, role=role, as_of=AS_OF))
+                        show_result(_dispatch("EscalateCoordination",  # 波2 写总线（协调收件箱）
+                                              {"coordination_id": cid}, escalate_coordination))
             with oc2:
                 with st.form(f"coord_resolve_{cid}"):
                     st.markdown("**达成**（终态 resolved）")
                     outc = st.text_input("结果 outcome", key=f"coord_resolve_txt_{cid}")
                     if st.form_submit_button("达成"):
-                        show_result(resolve_coordination(db(), cid, outc,
-                                                         actor=actor, role=role, as_of=AS_OF))
+                        show_result(_dispatch("ResolveCoordination",  # 波2 写总线（协调收件箱）
+                                              {"coordination_id": cid, "outcome": outc},
+                                              resolve_coordination))
                 with st.form(f"coord_dead_{cid}"):
                     st.markdown("**谈崩**（终态 dead_ended）")
                     outc2 = st.text_input("放弃 / 无解原因", key=f"coord_dead_txt_{cid}")
                     if st.form_submit_button("谈崩"):
-                        show_result(mark_dead_ended(db(), cid, outc2,
-                                                    actor=actor, role=role, as_of=AS_OF))
+                        show_result(_dispatch("MarkDeadEnded",  # 波2 写总线（协调收件箱）
+                                              {"coordination_id": cid, "outcome": outc2},
+                                              mark_dead_ended))
         st.divider()
 
 

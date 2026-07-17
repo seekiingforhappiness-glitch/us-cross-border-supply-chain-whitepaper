@@ -30,9 +30,28 @@ from datetime import datetime, timezone
 from app.actions import _StateConflict, current_action_trace_id
 
 
-APPROVE_ACTION = "ApproveMitigation"
-# 指纹不一致（提案在审批间隙被改）白话错误——spec §一.3 原话，逐字使用。
+APPROVE_ACTION = "ApproveMitigation"   # 保留（向后兼容：既有 import/引用不破）
+# 指纹不一致（提案在审批间隙被改）白话错误——spec §一.3 原话，逐字使用。任务域与准入域共用同一文案风格。
 FINGERPRINT_MISMATCH_MESSAGE = "你看到的方案和现在库里的不是同一版"
+
+# 需在执行前校验「产物指纹 vs 基线」的动作集（spec §一.3 + V19② 扩准入域）。动作名不可知——绑定判据是
+# 产物（待批任务行 / 待决案件行）而非动作名，此集合只回答"哪些动作是要拍板的决定、执行前须复核一致性"：
+#   · ApproveMitigation —— 任务域审批（基线=待批任务的提案指纹）。
+#   · ApproveQuoteDecision / RejectOrRequestMoreInfo —— 准入域两个冻结决定（基线=待决案件的决策字段指纹）。
+BINDING_CHECKED_ACTIONS = frozenset({"ApproveMitigation", "ApproveQuoteDecision",
+                                     "RejectOrRequestMoreInfo"})
+
+# 准入案终态（源：app.admission_actions.CASE_TERMINAL）。此处镜像为 command_bus 的低耦合本地常量——总线是
+# 「承重墙」，被 agent.runtime 依赖，刻意不新增对 app.admission_actions 的 import 边（其模块级会加载本体、
+# 加重导入图）；改由 test_command_bus 的漂移守护断言钉死两者相等。案件进这三态=决策已下、不再待决，
+# 不再落/校验基线指纹（终态案件的 approve/reject 会被 app 层门禁自行拦）。
+_CASE_TERMINAL_STATUSES = ("approved", "quote_with_conditions", "rejected")
+# 准入案「决策关键字段」= 案件的商业条款（客户 / SKU / 请求类型 / 贸易术语 / 上线日 / 月订单量）。这些在
+# 合法工作流推进（预审→建方案→计价→审批）中**保持不变**，故适合做审批间隙的 TOCTOU 基线；status /
+# risk_level / decision / version 是工作流可变列，**故意排除**——否则合法状态推进会被误判 mismatch。
+# 篡改其一（如把月订单量或贸易术语在拍板前改掉）→「你看到的方案和现在库里的不是同一版」。
+_CASE_DECISION_FIELDS = ("customer_id", "sku_id", "request_type", "incoterm_candidate",
+                         "target_launch_date", "monthly_order_estimate")
 
 # commands 台账 DDL（单一来源）。规格列（spec §一.1）：command_id / idempotency_key / action / actor /
 # role / params_fingerprint（sha256 of 规范化 JSON）/ trace_id / result_status / object_id / created_at。
@@ -105,39 +124,72 @@ def _replay_or_conflict(row, key: str) -> dict:
     return json.loads(row[1])
 
 
-def check_approval_binding(con: sqlite3.Connection, params: dict):
-    """审批绑提案指纹（spec §一.3）：approve 执行**前**，反查该 task 最近一条成功 propose 命令的指纹，
-    与「任务当前 proposal 现算指纹」比对。返回 (allowed, fingerprint_check, error)：
-      · 查不到 propose 命令记录（历史/种子任务）→ (True, 'no_baseline', None)：放行但留痕，不因新
-        机制误杀既有演示数据（spec §一.3 原文要求）。
-      · 一致 → (True, 'match', None)；不一致（提案在审批间隙被改）→ (False, 'mismatch', 白话错误)。
-    现算指纹重建 propose 命令的原始 params 形状 {task_id, proposed_action, proposal_params}——三者
-    都取任务当前状态（task_id 不变；proposed_action / proposal_params 落在 tasks 表），故未被篡改时
-    逐字节等于 propose 命令落库时的指纹，且同时覆盖 proposed_action 与 proposal_params 两处改动。
-    按 rowid DESC 取「最近」，不依赖 created_at（同一 as_of 天内多命令仍可稳定定序）。"""
-    task_id = params.get("task_id")
-    if not task_id:
-        return True, None, None   # task_id 缺失交给 app 层报它自己的错（总线不代判）
-    # 基线=该任务最近一条带规范提案指纹的命令（**动作名不可知**，对抗复核 F1 修正：按动作名枚举会
-    # 漏掉 ProposeCollection 一族——它们的入参形状与任务行不同构，故基线一律用落库后现算的
-    # proposal_fingerprint，任何产出待批任务的提案动作自动被覆盖）。
-    row = con.execute(
-        "SELECT proposal_fingerprint FROM commands WHERE object_id=? "
-        "AND proposal_fingerprint IS NOT NULL ORDER BY rowid DESC LIMIT 1",
-        (task_id,)).fetchone()
-    if row is None:
-        return True, "no_baseline", None
-    baseline_fp = row[0]
+def _current_task_fingerprint(con: sqlite3.Connection, task_id: str):
+    """任务当前提案的现算规范指纹 {task_id, proposed_action, proposal_params}（三者都取任务当前状态：
+    task_id 不变；proposed_action / proposal_params 落在 tasks 表）——未被篡改时逐字节等于 propose 命令
+    落库时的指纹，同时覆盖 proposed_action 与 proposal_params 两处改动。任务不存在 → None（交给 app 层）。"""
     task = con.execute(
-        "SELECT proposed_action, proposal_params FROM tasks WHERE task_id=?",
-        (task_id,)).fetchone()
+        "SELECT proposed_action, proposal_params FROM tasks WHERE task_id=?", (task_id,)).fetchone()
     if task is None:
-        return True, None, None   # 任务不存在交给 app 层（approve_mitigation 会报「任务不存在」）
+        return None
     current = {"task_id": task_id, "proposed_action": task[0],
                "proposal_params": json.loads(task[1] or "{}")}
-    if fingerprint_params(current) == baseline_fp:
+    return fingerprint_params(current)
+
+
+def _admission_case_fingerprint(con: sqlite3.Connection, admission_case_id: str):
+    """准入案当前「决策关键字段」的现算规范指纹（V19② 扩准入域）。终态案件（approved /
+    quote_with_conditions / rejected）或案件不存在 → None（不落/不校验基线，交 app 层门禁自行拦）。
+    字段集 = _CASE_DECISION_FIELDS（商业条款，合法工作流推进中不变），故未被篡改时逐字节等于
+    落库时的基线指纹。"""
+    row = con.execute(
+        "SELECT status, customer_id, sku_id, request_type, incoterm_candidate, "
+        "target_launch_date, monthly_order_estimate FROM admission_cases "
+        "WHERE admission_case_id=?", (admission_case_id,)).fetchone()
+    if row is None or row["status"] in _CASE_TERMINAL_STATUSES:
+        return None
+    canonical = {"admission_case_id": admission_case_id}
+    canonical.update({f: row[f] for f in _CASE_DECISION_FIELDS})
+    return fingerprint_params(canonical)
+
+
+def _check_binding(con: sqlite3.Connection, object_id: str, current_fp_fn):
+    """通用产物指纹绑定校验（任务域/准入域共用一套逻辑，动作名不可知）：反查该对象最近一条带
+    proposal_fingerprint 的命令作**基线**，与「现算指纹」（current_fp_fn 现场重算对象当前产物）比对。
+    返回 (allowed, fingerprint_check, error)：
+      · 查不到基线（历史/种子对象，无经总线的产物命令）→ (True, 'no_baseline', None)：放行留痕，不因新
+        机制误杀既有演示数据（spec §一.3 原文要求）。
+      · 现算不出（对象已删/已终态）→ (True, None, None)：交 app 层报它自己的错（approve/G3 门禁会拦）。
+      · 一致 → (True, 'match', None)；不一致（产物在拍板间隙被改）→ (False, 'mismatch', 白话错误)。
+    按 rowid DESC 取「最近」，不依赖 created_at（同一 as_of 天内多命令仍可稳定定序）。"""
+    row = con.execute(
+        "SELECT proposal_fingerprint FROM commands WHERE object_id=? "
+        "AND proposal_fingerprint IS NOT NULL ORDER BY rowid DESC LIMIT 1", (object_id,)).fetchone()
+    if row is None:
+        return True, "no_baseline", None
+    current_fp = current_fp_fn()
+    if current_fp is None:
+        return True, None, None
+    if current_fp == row[0]:
         return True, "match", None
     return False, "mismatch", FINGERPRINT_MISMATCH_MESSAGE
+
+
+def check_approval_binding(con: sqlite3.Connection, params: dict):
+    """拍板前的产物指纹绑定校验（spec §一.3 + V19② 扩准入域）。按 params 里的对象键**分派域**——绑定判据
+    是产物而非动作名，故未来任何产出待批任务/待决案件的新动作自动被覆盖（对抗复核 F1「动作名不可知」原则）：
+      · 有 task_id → 任务域（基线=待批任务提案指纹 vs 任务当前提案现算指纹）；
+      · 有 admission_case_id → 准入域（基线=待决案件决策字段指纹 vs 案件当前现算指纹）。
+    三态语义（两域一致）：no_baseline 放行留痕 / match 放行 / mismatch 白话拒绝（同一文案风格）。
+    两键都无 → (True, None, None) 交给 app 层报它自己的错（总线不代判）。"""
+    task_id = params.get("task_id")
+    if task_id:
+        return _check_binding(con, task_id, lambda: _current_task_fingerprint(con, task_id))
+    admission_case_id = params.get("admission_case_id")
+    if admission_case_id:
+        return _check_binding(con, admission_case_id,
+                              lambda: _admission_case_fingerprint(con, admission_case_id))
+    return True, None, None
 
 
 def _insert_row(con, command_id, key, action, actor, role, fp, trace_id,
@@ -153,20 +205,24 @@ def _insert_row(con, command_id, key, action, actor, role, fp, trace_id,
 
 
 def _proposal_fingerprint_for(con: sqlite3.Connection, result) -> str | None:
-    """若本命令产出/更新了一个**待批提案任务**，从任务行现状算规范提案指纹（对抗复核 F1）：
-    sha256({task_id, proposed_action, proposal_params})。动作名不可知——判据是产物而非名字：
-    result.object_id 指向 approval_status='pending' 的任务即算（ProposeMitigation/ProposeCollection
-    及未来一切提案动作自动覆盖）；assign（无 pending）/approve（已 approved）自然跳过。"""
+    """若本命令产出/更新了一个**待拍板的产物**，从产物行现状算规范指纹作审批绑定基线（对抗复核 F1 +
+    V19② 扩准入域）。动作名不可知——判据是产物而非名字，两域各认自己的产物、object_id 现取现算：
+      · 任务域：result.object_id 指向 approval_status='pending' 的任务 → sha256({task_id, proposed_action,
+        proposal_params})（ProposeMitigation/ProposeCollection 及未来一切提案动作自动覆盖）。
+      · 准入域：result.object_id 指向仍待决（非终态）的 admission case → 决策关键字段指纹
+        （CreateAdmissionCase/RunCompliancePrecheck 等落案件行的命令自动覆盖）。
+    assign（任务无 pending）/ approve（案件已终态）/ 建方案·计价（object_id 是子对象非案件）自然跳过。"""
     if not (isinstance(result, dict) and result.get("ok") and result.get("object_id")):
         return None
+    object_id = result["object_id"]
     row = con.execute(
         "SELECT proposed_action, proposal_params FROM tasks "
-        "WHERE task_id=? AND approval_status='pending'", (result["object_id"],)).fetchone()
-    if row is None:
-        return None
-    canonical = {"task_id": result["object_id"], "proposed_action": row[0],
-                 "proposal_params": json.loads(row[1] or "{}")}
-    return fingerprint_params(canonical)
+        "WHERE task_id=? AND approval_status='pending'", (object_id,)).fetchone()
+    if row is not None:
+        canonical = {"task_id": object_id, "proposed_action": row[0],
+                     "proposal_params": json.loads(row[1] or "{}")}
+        return fingerprint_params(canonical)
+    return _admission_case_fingerprint(con, object_id)   # 非待批任务 → 试准入域（非案件/终态案件返回 None）
 
 
 def _finalize(con, command_id, key, action, actor, role, fp, trace_id,
@@ -232,9 +288,11 @@ def execute_command(con: sqlite3.Connection, *, action: str, params: dict, actor
                 raise _StateConflict(f"幂等键 {key} 认领竞争，请稍后用同一 key 重试。")
             return _replay_or_conflict(prior, key)
 
-    # 审批绑提案指纹（approve 执行前；spec §一.3）：不一致直接拒，动作函数不被调用（无 approve 副作用）。
+    # 产物指纹绑定（拍板动作执行前；spec §一.3 + V19② 扩准入域）：不一致直接拒，动作函数不被调用
+    # （无审批/决定副作用）。触发集=BINDING_CHECKED_ACTIONS（任务域 ApproveMitigation + 准入域
+    # ApproveQuoteDecision/RejectOrRequestMoreInfo），按 params 对象键分派域，动作名不可知。
     fingerprint_check = None
-    if action == APPROVE_ACTION:
+    if action in BINDING_CHECKED_ACTIONS:
         allowed, fingerprint_check, err = check_approval_binding(con, params)
         if not allowed:
             result = {"ok": False, "object_id": None, "side_effects": [], "error": err}

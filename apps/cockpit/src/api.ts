@@ -583,3 +583,146 @@ export function formatInt(v: number | string | null | undefined): string {
   if (typeof v === "string") return v === MASK ? MASK_TEXT : v;
   return v.toLocaleString("en-US");
 }
+
+// ═══════════════════════════ /runtime/runs（AI 处置任务 runtime，规格④）═══════════════════════════
+// 持久 Agent runtime 的 HTTP 门面（apps/api/runtime.py）：看/管 AI「处置差事」(run)——列出/查看每趟跑
+// 到哪、每步干了什么（白话时间线）、预算还剩多少；替 ops 启动、批完续跑、manager 急停（kill）。
+// 冻结区仍不可达（本组仅 list/detail/start/resume/kill 五动作，无一能执行审批/关闭/报价裁决）。双世界
+// 跟随 X-World（runtime 两表落在对应世界库）、角色头 X-Role 同门；写操作 X-Actor 必填（后端审计留痕）。
+
+// 预算余量摘要：三条余量（步/工具次数/秒）都由后端现算。列表不逐 run 数工具步 → tool_calls_used /
+// tool_calls_remaining 为 null（前端按"未统计"呈现），详情里才有完整工具次数。
+export interface RuntimeBudget {
+  max_steps: number | null;
+  steps_used: number;
+  steps_remaining: number | null;
+  max_tool_calls: number | null;
+  tool_calls_used: number | null;
+  tool_calls_remaining: number | null;
+  max_seconds: number | null;
+  spent_seconds: number;
+  seconds_remaining: number | null;
+}
+
+// 单步视图（详情时间线）：白话 kind 标签 + payload/result 原样。think 步的 result.mode = llm|deterministic
+// （LLM 不可用时优雅降级、如实标注，见 apps/api/runtime.py）。
+export interface RuntimeStep {
+  step_no: number;
+  kind: string; // think | tool | command | wait | verify
+  kind_label: string; // 白话标签（如"写后复读核实（读回数据库确认副作用真的发生）"）
+  payload: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  created_at: string | null;
+}
+
+// 列表项：status/goal/budget 摘要/updated_at（+状态白话标签/步数/summary/killed）。
+export interface RuntimeRunListItem {
+  run_id: string;
+  status: string;
+  status_label: string; // 状态白话（"等待人工审批（去待拍板处批它）"…）
+  goal: string; // "处置 RSK-0007"
+  agent_role: string;
+  killed: number; // 0/1
+  steps: number; // 已落账步数
+  updated_at: string | null;
+  summary: string | null; // 白话结论（终态/等审批时后端写入；未有则 null）
+  budget: RuntimeBudget;
+}
+
+export interface RuntimeRunsList {
+  world: string;
+  count: number;
+  limit: number;
+  items: RuntimeRunListItem[];
+  note?: string; // 诚实空态：两表未建（本世界还没跑过任何 run）时的白话原因
+  next_cursor?: string | null; // 仅当请求带 cursor 时出现
+}
+
+// 详情：状态 + 预算余量 + steps 白话时间线全量。
+export interface RuntimeRunDetail {
+  world: string;
+  run_id: string;
+  status: string;
+  status_label: string;
+  goal: string;
+  agent_role: string;
+  killed: number;
+  summary: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  budget: RuntimeBudget;
+  steps: RuntimeStep[];
+}
+
+// start/resume 驱动结果信封：透传 run 驱动结果 + world + llm_mode + 状态白话标签（门面不代判，
+// 见 apps/api/runtime.py::_run_envelope）。note/summary/task_id/approval_status 按分支可选出现。
+export interface RuntimeRunEnvelope {
+  run_id: string;
+  status: string;
+  status_label: string;
+  world: string;
+  llm_mode: string; // off（确定性剧本）/ auto（探测可用才出境）
+  note?: string;
+  summary?: string | null;
+  task_id?: string;
+  approval_status?: string; // pending / approved / rejected（resume 分支透传）
+  killed?: number;
+}
+
+// kill 结果：ok + killed + status（+world+status_label）。幂等：重复 kill 返回同结果。
+export interface RuntimeKillResult {
+  ok: boolean;
+  run_id: string;
+  status: string;
+  killed: number;
+  world: string;
+  status_label: string;
+}
+
+// GET：只读列表/详情（跟随 X-World / X-Role；列表诚实空态=count 0 + note，非 404/500）。
+export const fetchRuntimeRuns = (role: Role) => apiGet<RuntimeRunsList>("/runtime/runs", role);
+
+export const fetchRuntimeRunDetail = (role: Role, runId: string) =>
+  apiGet<RuntimeRunDetail>(`/runtime/runs/${encodeURIComponent(runId)}`, role);
+
+// ── 写通道 POST（X-Actor 必填 + 白话错误原样透传，同 postDecision 的"不吞错"约定）──
+// runtime 三个 POST（启动/续跑/急停）不走 /decisions 的幂等意图键机制：启动的双击由前端"先查既有 run"
+// 挡（见 AiRuns 的 AiDispatchButton）+ 后端命令总线内部写恰一次；续跑/急停后端天然幂等（终态 no-op /
+// 重复 kill 同结果）。故这里只需薄 POST + 白话错误。网络级失败（fetch 未拿到响应）直接向上抛，调用方降级。
+async function runtimePost<T>(
+  path: string,
+  role: Role,
+  actor: string,
+  body?: Record<string, unknown>,
+): Promise<T> {
+  const resp = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    // 写通道同样跟随当前世界（X-World，由 reqHeaders 带上）：在模拟世界里启动即写模拟库的 runtime 两表。
+    headers: reqHeaders(role, { "Content-Type": "application/json", "X-Actor": actor }),
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!resp.ok) {
+    // 后端 HTTPException detail 为白话中文（"缺少 X-Actor…""急停是 manager 专属…""任务运行不存在…"）。
+    let detail = `提交失败：HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string" && j.detail) detail = j.detail;
+    } catch {
+      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as T;
+}
+
+/** 启动一趟 AI 处置差事（POST /runtime/runs {goal_risk_id}）：同步推进到首个稳态（等审批/终态）。 */
+export const startRuntimeRun = (role: Role, actor: string, goalRiskId: string) =>
+  runtimePost<RuntimeRunEnvelope>("/runtime/runs", role, actor, { goal_risk_id: goalRiskId });
+
+/** 断点续跑（POST …/resume）：等审批三分支语义透传（pending 不推进 / approved 写后复读→done / rejected→failed）。 */
+export const resumeRuntimeRun = (role: Role, actor: string, runId: string) =>
+  runtimePost<RuntimeRunEnvelope>(`/runtime/runs/${encodeURIComponent(runId)}/resume`, role, actor);
+
+/** 急停（POST …/kill）：manager 专属（后端 X-Role 独立鉴权 403）+ X-Actor 必填；幂等留痕。 */
+export const killRuntimeRun = (role: Role, actor: string, runId: string) =>
+  runtimePost<RuntimeKillResult>(`/runtime/runs/${encodeURIComponent(runId)}/kill`, role, actor);
