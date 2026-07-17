@@ -61,12 +61,63 @@ def apply(db_path: str | Path) -> dict:
     return {"added": added, "triggers": triggers, "skipped_tables": skipped}
 
 
+
+
+# ── 运营态表兜底（2026-07-17 勘误：X-World 写路径开通后，模拟世界缺 action_log 等运营表，
+#    任何写动作在 sim 世界撞"no such table"——Daniel 实测发起 AI 处置 HTTP 500 暴露）。
+#    只补「写路径必需且空表=语义正确」的三张：审计/外发队列/DQ 队列（空=从零开始记录，诚实）；
+#    刻意不补 object_relationships 等读基建表——空图会造成静默错答案，宁可留 loud error。
+#    DDL 与 build_ontology 单一来源逐字对齐（action_log/dq_issues），outbox 复用其自建函数。
+_OPERATIONAL_DDL = {
+    "action_log": """CREATE TABLE IF NOT EXISTS action_log (log_id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT,
+        role TEXT, action TEXT, target_object_id TEXT, params_json TEXT, as_of_date TEXT,
+        timestamp TEXT, result TEXT, trace_id TEXT)""",
+    "dq_issues": """CREATE TABLE IF NOT EXISTS dq_issues (
+        dq_issue_id TEXT PRIMARY KEY,
+        source_table TEXT NOT NULL,
+        source_record_id TEXT NOT NULL,
+        issue_type TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        status TEXT NOT NULL,
+        assignee_user_id TEXT,
+        resolution TEXT,
+        detail_json TEXT,
+        created_at TEXT,
+        closed_at TEXT,
+        policy_version TEXT
+    )""",
+}
+
+
+def ensure_operational_tables(db_path: str | Path) -> list[str]:
+    """缺哪张建哪张（幂等）；返回本次新建清单。integration_outbox 走 pipeline.outbox 自建函数。"""
+    from pipeline.outbox import ensure_integration_outbox
+    con = sqlite3.connect(str(db_path))
+    created = []
+    try:
+        existing = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for name, ddl in _OPERATIONAL_DDL.items():
+            if name not in existing:
+                con.execute(ddl)
+                created.append(name)
+        if "integration_outbox" not in existing:
+            ensure_integration_outbox(con)
+            created.append("integration_outbox")
+        con.commit()
+    finally:
+        con.close()
+    return created
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--db", default=str(DEFAULT_DB))
     args = ap.parse_args()
     r = apply(args.db)
+    created = ensure_operational_tables(args.db)
     print(f"接缝列迁移完成 @ {args.db}")
+    if created:
+        print(f"  运营态表兜底新建：{created}")
     print(f"  新增列 {len(r['added'])} 处；新建触发器 {len(r['triggers'])} 个；"
           f"无表跳过 {len(r['skipped_tables'])} 个（{r['skipped_tables'] or '无'}）")
     if not r["added"] and not r["triggers"]:
