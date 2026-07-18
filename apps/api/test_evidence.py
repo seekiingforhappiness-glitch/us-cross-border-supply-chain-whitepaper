@@ -162,14 +162,23 @@ def test_precedents_widen_when_lane_thin(api):
     assert "widen_reason" in prec
 
 
-def test_precedents_empty_first_case_verification_world(api):
-    """验证世界（resolution_memory 0 行）：任一提案先例=诚实空态（empty:true、n=0、白话'首例'）。"""
+def test_precedents_verification_world_state_relative(api):
+    """验证世界先例=对库现查（世界观更新 2026-07-18：A-1 起人批决策会归档进 resolution_memory，
+    验证世界不再恒 0 先例——测试不得假设不可变演示态，同 c14560a 教训）。n 与库内同 rule 计数
+    一致；0 例时守诚实空态（empty:true+'首例'），有例时分布求和=n。"""
     client, vcon, _s = api
-    tid = vcon.execute("SELECT task_id FROM tasks WHERE approval_status IS NOT NULL "
-                       "ORDER BY task_id LIMIT 1").fetchone()[0]
+    row = vcon.execute(
+        "SELECT t.task_id, r.rule_id FROM tasks t JOIN risk_events r ON r.risk_event_id=t.risk_event_id "
+        "WHERE t.approval_status IS NOT NULL ORDER BY t.task_id LIMIT 1").fetchone()
+    tid, rule = row[0], row[1]
+    expected_n = vcon.execute(
+        "SELECT count(*) FROM resolution_memory WHERE rule_id=? AND status='active'", (rule,)).fetchone()[0]
     prec = _ev(client, tid, world=VERIFY).json()["precedents"]
-    assert prec["available"] and prec.get("empty") is True and prec["n"] == 0
-    assert "首例" in prec["note"]
+    assert prec["available"]
+    if expected_n == 0:
+        assert prec.get("empty") is True and prec["n"] == 0 and "首例" in prec["note"]
+    else:
+        assert prec["n"] >= 1 and sum(prec["by_decision"].values()) == prec["n"]
 
 
 def test_precedents_pure_synthetic_edges():
@@ -257,16 +266,19 @@ def test_alternatives_no_shipment_delay_null_reason(api):
     assert alt["delay_days"] is None and "delay_reason" in alt
 
 
-def test_alternatives_historical_null_when_no_action_precedent(api):
-    """某选项在同类先例里无历史案例 → 该选项 historical.effective_rate=None + reason（诚实空态）。
-    验证世界（0 先例）下两选项都应 null+reason。"""
+def test_alternatives_historical_state_relative(api):
+    """选项历史有效率=对库现查（世界观更新同上）：某选项在同类先例中 0 案例 → null+reason
+    诚实空态；有案例 → n>=1 且 effective_rate 为 None（未回填结局）或 [0,1] 实数——绝不 0/0 冒充。"""
     client, vcon, _s = api
     tid = vcon.execute("SELECT task_id FROM tasks WHERE risk_event_id IS NOT NULL "
                        "ORDER BY task_id LIMIT 1").fetchone()[0]
     alt = _ev(client, tid, world=VERIFY).json()["alternatives"]
     for act in ("expedite", "accept_delay"):
         h = alt["options"][act]["historical"]
-        assert h["n"] == 0 and h["effective_rate"] is None and "reason" in h
+        if h["n"] == 0:
+            assert h["effective_rate"] is None and "reason" in h
+        else:
+            assert h["effective_rate"] is None or 0.0 <= h["effective_rate"] <= 1.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

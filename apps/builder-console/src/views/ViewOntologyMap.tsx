@@ -51,22 +51,16 @@ function IsoBlock({
   const selected = state === "focus";
   // P1 修复：节点点亮逻辑（corridorFrom BFS + onClick→setSelected）本就工作，代码复核确认（未做浏览器验证，
   // 按执行者红线不可做）；缺的是可达性——<g onClick> 无 role/tabIndex/aria-label，无障碍树不可见，键盘无法触达。
-  // 补 role="button" + tabIndex + aria-label（中文名+域名+选中态）+ Enter/Space 键盘触发；
-  // aria-pressed 让选中态也能被读屏器感知，呼应下方 CSS 的「明显视觉态」增强。
+  // L-UX 轮2 勘误：SVG 图形上的 tabIndex+onKeyDown 是死路——Chromium 不向聚焦的 SVG 元素派发
+  // 键盘事件（主会话实测：activeElement 在 <g> 上、窗口级 capture 监听收到 0 个 keydown）。
+  // 键盘等价物改走 HTML 侧「键盘选择列表」（见组件底部，视觉隐藏、聚焦即现）；本 <g> 保留
+  // role/aria-pressed 供指针语义与读屏描述，不再承诺 Enter。
   return (
     <g className={cls}
       role="button"
-      tabIndex={0}
-      aria-label={`${block.plainName}（${block.domainName}）${selected ? "，已选中，沿关系走廊点亮邻域" : "，点击或按 Enter 点亮邻域"}`}
+      aria-label={`${block.plainName}（${block.domainName}）${selected ? "，已选中，沿关系走廊点亮邻域" : "，点击点亮邻域"}`}
       aria-pressed={selected}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          e.stopPropagation();
-          onClick();
-        }
-      }}
       onMouseEnter={() => onHover(block.type)} onMouseLeave={() => onHover(null)}
       style={{ cursor: "pointer" }}>
       <polygon className="om-blk__left" points={`${fLeft} ${fBot} ${tBot} ${tLeft}`} />
@@ -187,6 +181,20 @@ export default function ViewOntologyMap() {
               );
             })}
           </svg>
+
+        {/* 键盘等价选择列表（L-UX 轮2 P1 正解）：HTML <button> 原生吃 Enter/Space，绕开
+            Chromium 的 SVG 焦点键盘事件缺失。视觉隐藏、键盘聚焦进入时整组显形（CSS
+            .om-kbd:focus-within），与地图点击共用同一 setSelected——单一事实源。 */}
+        <nav className="om-kbd" aria-label="键盘选择对象类型（与地图点击等价）">
+          <span className="om-kbd__hint">键盘选择对象类型（Enter 点亮邻域）：</span>
+          {[...allPlaced].sort((a, b) => a.block.type.localeCompare(b.block.type)).map(({ block }) => (
+            <button key={block.type} className={`om-kbd__btn ${selected === block.type ? "is-on" : ""}`}
+              aria-pressed={selected === block.type}
+              onClick={() => setSelected(selected === block.type ? null : block.type)}>
+              {block.plainName}
+            </button>
+          ))}
+        </nav>
         </div>
 
         {/* 右侧信息栏 */}

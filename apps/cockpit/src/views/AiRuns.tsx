@@ -143,7 +143,7 @@ function stepText(s: RuntimeStep): string {
     case "verify": {
       const ok = r.ok === true;
       const note = typeof r.note === "string" ? r.note : null;
-      return note || (ok ? "写后复读核实通过：副作用真的落库了。" : "写后复读未通过。");
+      return note || (ok ? "写后复读核实通过：副作用真的落库了（白话：批完后 AI 回头查了数据库，确认这事真办成了才报完成）。" : "写后复读未通过：AI 回查数据库没见到预期结果，如实报告不硬说成功。");
     }
     default:
       return s.kind_label;
@@ -210,9 +210,10 @@ function RunTimeline({ steps, onOpenObject }: { steps: RuntimeStep[]; onOpenObje
                 </div>
                 <div className="cp-tl__text">{stepText(e)}</div>
                 {ref && (
-                  <span className="cp-tl__ref num" onClick={() => onOpenObject(ref)}>
+                  <button type="button" className="cp-tl__ref num" onClick={() => onOpenObject(ref)}
+                    title={`打开 ${ref.type} 详情卡`}>
                     ▸ {ref.id}
-                  </span>
+                  </button>
                 )}
               </div>
             </li>
