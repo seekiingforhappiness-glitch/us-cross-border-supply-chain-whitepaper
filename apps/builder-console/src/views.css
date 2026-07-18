@@ -1867,3 +1867,14 @@ button.im-tool { cursor: pointer; } button.im-tool:hover { border-color: rgba(92
   .gov-cov-row { grid-template-columns: 20px 36px 1fr; }
   .gov-cov-test { display: none; }
 }
+
+/* 键盘等价选择列表（本体地图 L-UX 轮2）：默认视觉隐藏，键盘聚焦进入即显形 */
+.om-kbd { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.om-kbd:focus-within { position: static; width: auto; height: auto; overflow: visible;
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; margin-top: 8px;
+  border: 1px solid var(--line, #2a3550); border-radius: 6px; }
+.om-kbd__hint { flex-basis: 100%; font-size: 12px; opacity: .75; }
+.om-kbd__btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line, #2a3550); background: transparent; color: inherit; cursor: pointer; }
+.om-kbd__btn.is-on { border-color: var(--cyan, #39c5cf); color: var(--cyan, #39c5cf); }
+.om-kbd__btn:focus-visible { outline: 2px solid var(--cyan, #39c5cf); outline-offset: 2px; }

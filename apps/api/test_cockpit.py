@@ -87,6 +87,26 @@ def _zones(resp) -> dict[str, dict]:
     return {z["zone"]: z for z in resp.json()["zones"]}
 
 
+def _ensure_pending_anchor(con, assignee_role="ops", est_cost=1234.5, tid=None):
+    """V21 测试自愈种子（同 test_decisions 惯例，2026-07-19 第四例世界观更新：验证世界待批余量
+    是易变状态——人在驾驶舱批完即清零，测试自造锚点于临时副本，绝不依赖演示库余量）。"""
+    tid = tid or f"TSK-TEST-V21-{assignee_role.upper()}"
+    if con.execute("SELECT 1 FROM tasks WHERE task_id=?", (tid,)).fetchone():
+        return tid
+    cols = [r[1] for r in con.execute("PRAGMA table_info(tasks)")]
+    donor = con.execute("SELECT * FROM tasks WHERE proposal_actor_id IS NOT NULL "
+                        "AND proposed_action IS NOT NULL LIMIT 1").fetchone()
+    assert donor, "库未跑过 seed_demo_ops（回归链缺步，勘误#2）"
+    row = dict(zip(cols, donor))
+    row.update(task_id=tid, approval_status="pending", status="in_progress",
+               assignee_role=assignee_role, approved_by_role=None, action_taken=None,
+               proposal_params=json.dumps({"est_cost_usd": est_cost, "reason": "v21-anchor"}))
+    con.execute(f"INSERT INTO tasks ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
+                [row[c] for c in cols])
+    con.commit()
+    return tid
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # vitals：七区结构
 # ═══════════════════════════════════════════════════════════════════════════
@@ -203,6 +223,10 @@ def test_vitals_money_missing_payments_table(tmp_path):
     con.execute("DROP TABLE payments")
     con.commit()
     con.close()
+    # 隔离修复（2026-07-19，预存地雷）：原先 finally 里直接 pop 会把**模块级 override 一并拆除**，
+    # 其后同模块所有用例静默漏到真库（真库待批被人批空后 V21 用例莫名空队列由此而来）。
+    # 改保存/恢复式（同 other_team 用例的正确写法）。
+    saved = app.dependency_overrides.get(get_db_path)
     app.dependency_overrides[get_db_path] = lambda: str(dest)
     try:
         with TestClient(app) as c:
@@ -216,7 +240,10 @@ def test_vitals_money_missing_payments_table(tmp_path):
             assert isinstance(money["headline_value"], (int, float))
             assert isinstance(money["detail"]["fee_exposure"]["value_usd"], (int, float))
     finally:
-        app.dependency_overrides.pop(get_db_path, None)
+        if saved is not None:
+            app.dependency_overrides[get_db_path] = saved
+        else:
+            app.dependency_overrides.pop(get_db_path, None)
 
 
 def test_vitals_fulfillment_matches_sql(client, con):
@@ -321,6 +348,146 @@ def test_vitals_decisions_matches_sql(client, con):
         if p["amount_usd"] is not None:
             assert p["amount_source"] in ("proposal_params.est_cost_usd",
                                           "risk_events.affected_value_usd")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# V21① 自队金额可见（决策日志 V21①，Daniel 2026-07-19"1.可以"）：待批提案金额对指派团队角色可见，
+# 驾驶舱聚合脱敏 / 对象读端点(/objects) / AI 工具面(SensitiveFieldMasker) 三面同源同判
+# ═══════════════════════════════════════════════════════════════════════════
+def test_v21_amount_visibility_pure_functions():
+    """三面唯一权威源纯函数（agent.tools）：自队例外 + 提案金额统一可见性。"""
+    from agent.tools import own_team_amount_visible, proposal_amount_visible
+    assert own_team_amount_visible("ops", "ops") is True
+    assert own_team_amount_visible("ops", "finance") is False
+    assert own_team_amount_visible("ops", None) is False        # 兜底保守：缺失→False
+    assert own_team_amount_visible("ops", "") is False          # 空→False
+    assert own_team_amount_visible("", "ops") is False
+    assert proposal_amount_visible("ops", "ops") is True        # 自队
+    assert proposal_amount_visible("ops", "finance") is False   # 他队且无成本权限→掩
+    assert proposal_amount_visible("cs", "cs") is True          # cs 自队（颗粒度放宽）
+    assert proposal_amount_visible("cs", "ops") is False        # cs 他队
+    assert proposal_amount_visible("finance", "ops") is True    # 成本角色见全部
+    assert proposal_amount_visible("manager", "cs") is True     # manager 不变
+
+
+def test_vitals_decisions_own_team_amount_v21(client, con):
+    """V21① 驾驶舱面：待批提案金额对指派团队可见。验证世界待批均 ops 指派 →
+    ops(自队)见真值、cs(他队且无成本权限)掩码、manager 照旧全见。金额现查库真值不硬编码。"""
+    _ensure_pending_anchor(con, "ops")            # 自愈锚点（不依赖演示库待批余量）
+    def by_tid(role):
+        z = _zones(client.get("/cockpit/vitals", headers={"X-Role": role}))["decisions"]
+        return {p["task_id"]: p["amount_usd"] for p in z["detail"]["pending_proposals"]}
+    ops, cs, mgr = by_tid("ops"), by_tid("cs"), by_tid("manager")
+    assert ops, "自愈种子后必有待批锚点"
+    for tid, mgr_amt in mgr.items():
+        assignee = con.execute("SELECT assignee_role FROM tasks WHERE task_id=?",
+                               (tid,)).fetchone()[0]
+        if mgr_amt is None:                       # 无金额（无 est_cost 且无风险回退）→ 各角色皆 None，不掩
+            assert ops[tid] is None and cs[tid] is None
+            continue
+        if assignee == "ops":                     # 自队：ops 见真值(=manager 真值)、cs 掩码
+            assert ops[tid] == mgr_amt, f"{tid} ops 自队应见真值"
+            assert cs[tid] == MASK, f"{tid} cs 他队应掩码"
+        else:                                     # 他队（若存在）：ops 掩码
+            assert ops[tid] == MASK, f"{tid} ops 他队应掩码"
+
+
+def test_vitals_decisions_other_team_masked_v21(tmp_path):
+    """V21① 反面（他队掩码）：把一条 est_cost_usd 待批提案改指派 finance 后——ops 掩码、finance(自队)
+    见真值、manager 照旧真值、cs 掩码。自成一体临时库 + 保存/恢复 module override，不污染其他用例。"""
+    dest = tmp_path / "ontology.sqlite"
+    shutil.copy(REPO_DB, dest)
+    c = sqlite3.connect(dest)
+    row = c.execute("SELECT task_id, proposal_params FROM tasks WHERE approval_status='pending' "
+                    "AND proposal_params LIKE '%est_cost_usd%' ORDER BY task_id LIMIT 1").fetchone()
+    if not row:                                   # 自愈锚点（第四例：不依赖演示库待批余量）
+        tid0 = _ensure_pending_anchor(c, "ops", est_cost=987.6)
+        row = c.execute("SELECT task_id, proposal_params FROM tasks WHERE task_id=?",
+                        (tid0,)).fetchone()
+    tid, true_amt = row[0], round(json.loads(row[1])["est_cost_usd"], 2)
+    c.execute("UPDATE tasks SET assignee_role='finance' WHERE task_id=?", (tid,))
+    c.commit(); c.close()
+
+    saved = app.dependency_overrides.get(get_db_path)
+    app.dependency_overrides[get_db_path] = lambda: str(dest)
+    try:
+        with TestClient(app) as cl:
+            def amt(role):
+                z = _zones(cl.get("/cockpit/vitals", headers={"X-Role": role}))["decisions"]
+                return next(p["amount_usd"] for p in z["detail"]["pending_proposals"]
+                            if p["task_id"] == tid)
+            assert amt("ops") == MASK, "ops 对他队(finance)提案金额应掩码"
+            assert amt("finance") == true_amt, "finance 对自队提案金额应见真值"
+            assert amt("manager") == true_amt, "manager 照旧见真值"
+            assert amt("cs") == MASK, "cs 他队应掩码"
+    finally:
+        if saved is not None:
+            app.dependency_overrides[get_db_path] = saved
+        else:
+            app.dependency_overrides.pop(get_db_path, None)
+
+
+def test_objects_task_amount_own_team_v21(client, con):
+    """V21① 对象读端点(/objects/Task)：proposal_params.est_cost_usd 自队例外——ops 见 ops 指派任务、
+    掩 finance 指派任务；对应团队自见；manager 照旧全见。锚点现查（不硬编码 id）。"""
+    def anchor(assignee):
+        r = con.execute("SELECT task_id, proposal_params FROM tasks WHERE assignee_role=? "
+                        "AND proposal_params LIKE '%est_cost_usd%' ORDER BY task_id LIMIT 1",
+                        (assignee,)).fetchone()
+        return (r[0], r[1]) if r else (None, None)
+
+    def obj_cost(tid, role):
+        pp = client.get(f"/objects/Task/{tid}", headers={"X-Role": role}).json()["proposal_params"]
+        pp = json.loads(pp) if isinstance(pp, str) else pp
+        return pp.get("est_cost_usd")
+
+    ops_tid, ops_pp = anchor("ops")
+    assert ops_tid, "需一条 ops 指派且带 est_cost_usd 的任务"
+    ops_true = json.loads(ops_pp)["est_cost_usd"]
+    assert obj_cost(ops_tid, "ops") == ops_true          # 自队 → 真值
+    assert obj_cost(ops_tid, "manager") == ops_true      # manager 不变
+    assert obj_cost(ops_tid, "cs") == MASK               # cs 他队 → 掩码
+    assert obj_cost(ops_tid, "finance") == ops_true      # finance 成本角色 → 见
+
+    fin_tid, fin_pp = anchor("finance")
+    if fin_tid:                                          # 验证世界有 finance 指派带成本任务
+        fin_true = json.loads(fin_pp)["est_cost_usd"]
+        assert obj_cost(fin_tid, "ops") == MASK          # ops 他队 → 掩码（关键：非自队脱敏）
+        assert obj_cost(fin_tid, "finance") == fin_true  # finance 自队 → 真值
+        assert obj_cost(fin_tid, "manager") == fin_true  # manager 不变
+
+
+def test_v21_three_faces_same_judgment(client, con):
+    """V21① 三面一致性：同一 ops 指派待批提案，经①驾驶舱待批队列 ②/objects Task 读 ③AI 工具面
+    SensitiveFieldMasker，ops 视角三者同判（同为真值）。
+    第三面说明：现无返回 Task.proposal_params 的 MCP 读工具（aiQueryTools 皆 risk/admission/cost 域，
+    均不含 Task est_cost），故直接对 AI 面共用的 SensitiveFieldMasker 单测——/objects 与 MCP call_tool
+    共用同一 masker 类逻辑（mcp_server.OntologyMCPServer.masker），此单测即第三面的代码路径。"""
+    from agent.mcp_server import SensitiveFieldMasker
+    from pipeline.ontology_runtime import load_ontology
+    _ensure_pending_anchor(con, "ops")            # 自愈锚点（第四例：不依赖演示库待批余量）
+    row = con.execute("SELECT task_id, assignee_role, proposal_params FROM tasks "
+                      "WHERE approval_status='pending' AND assignee_role='ops' "
+                      "AND proposal_params LIKE '%est_cost_usd%' ORDER BY task_id LIMIT 1").fetchone()
+    assert row, "自愈种子后必有 ops 待批带成本锚点"
+    tid, assignee, pp = row[0], row[1], json.loads(row[2])
+
+    # 面①驾驶舱待批队列
+    z = _zones(client.get("/cockpit/vitals", headers={"X-Role": "ops"}))["decisions"]
+    face1 = next(p["amount_usd"] for p in z["detail"]["pending_proposals"] if p["task_id"] == tid)
+    # 面②/objects Task 读
+    o = client.get(f"/objects/Task/{tid}", headers={"X-Role": "ops"}).json()["proposal_params"]
+    face2 = (json.loads(o) if isinstance(o, str) else o)["est_cost_usd"]
+    # 面③AI 工具面共用 masker（对象形载荷：带 assignee_role 兄弟 + proposal_params）
+    payload = {"task_id": tid, "assignee_role": assignee,
+               "proposal_params": json.dumps({"est_cost_usd": pp["est_cost_usd"]})}
+    SensitiveFieldMasker(load_ontology(), "ops").mask_value(payload)
+    face3 = json.loads(payload["proposal_params"])["est_cost_usd"]
+
+    assert MASK not in (face1, face2, face3), \
+        f"ops 自队三面皆应真值不掩：cockpit={face1} objects={face2} masker={face3}"
+    assert face2 == face3 == pp["est_cost_usd"], "对象读端点与 AI 面 masker 取原始真值一致"
+    assert face1 == round(pp["est_cost_usd"], 2), "驾驶舱聚合口径 round(2) 与真值一致"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

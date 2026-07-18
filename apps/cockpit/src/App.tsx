@@ -179,6 +179,9 @@ export default function App() {
     closeDetail();
   };
   const goZone = (zoneId: ZoneId) => {
+    // L-UX 轮2 P2：墙卡计数与队列头计数曾各自取数不同鲜（测试期间他处审批后墙面滞留旧值，
+    // 22 vs 共20条被读成"漏了2条"）。下钻即刷体征——两处永远同一次取数口径。
+    refreshVitalsData();
     setStage({ view: "zone", zoneId });
     closeDetail();
   };

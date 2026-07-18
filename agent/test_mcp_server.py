@@ -170,6 +170,41 @@ def test_field_masking(db: Path) -> None:
     check(err and "越域" in str(d.get("error", "")), "cs 调成本域 list_invoices → 越域读被拒")
 
 
+def test_own_team_amount_masking(db: Path) -> None:
+    print("\n②b V21① 自队金额可见（AI 工具面共用 masker：提案金额 est_cost_usd 自队例外）")
+    onto = load_ontology()
+
+    def cost_seen(role, assignee, amount=1234.5):
+        """对象形载荷（带 assignee_role 兄弟 + proposal_params JSON 串，同 /objects Task 输出形状）
+        过共用 SensitiveFieldMasker，返回脱敏后可见的 est_cost_usd。"""
+        p = {"task_id": "T", "assignee_role": assignee,
+             "proposal_params": json.dumps({"new_mode": "air", "est_cost_usd": amount})}
+        M.SensitiveFieldMasker(onto, role).mask_value(p)
+        return json.loads(p["proposal_params"])["est_cost_usd"]
+
+    # ops 指派任务：ops(自队)/finance(成本)/manager 见真值；cs(他队) 掩码
+    check(cost_seen("ops", "ops") == 1234.5, "ops 见自队(ops)提案金额真值")
+    check(cost_seen("cs", "ops") == MASK, "cs 掩他队(ops)提案金额")
+    check(cost_seen("finance", "ops") == 1234.5, "finance 成本角色见提案金额")
+    check(cost_seen("manager", "ops") == 1234.5, "manager 照旧见提案金额")
+    # 他队任务：ops 掩（非自队脱敏）、对应团队自见、cs 颗粒度放宽见自队
+    check(cost_seen("ops", "finance") == MASK, "ops 掩他队(finance)提案金额（非自队脱敏，关键）")
+    check(cost_seen("finance", "finance") == 1234.5, "finance 见自队(finance)提案金额")
+    check(cost_seen("cs", "cs") == 1234.5, "cs 见自队(cs)提案金额（颗粒度放宽）")
+    # 兜底保守：assignee_role 缺失 → 无成本角色掩码（宁可多掩）
+    miss = {"task_id": "T", "proposal_params": json.dumps({"est_cost_usd": 9.9})}
+    M.SensitiveFieldMasker(onto, "ops").mask_value(miss)
+    check(json.loads(miss["proposal_params"])["est_cost_usd"] == MASK,
+          "assignee_role 缺失 → 兜底保守掩码（宁可多掩）")
+    # 驾驶舱扁平键 amount_usd 三面同源：带 assignee_role 行走自队例外；Payment 无 assignee 仍按本体门
+    flat = {"task_id": "T", "assignee_role": "ops", "amount_usd": 555.0}
+    M.SensitiveFieldMasker(onto, "ops").mask_value(flat)
+    check(flat["amount_usd"] == 555.0, "ops 见自队行扁平 amount_usd（与 est_cost 同源）")
+    pay = {"payment_id": "P", "amount_usd": 777.0}
+    M.SensitiveFieldMasker(onto, "ops").mask_value(pay)
+    check(pay["amount_usd"] == MASK, "Payment.amount_usd(无 assignee)对 ops 照旧掩码（不误放宽）")
+
+
 def test_audit_and_readonly(db: Path) -> None:
     print("\n③ 审计入库（call_type='mcp_tool'）+ 业务连接物理只读 + 迁移幂等")
     ship, risks = _pick_in_transit_with_risk(db)
@@ -340,6 +375,7 @@ def main() -> int:
     try:
         test_role_filter(db)
         test_field_masking(db)
+        test_own_team_amount_masking(db)
         test_audit_and_readonly(db)
         test_frozen_and_schema(db)
         test_protocol(db)

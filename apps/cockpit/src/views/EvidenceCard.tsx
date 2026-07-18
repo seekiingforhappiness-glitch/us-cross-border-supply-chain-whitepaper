@@ -39,6 +39,26 @@ const TIER_CN: Record<string, string> = { shadow: "影子档", suggest: "建议�
 // 备选动作固定序（expedite 加急 / accept_delay 接受延误，与 evidence.py::_ALT_ACTIONS 对齐）。
 const ALT_ORDER = ["expedite", "accept_delay"];
 
+// ═══════════════ V21② 证据全空复核提示（docs/control-tower-plan-v0.2.md V21 条②）═══════════════
+// 裁决：证据链四块全无数据的提案，证据卡加"四项证据均无数据，建议线下复核后再拍板"琥珀提示（不设
+// 金额门槛，全空即提示；四块任一有数据则不显示）。判定沿用各块自身既有的"空/不可用"标准（下方四个
+// helper 与对应 Row 组件内的判空条件逐一对应，不重复造判定），仅 impact 一处按裁决精神额外收编：
+// "该风险本就不落到订单行上"（无 order_lines/customers，非查错而是设计上就没有）也算"这块给不出支撑"。
+function impactHasNoData(impact: EvidenceImpact): boolean {
+  if (impact.available === false) return true; // 同 ImpactRow：风险查无
+  // 三个数字（受影响订单行/客户）皆为 0（含"本就不落订单行"的诚实非缺数空态）→ 这块没有可看的数字。
+  return !impact.affected_order_lines && !impact.affected_customers;
+}
+function precedentsHasNoData(prec: EvidencePrecedents): boolean {
+  return !prec.available || !!prec.empty || prec.n === 0; // 同 PrecedentsRow 的两段判空
+}
+function trustHasNoData(trust: EvidenceTrust): boolean {
+  return !trust.available; // 同 TrustRow
+}
+function alternativesHasNoData(alt: EvidenceAlternatives): boolean {
+  return !alt.available; // 同 AlternativesRow
+}
+
 // ── ① 影响：受影响订单行 / 金额合计 / 波及客户，三数字一行（金额 MASK 照实显"无权查看"，不当数字）──
 function ImpactRow({ impact }: { impact: EvidenceImpact }) {
   if (impact.available === false) {
@@ -248,6 +268,13 @@ export default function EvidenceCard({ taskId, role }: { taskId: string; role: R
         <StateHint kind="loading" compact title="证据加载中…" />
       ) : (
         <>
+          {impactHasNoData(ev.impact) && precedentsHasNoData(ev.precedents) &&
+            trustHasNoData(ev.trust) && alternativesHasNoData(ev.alternatives) && (
+              <div className="cp-ev__all-empty" role="status">
+                <Icon name="warn" size={13} />
+                <span>四项证据均无数据，建议线下复核后再拍板。</span>
+              </div>
+            )}
           <section className="cp-ev__sect">
             <div className="cp-ev__sect-t">影响</div>
             <ImpactRow impact={ev.impact} />

@@ -67,7 +67,8 @@ DEFAULT_ROLE = "ops"
 # ── 复用运行时/工具层（桥2 M2 + 桥3 M3 的合流消费点；本文件不重复实现任何权限/脱敏/遍历逻辑） ──
 from pipeline.ontology_runtime import (           # noqa: E402  路径注入后再导入
     build_forbidden_tools, build_tool_defs, load_ontology, snake_case, traverse as onto_traverse)
-from agent.tools import MASK, allowed_tools_for_role  # noqa: E402  脱敏掩码 + 角色域 scoping 单一来源
+from agent.tools import (MASK, allowed_tools_for_role,  # noqa: E402  脱敏掩码 + 角色域 scoping 单一来源
+                         proposal_amount_visible)         # V21① 提案金额自队例外单一来源
 from agent.egress_gate import (                   # noqa: E402
     log_llm_call, migrate_llm_calls_call_type_check, new_trace_id, sanitize_for_egress)
 
@@ -133,14 +134,29 @@ def build_exposed_tool_defs(ontology: dict) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════
 # 门槛1：字段脱敏——本体 sensitiveFieldRules 声明驱动（掩码值 = agent.tools.MASK）
 # ═══════════════════════════════════════════════════════════════════════════
+_PROPOSAL_PARAMS_COL = "proposal_params"   # V21① 提案金额承载列（Task）
+_PROPOSAL_AMOUNT_SUB = "est_cost_usd"      # V21① 提案金额子键（自队例外作用于此）
+# V21① 驾驶舱待批队列把提案金额扁平成 amount_usd（与本体 Payment.amount_usd 具名规则同名——跨类型
+# 同名列）。判据：只有**同一行带 assignee_role 兄弟键**的 amount_usd 才是提案金额（走自队例外）；
+# Payment 等无 assignee_role 的 amount_usd 仍按本体 visibleTo（finance/manager）——二者不相混。
+_PROPOSAL_AMOUNT_FLAT = "amount_usd"
+
+
 class SensitiveFieldMasker:
     """按本体 sensitiveFieldRules 对工具返回结构递归脱敏。
 
     只处理**具名字段**规则：Customer.tier(cs/manager)、Customer.credit_terms/risk_tier(finance/
     manager)、Supplier.uflpa_risk_flag(compliance/manager)、AdmissionCase.conditions(finance/
-    manager)、Task.proposal_params.est_cost_usd(ops/manager)。这些字段名在本体内**各自唯一归属
+    manager)、Task.proposal_params.est_cost_usd。这些字段名在本体内**各自唯一归属
     一个对象类型**（tier/credit_terms/risk_tier→Customer、uflpa_risk_flag→Supplier、conditions→
     AdmissionCase），故按字段名递归匹配即等价于按类型脱敏，无跨类型误伤。
+
+    V21① 自队金额可见（决策日志 V21①）：Task.proposal_params.est_cost_usd（提案金额）不再按本体
+    静态 visibleTo 判定，改用 **agent.tools.proposal_amount_visible**（成本可见 finance/manager ∪
+    自队例外 role==assignee_role）——与驾驶舱聚合脱敏、/objects 对象读端点三面同源。判定时读**同一行
+    对象上的 assignee_role 兄弟键**（/objects Task 行、协作流富化 task 行、focus_task_bundle 均带此
+    键作 proposal_params 兄弟）；assignee_role 缺失/空 → 自队例外 False（兜底保守，照旧脱敏）。本体
+    JSON 该规则声明保留 [ops,manager] 不动（红线：不碰本体结构），语义以本代码为单一权威源。
 
     CostScenario '*_usd and margin fields' 是**模式规则**（非具名列），且成本字段脱敏已由被复用的
     Session 读方法用 COST_FIELDS/INVOICE_COST_FIELDS 在会话层执行（门槛1: 本次不动）——故此处跳过该
@@ -168,14 +184,19 @@ class SensitiveFieldMasker:
         return self.role not in visible
 
     def mask_value(self, data):
-        """递归脱敏：dict 按 key 匹配具名规则 / 嵌套规则；list 逐元素递归。返回原对象（就地改）。"""
+        """递归脱敏：dict 按 key 匹配具名规则 / 嵌套规则；list 逐元素递归。返回原对象（就地改）。
+        V21①：命中嵌套承载列（proposal_params）时，把**同一行的 assignee_role 兄弟键**传给
+        _mask_nested，供提案金额自队例外判定（无该键 → None → 自队例外 False，照旧脱敏）。"""
         if isinstance(data, dict):
+            assignee_role = data.get("assignee_role")
             for key, val in list(data.items()):
-                if key in self.flat and self._blocked(self.flat[key]) and val is not None:
-                    data[key] = self.mask
-                    continue
+                if key in self.flat and val is not None:
+                    if self._flat_blocked(key, self.flat[key], assignee_role):
+                        data[key] = self.mask
+                        continue
+                    # 可见（含自队例外命中）：不掩，继续（标量 recurse 无副作用，保持原行为）
                 if key in self.nested:
-                    data[key] = self._mask_nested(key, val)
+                    data[key] = self._mask_nested(key, val, assignee_role)
                     continue
                 self.mask_value(val)
         elif isinstance(data, list):
@@ -183,9 +204,18 @@ class SensitiveFieldMasker:
                 self.mask_value(item)
         return data
 
-    def _mask_nested(self, col: str, val):
+    def _flat_blocked(self, key: str, visible: set[str], assignee_role) -> bool:
+        """具名字段脱敏判定。V21①：驾驶舱待批队列的提案金额 amount_usd（=同一行带 assignee_role）走
+        proposal_amount_visible 自队例外，与 est_cost_usd 三面同源；其余具名字段（含无 assignee_role 的
+        Payment.amount_usd）仍按本体 visibleTo。"""
+        if key == _PROPOSAL_AMOUNT_FLAT and assignee_role is not None:
+            return not proposal_amount_visible(self.role, assignee_role)
+        return self._blocked(visible)
+
+    def _mask_nested(self, col: str, val, assignee_role=None):
         """嵌套承载列（如 tasks.proposal_params 存 JSON）：解析→脱敏子键→回写。
-        val 可能是 dict（已解析）或 JSON 字符串。非法/缺子键则原样返回（不放大为故障）。"""
+        val 可能是 dict（已解析）或 JSON 字符串。非法/缺子键则原样返回（不放大为故障）。
+        V21①：提案金额子键（proposal_params.est_cost_usd）走 _sub_blocked 的自队例外分支。"""
         rules = self.nested[col]
         obj, was_str = val, False
         if isinstance(val, str):
@@ -198,12 +228,21 @@ class SensitiveFieldMasker:
             return val
         changed = False
         for sub, visible in rules.items():
-            if sub in obj and self._blocked(visible) and obj[sub] is not None:
+            if sub in obj and obj[sub] is not None and \
+                    self._sub_blocked(col, sub, visible, assignee_role):
                 obj[sub] = self.mask
                 changed = True
         if not changed:
             return val
         return json.dumps(obj, ensure_ascii=False) if was_str else obj
+
+    def _sub_blocked(self, col: str, sub: str, visible: set[str], assignee_role) -> bool:
+        """嵌套子键脱敏判定。V21①：提案金额（proposal_params.est_cost_usd）用三面同源的
+        proposal_amount_visible（成本可见 ∪ 自队例外）取代本体静态 visibleTo——ops 见自队行、掩他队行，
+        finance/manager 照旧见。其余嵌套子键仍按本体 visibleTo。"""
+        if col == _PROPOSAL_PARAMS_COL and sub == _PROPOSAL_AMOUNT_SUB:
+            return not proposal_amount_visible(self.role, assignee_role)
+        return self._blocked(visible)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

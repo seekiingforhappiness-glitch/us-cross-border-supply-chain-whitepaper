@@ -145,7 +145,7 @@ import yaml
 from fastapi import APIRouter, Depends, Header, Query
 
 from agent.mcp_server import SensitiveFieldMasker
-from agent.tools import MASK, _can_see_cost
+from agent.tools import MASK, _can_see_cost, own_team_amount_visible
 from pipeline.ontology_runtime import load_ontology
 
 ZONES = ("money", "fulfillment", "customers", "suppliers", "inventory", "ai", "decisions")
@@ -214,28 +214,36 @@ def _json_ids(raw: Any) -> list[str]:
         return []
 
 
-def _mask_money(node: Any) -> None:
+def _mask_money(node: Any, role: str | None = None) -> None:
     """金额类聚合掩码（模块 docstring 脱敏层 b）：就地把键名以 _usd 结尾的值与
-    margin_distribution 整块替换为 MASK。计数/比率/状态键不动。"""
+    margin_distribution 整块替换为 MASK。计数/比率/状态键不动。
+    V21① 自队例外：role 传入且当前 dict 带 assignee_role（=待批提案行）并 own_team_amount_visible
+    为真时，该行**提案金额键（_usd）保留真值**（自队金额可见，与 /objects·MCP masker 三面同源）；
+    其余金额键与非自队行一律掩码。role=None（如证据端点 impact/敞口金额，V21① 边界外）→ 全量掩码
+    （与改动前 byte-identical，不放宽订单行/客户敞口等其他金额）。"""
     if isinstance(node, dict):
+        own_team_ok = (role is not None and "assignee_role" in node
+                       and own_team_amount_visible(role, node.get("assignee_role")))
         for key, val in list(node.items()):
             if key == "margin_distribution":
                 node[key] = MASK
             elif key.endswith("_usd") and val is not None:
-                node[key] = MASK
+                if not own_team_ok:               # 自队提案行的金额键保留真值（V21①）
+                    node[key] = MASK
             else:
-                _mask_money(val)
+                _mask_money(val, role)
     elif isinstance(node, list):
         for item in node:
-            _mask_money(item)
+            _mask_money(item, role)
 
 
 def _apply_role_masks(payload: dict, role: str) -> dict:
     """两层脱敏（模块 docstring）：先本体 sensitiveFieldRules 具名/嵌套规则，再金额聚合层
-    （键名 _usd 后缀 + margin_distribution + 带 headline_unit='usd' 标记的区 headline）。"""
+    （键名 _usd 后缀 + margin_distribution + 带 headline_unit='usd' 标记的区 headline）。
+    V21①：金额聚合层传 role → 待批提案行（带 assignee_role）的金额按自队例外保留/掩码（其余金额照旧）。"""
     SensitiveFieldMasker(load_ontology(), role).mask_value(payload)
     if not _can_see_cost(role):
-        _mask_money(payload)
+        _mask_money(payload, role)
         for zone in payload.get("zones", []):
             if zone.get("headline_unit") == "usd":
                 zone["headline_value"] = MASK
