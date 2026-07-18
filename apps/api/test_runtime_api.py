@@ -66,13 +66,24 @@ def _start(client, risk_id, role="ops", actor="u-ops-us"):
 # ═══════════════════════════════════════════════════════════════════════════
 # 诚实空态
 # ═══════════════════════════════════════════════════════════════════════════
-def test_list_empty_honest_state(rt_env):
-    client, _ = rt_env
+def test_list_honest_state_state_relative(rt_env):
+    """世界观更新（2026-07-19 第三例）：验证世界会累积真人真机的 run 痕（Daniel 实测的
+    StartAgentRun 已入审计）——'永远空'假设作废。改为：与副本库现查计数一致；0 例守诚实
+    空态（items=[]+note），有例则 count=len(items)=库内数。"""
+    client, db_path = rt_env
+    import sqlite3
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    has = con.execute("SELECT count(*) FROM sqlite_master WHERE name='agent_runs'").fetchone()[0]
+    expected = con.execute("SELECT count(*) FROM agent_runs").fetchone()[0] if has else 0
+    con.close()
     r = client.get("/runtime/runs")
     assert r.status_code == 200
     b = r.json()
-    assert b["count"] == 0 and b["items"] == [] and "note" in b, "还没跑过 run 应诚实空态（非 404/500）"
     assert b["world"] == "verification"
+    if expected == 0:
+        assert b["count"] == 0 and b["items"] == [] and "note" in b, "0 run 应诚实空态（非 404/500）"
+    else:
+        assert b["count"] == expected == len(b["items"])
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -367,16 +367,20 @@ def test_threads_risk_filter(api):
 
 
 def test_threads_role_masking_est_cost(api):
-    """X-Role 脱敏语义同 /objects：富化进来的 task.proposal_params.est_cost_usd（本体嵌套敏感规则，
-    visibleTo ops/manager）对无权角色（cs）掩码、对有权角色（ops/manager）见真值。锚点运行时现查。"""
+    """X-Role 脱敏语义同 /objects：富化进来的 task.proposal_params.est_cost_usd 对无权角色掩码、有权见真值。
+    V21① 更新（决策日志 V21①）：提案金额判定改为 proposal_amount_visible（成本可见 ∪ 自队例外）——
+    本用例锚点 task 为 **ops 指派**（下方 assert 显式钉死前提），故 ops 见真值=自队例外命中（非旧
+    [ops,manager] 盲档）、manager 见=成本角色、cs 掩=既非成本角色亦非自队。期望值不变（依据 V21①：
+    自队命中与旧盲档在 ops 指派行上同判），仅前提语义收敛。锚点运行时现查。"""
     client, _vcon, scon = api
     row = scon.execute(
-        "SELECT ct.coordination_id, t.proposal_params FROM coordination_threads ct "
+        "SELECT ct.coordination_id, t.proposal_params, t.assignee_role FROM coordination_threads ct "
         "JOIN tasks t ON t.task_id=ct.task_id WHERE t.proposal_params LIKE '%est_cost_usd%' "
         "ORDER BY ct.coordination_id LIMIT 1").fetchone()
     assert row, "sim 需要至少一条 task 带 est_cost_usd 的协作线程"
     coord_id = row[0]
     true_cost = json.loads(row[1])["est_cost_usd"]
+    assert row[2] == "ops", "本用例前提=锚点 task 为 ops 指派（V21① 下 ops 见真值靠自队例外命中）"
 
     def cost_for(role):
         body = client.get("/collaboration/threads",
@@ -384,9 +388,9 @@ def test_threads_role_masking_est_cost(api):
         t = next(t for t in body["threads"] if t["coordination_id"] == coord_id)
         return t["task"]["proposal_params"]["est_cost_usd"]
 
-    assert cost_for("ops") == true_cost            # visibleTo ops → 真值
-    assert cost_for("manager") == true_cost        # visibleTo manager → 真值
-    assert cost_for("cs") == MASK                  # cs 无权 → 掩码（🔒无权查看）
+    assert cost_for("ops") == true_cost            # 自队(ops 指派) → 真值（V21① 自队例外）
+    assert cost_for("manager") == true_cost        # 成本角色 → 真值
+    assert cost_for("cs") == MASK                  # 非成本角色且非自队 → 掩码（🔒无权查看）
 
 
 def test_threads_missing_table_honest_empty(tmp_path):

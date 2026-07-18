@@ -3265,3 +3265,13 @@ body {
 .cp-dispatch-launcher__llm { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px;
   font-size: 11px; line-height: 1.6; color: var(--ink-1); cursor: pointer; }
 .cp-dispatch-launcher__llm input { margin-top: 2px; }
+
+/* V21② 证据全空复核提示（docs/control-tower-plan-v0.2.md V21 条②，EvidenceCard.tsx cp-ev__all-empty）：
+   四块证据均无数据的提案，卡顶加琥珀提示条——配色/边框图案复用既有 .cp-state--error .cp-state__body /
+   .cp-dq__list 的"语义色 6~10% 底 + 虚线同色边框"图案（不新增 token），图标+文案单行对齐 StateHint
+   compact 态观感。 */
+.cp-ev__all-empty { display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  padding: 6px 10px; border-radius: var(--radius-sm); border: 1px dashed var(--sev-amber-dim);
+  background: color-mix(in srgb, var(--sev-amber) 8%, var(--bg-2)); color: var(--sev-amber);
+  font-size: 11.5px; line-height: 1.5; }
+.cp-ev__all-empty svg { flex: none; }

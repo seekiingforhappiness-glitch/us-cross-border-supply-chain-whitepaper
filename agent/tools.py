@@ -135,6 +135,28 @@ def _can_see_credit(role):
     （行为变化：cs 失去 credit_terms/risk_tier 可见、finance 获得；与 standard_object_view/MCP masker 同口径）。"""
     return role in _CREDIT_VISIBLE
 
+
+# ─── V21① 自队金额可见（docs/control-tower-plan-v0.2.md 决策日志 V21①，Daniel 2026-07-19 裁"1.可以"）───
+# 唯一权威源（代码层单一来源，本体 JSON 不落例外元数据）：指派给某团队的待批提案，其金额对该团队角色
+# 可见（ops 见 assignee_role=ops 行金额），驾驶舱聚合脱敏 / 对象读端点(/objects) / AI 工具面(MCP masker)
+# **三面共用此一处判定**，杜绝驾驶舱单点开洞造成口径漂移。仅涉"提案金额"（Task.proposal_params.est_cost_usd
+# 与驾驶舱待批队列 amount_usd），不放宽订单行/客户敞口等其他金额（V21① 边界，见 evidence.py）。
+def own_team_amount_visible(role, assignee_role):
+    """自队例外判定（纯函数、无副作用）：该角色是否为提案指派团队本身。
+    兜底保守（任务书 §2）：role / assignee_role 任一缺失或空 → False（照旧脱敏，宁可多掩）。"""
+    if not role or not assignee_role:
+        return False
+    return role == assignee_role
+
+
+def proposal_amount_visible(role, assignee_role):
+    """提案金额统一可见性 = 成本可见基线 ∪ 自队例外——V21① 三面同源单一口径。
+    · 基线 _can_see_cost（finance/manager）：与其余每个 _usd 字段同门（提案金额本是成本字段，
+      不再是 [ops,manager] 那条与全系统金额门分叉的特例——V21① 规则语义收敛，代码层单一来源）。
+    · 自队例外 own_team_amount_visible：ops/cs 等无成本基线的角色，只见自己被指派行、掩他队行。
+    manager 照旧全见（成本角色，V21① '其余角色与非自队行为脱敏照旧' 中的成本可见档不变）。"""
+    return _can_see_cost(role) or own_team_amount_visible(role, assignee_role)
+
 # Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）——桥2 M2 起
 # 从本体解释生成：aiQueryTools 节的 11 读工具 + exposed_as_tool=true 的 6 写动作（原样搬家、
 # 11 读在前 6 写在后、顺序逐一对应迁移前）。迁移前的 17 条硬编码字面量已下沉本体（顶层

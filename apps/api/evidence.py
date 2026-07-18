@@ -381,6 +381,9 @@ def build_evidence(con: sqlite3.Connection, task: sqlite3.Row, risk: dict | None
         "trust": trust_block(rule_id),
         "alternatives": alternatives_block(con, risk, prec_rows)}
     if not _can_see_cost(role):              # ops/cs 等无成本可见角色：金额掩码（计数/比率/天数不掩）
+        # V21① 边界（决策日志 V21①"不放宽订单行/客户敞口等其他金额"）：证据包金额为受影响订单行货值
+        # (impact.amount_usd)、风险敞口(affected_value_usd)、先例影响(impact_usd)——**非提案金额**，故
+        # **不**传 role、不套自队例外，一律按成本门掩码（与改动前 byte-identical）。
         _mask_money(payload)
     return payload
 
