@@ -45,10 +45,11 @@ def _ai_availability(db_path=_DEFAULT_DB):
     return st.session_state["ai_cli_available"]
 
 
-def _render_object_ai_qa(briefing_text, role, key, db_path=_DEFAULT_DB):
+def _render_object_ai_qa(briefing_text, role, key, db_path=_DEFAULT_DB, anchor=None):
     """对象级 AI 提问区（6 个富工作台共用）：顶部状态徽标（可用/暂不可用）+ 提问框 + 询问按钮
     （不可用时禁用并说明，而非可点后报错）+ 作答（异常→人话降级 + 自动展开简报，见 _render_object_llm_answer）。
-    徽标状态来自便宜自检 + session 缓存；一次提问后清缓存，让下次 rerun 按最新 llm_calls 状态翻牌。"""
+    徽标状态来自便宜自检 + session 缓存；一次提问后清缓存，让下次 rerun 按最新 llm_calls 状态翻牌。
+    anchor=(对象类型, 对象ID)：新通道（真实查库）用它告诉模型当前聚焦对象（见 _ask_llm）。"""
     import streamlit as st
     available, reason = _ai_availability(db_path)
     if available:
@@ -61,31 +62,68 @@ def _render_object_ai_qa(briefing_text, role, key, db_path=_DEFAULT_DB):
                       disabled=not available,
                       help=None if available else "AI 助手暂不可用，已自动切换为下方确定性数据简报")
     if asked:
-        _render_object_llm_answer(q, briefing_text, role, db_path)
+        _render_object_llm_answer(q, briefing_text, role, db_path, anchor=anchor)
         st.session_state.pop("ai_cli_available", None)  # 提问后失效缓存：下次 rerun 按最新状态重算徽标
 
 
-def _render_object_llm_answer(question, briefing_text, role, db_path=_DEFAULT_DB):
-    """对象级 AI 助手作答：用 Opus 4.8（本账号 Claude 订阅、无需 API key）【仅据确定性简报】合成中文回答。
-    简报已按 role 脱敏，故 LLM 继承同一数据范围；模型无任何行动能力（不派单/不审批），写动作仍只走
-    下方表单 + maker-checker。故障（未登录/超时/降级等）一律人话降级并自动展开确定性简报——技术细节
-    只进 llm_calls 日志（answer_over_context 落库），绝不进界面（不再出现「退出码/CLI」等黑话）。"""
+def _ask_llm(question, briefing_text, role, db_path=_DEFAULT_DB, anchor=None):
+    """询问路径的 provider 感知单点分派（纯函数、零 Streamlit 依赖，可单测）。返回 (answer, channel)：
+      channel="mcp"      新通道（M4 主通道）：模型经本体只读 MCP server 多轮真调用自查库，
+                         不再预取简报作 grounding；问题带工作台锚点（对象类型+ID，模型才知道问的是谁），
+                         role 透传（server 侧按角色过滤工具 + 脱敏，与本面板同一权限模型）。
+      channel="briefing" 旧单发合成档：answer_over_context 据已脱敏简报作答（调用逐字不变）。
+    provider 解析复用 agent.llm_agent._resolve_provider（config agent.provider；env AGENT_PROVIDER 最高）
+    ——UI 层不重复解析逻辑，config 一处控制全部入口（裁3 一键回退语义）。
+    降级链第一跳在此：MCP 主通道失败 → 回落旧档（技术原因已由 answer_via_mcp 记入 llm_calls）；
+    旧档再异常 → 向上抛，由 _render_object_llm_answer 既有 except 兜确定性简报（第二跳，文案不变）。"""
+    from agent.llm_agent import _resolve_provider
+    if _resolve_provider() in ("claude_cli_mcp", "mcp"):
+        try:
+            from agent.llm_agent import answer_via_mcp
+            q = ((f"【工作台上下文】用户当前聚焦对象：{anchor[0]} {anchor[1]}。"
+                  f"请用可用的只读工具查询本体后回答（可用 traverse 沿关系查邻居），"
+                  f"关键事实附对象 ID，查不到就直说、禁止编造。\n用户问题：{question}")
+                 if anchor else question)
+            return answer_via_mcp(q, role=role, db=db_path), "mcp"
+        except Exception:  # noqa: BLE001 —— MCP 主通道失败：回落旧档（错误已由 answer_via_mcp 落 llm_calls）
+            pass
+    from agent.llm_agent import answer_over_context
+    return answer_over_context(question, briefing_text, role=role, db=db_path), "briefing"
+
+
+def _render_object_llm_answer(question, briefing_text, role, db_path=_DEFAULT_DB, anchor=None):
+    """对象级 AI 助手作答（provider 感知，分派见 _ask_llm）：
+    新通道（claude_cli_mcp）= Opus 4.8 经只读 MCP 工具多轮真实查库作答（模型自己开口要数据，逐次调用
+    留痕审计）；旧档 = 【仅据确定性简报】单发合成。两档模型都无任何行动能力（不派单/不审批），写动作
+    仍只走下方表单 + maker-checker。故障（未登录/超时/降级等）一律人话降级并自动展开确定性简报——
+    技术细节只进 llm_calls 日志，绝不进界面（不出现「退出码/CLI」等黑话）。"""
     import streamlit as st
     if not question:
-        st.caption("请先在上方输入问题，Opus 4.8 将【仅据确定性简报】作答——不编造、继承本角色脱敏、只解释不审批。")
+        st.caption("请先在上方输入问题，Opus 4.8 将作答——不编造、继承本角色权限与脱敏、只解释不审批。")
         return
-    with st.spinner("Opus 4.8 作答中（本账号订阅渠道，约 30–50 秒）…"):
+    from agent.llm_agent import _resolve_provider
+    want_mcp = _resolve_provider() in ("claude_cli_mcp", "mcp")
+    spin = ("AI 正在真实查询数据库（多轮工具调用，约 40–70 秒）…" if want_mcp
+            else "Opus 4.8 作答中（本账号订阅渠道，约 30–50 秒）…")
+    with st.spinner(spin):
         try:
-            from agent.llm_agent import answer_over_context
-            ans = answer_over_context(question, briefing_text, role=role, db=db_path)
-        except Exception:  # noqa: BLE001 —— 一切异常人话降级；技术原因已由 answer_over_context 记入 llm_calls
+            ans, channel = _ask_llm(question, briefing_text, role, db_path, anchor=anchor)
+        except Exception:  # noqa: BLE001 —— 两档全失败人话降级；技术原因已由 llm_agent 记入 llm_calls
             st.warning("AI 助手暂时不可用，已切换为数据简报（技术原因已记录，可稍后重试）。")
             with st.expander("确定性数据简报（回答依据，每条带对象 ID）", expanded=True):
                 st.text(briefing_text)
             return
-    st.markdown("**🤖 Opus 4.8（仅据确定性简报作答，继承本角色脱敏）**")
-    with st.expander("确定性数据简报（回答的 grounding 数据，每条带对象 ID）", expanded=False):
-        st.text(briefing_text)
+    if channel == "mcp":
+        st.markdown("**🤖 Opus 4.8（真实查库作答 · 多轮只读工具调用 · 继承本角色权限）**")
+        with st.expander("回答依据说明（本次为 AI 真实查库）", expanded=False):
+            st.caption("本次回答由 AI 通过只读工具当场查询数据库获得（非预生成简报），"
+                       "每次工具调用已留痕审计（llm_calls 表 call_type='mcp_tool'）。"
+                       "以下确定性简报仅供人工核对，本次回答未以其为依据：")
+            st.text(briefing_text)
+    else:
+        st.markdown("**🤖 Opus 4.8（仅据确定性简报作答，继承本角色脱敏）**")
+        with st.expander("确定性数据简报（回答的 grounding 数据，每条带对象 ID）", expanded=False):
+            st.text(briefing_text)
     st.markdown(ans)
 
 
@@ -851,7 +889,8 @@ def render_object_workbench(risk_event_id, role, actor, as_of, db_factory, rende
     st.caption(f"本会话工具集（role={role}，focus={risk_event_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只提案不审批）。")
-    _render_object_ai_qa(_briefing, role, key=f"wb_{risk_event_id}")
+    _render_object_ai_qa(_briefing, role, key=f"wb_{risk_event_id}",
+                         anchor=("RiskEvent", risk_event_id))
 
 
 def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_factory, render_table):
@@ -922,7 +961,8 @@ def render_admission_object_workbench(admission_case_id, role, actor, as_of, db_
     st.caption(f"本会话工具集（role={role}，focus={admission_case_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— 审批/拒接（B5/B6）永不在内（agent 只准备不决策）。")
-    _render_object_ai_qa(_briefing, role, key=f"awb_{admission_case_id}")
+    _render_object_ai_qa(_briefing, role, key=f"awb_{admission_case_id}",
+                         anchor=("AdmissionCase", admission_case_id))
 
 
 def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render_table):
@@ -985,7 +1025,8 @@ def render_task_object_workbench(task_id, role, actor, as_of, db_factory, render
     st.caption(f"本会话工具集（role={role}，focus={task_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只提案不审批）。")
-    _render_object_ai_qa(_briefing, role, key=f"twb_{task_id}")
+    _render_object_ai_qa(_briefing, role, key=f"twb_{task_id}",
+                         anchor=("Task", task_id))
 
 
 def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, render_table):
@@ -1063,7 +1104,8 @@ def render_invoice_object_workbench(invoice_id, role, actor, as_of, db_factory, 
     st.caption(f"本会话工具集（role={role}，focus={invoice_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只分析/起草提案，不审批）。")
-    _render_object_ai_qa(_briefing, role, key=f"iwb_{invoice_id}")
+    _render_object_ai_qa(_briefing, role, key=f"iwb_{invoice_id}",
+                         anchor=("Invoice", invoice_id))
 
 
 def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_table):
@@ -1145,7 +1187,8 @@ def render_po_object_workbench(po_id, role, actor, as_of, db_factory, render_tab
     st.caption(f"本会话工具集（role={role}，focus={po_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只分析三方差异/起草提案，不审批）。")
-    _render_object_ai_qa(_briefing, role, key=f"pwb_{po_id}")
+    _render_object_ai_qa(_briefing, role, key=f"pwb_{po_id}",
+                         anchor=("PurchaseOrder", po_id))
 
 
 def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_factory, render_table):
@@ -1226,4 +1269,5 @@ def render_warehouse_object_workbench(warehouse_id, role, actor, as_of, db_facto
     st.caption(f"本会话工具集（role={role}，focus={warehouse_id}）："
                + "、".join(sorted(sess.allowed_tools))
                + "　— approve/close 永不在内（agent 只分析库存/断货/现货可用性、起草提案，不审批）。")
-    _render_object_ai_qa(_briefing, role, key=f"wwb_{warehouse_id}")
+    _render_object_ai_qa(_briefing, role, key=f"wwb_{warehouse_id}",
+                         anchor=("Warehouse", warehouse_id))

@@ -1,8 +1,173 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-13（V5 桥1+MCP PoC 交付）
+更新时间：2026-07-19（双线合流：升级编排线 L-UX 轮2 修复批 × handoff 线 V21 三裁决落地+L-UX-1 收环）
 
 ## 当前位置
+
+> **双线合流说明（2026-07-19，升级编排会话执行 merge）**：07-18/19 夜间两条会话线**并行且互不知情**
+> 地各自推进了 L-UX 循环——handoff 线（V21 三裁决落地 + L-UX-1 收环宣告）与升级编排线（轮1 复测
+> + 新专员/经理/财务三陌生人 + 13 项修复批，财务视角为本线独有）。代码域自动合并干净（EvidenceCard
+> 两改动互补：V21② 卡级四块全空琥珀提示 × 备选块内空表一句话空态；AiRuns/styles 无语义冲突），
+> 仅本文件头部人工合流。教训重演：宪法"先查全分支"只防了接管时点，**防不了接管后对方线复活**——
+> 长任务途中需周期性 git fetch 对照。两线独有发现互补，合流后 L-UX 循环状态：对方线宣告收环的是
+> 其轮1→轮2 弧线；本线轮2 新发现（协作流断头路/finance 角色缺失/金额口径等）尚有候裁项与遗留，
+> 循环是否继续轮3 视 Daniel 对五道裁决的答复。
+
+> **L-UX 轮2 收官（2026-07-19 凌晨，升级编排会话：复测 Sonnet + 陌生人 Sonnet×3 + 修复
+> Opus/Sonnet 双批并行 + 主会话矛盾点一手取证与独立回归）**：报告
+> docs/research/2026-07-19-ux-stranger-round2.md。**轮1 复测**：9 项修复 8 PASS+1 PARTIAL
+> （截断标注因演示数据无 >50 队列无法触发）。**矛盾归因两例设计内**（影响金额不脱敏=本体
+> sensitiveFieldRules 明文运营列声明；关闭风险按钮存在于影响面板动作区仅入口单一）——避免错改
+> 权限层。**修复批 13 项落地**：①提案队列金额列改"处置成本"+双口径标注（影响货值 vs 处置成本，
+> 8 倍差不再像自相矛盾）②WorkQueue 可点行键盘可达（tabIndex/role/Enter/Space/:focus-visible）
+> ③RiskEvent 详情卡处置状态派生提示（任务已推进却显"未处置"时现查关联任务解释"任务完成≠风险
+> 自动关闭"）④**对话框吞点击真因修复**——抽屉+scrim top:0 盖住顶栏致切角色点击被吞（陌生人
+> 报告的"权限提示不刷新"实为点击没发生，Opus 复现证伪原假设），scrim/抽屉下移 46px 顶栏恢复
+> 可点⑤runtime 派单失败人话化（D9/C4 内部代号只留审计 result_json，负责人/截止现查现算缺则
+> 省略）+失败 run 卡"打开任务"动线（两段式编号正则未退化）⑥协作流卡片可点开对象卡+诚实导流
+> （催办操作仍在 Streamlit）⑦CustomersCtx React key 冲突修复（脱敏占位符当 key）⑧现金水位
+> 预警上浮钱区摘要行（net_cash_14d 击穿标红）⑨双世界切换显著化（✓前缀+两世界性质小字，默认
+> 世界未改候裁）⑩EvidenceCard 备选代价全空改一句话空态⑪履约区文案不再指死路⑫透视镜放权阶梯
+> 锚定滚动⑬"透视镜"悬空引用收敛。**诚实跳过**：AI 工作流卡面 mode 徽标（/cockpit/ai-flow 载荷
+> 无 mode 字段，不编造——需后端补字段后再做）。**回归（主会话独立重跑）**：pytest 125/runtime/
+> security 288/lint strict 0/db_digest=9582dcb0 不变/双端 tsc+build 干净。**遗留**：AiWorkflow
+> feed 的 ai_action summary 同源 D9/C4 泄漏（在飞会话 f15cd416 范围毗邻，未动）；顶栏切角色
+> 关对象卡 vs 内联钮保卡的语义差异候裁。**候 Daniel 五道裁决**见轮2 报告§三尾段（驾驶舱补
+> finance 角色/协调催办接线/审批理由必填/默认世界/首屏优先级排序）。
+
+> **L-UX 轮1 修复批（1a7b964，2026-07-18 晚，补登记——原会话交付代码后未更新本文件，DoD 欠账
+> 由升级接管会话清偿）**：陌生人实测 9 项修复（Opus 驾驶舱域 6 + Sonnet 透视镜域 3）——
+> P0 审批闭环入任务卡（DecisionButtons 复用零新写路）/ P1 正则截断 404（两段式编号只吃一段）/
+> P1 队列静默截断（20→50+共 N 条标注）/ P1 透视镜 93vs25 口径标注 / P1 本体地图 a11y+
+> currentColor 光晕 bug / 风险号列防同船多险混淆 / 墙卡"静态快照"→"当前值"+超时副行 /
+> 放权阶梯导流卡 / 角色切换内联钮（清简报挂账第 4 条）。原会话独立回归：pytest 125+security+
+> runtime+lint+digest+双 build 全绿；浏览器亲验 P0/404/墙卡文案。误报澄清：提案标题"张冠李戴"
+> 系一船多险正常态，病根为展示缺风险号已补列。**L-UX 循环状态：轮1 完成（发现→修复→亲验），
+> 轮2（独立复测+新一轮陌生人发现）接续进行。**
+>
+> **升级会话接管（2026-07-18 深夜，分支 claude/supply-chain-control-tower-upgrade-b27c95 已
+> 纯快进至 1a7b964 与 handoff 线同点）**：接管自检全绿——全链重建（datagen→pipeline→engine→
+> seed→apply_seam_columns）+ sim.backfill + agent.gating（shadow.sqlite 旁路账本自 handoff
+> worktree 拷贝，一手长跑数据不可重建）；pytest apps/api 125 passed / runtime 60 项 /
+> security 288 注入全拒 / lint --strict 0 / db_digest=9582dcb0 与基线逐字一致；
+> 检测 168 事件、R1-R21 全 P/R=1.000。服务栈仍挂 handoff worktree（API :8100 / 驾驶舱 :5174 /
+> 透视镜 :4174，代码同版本）。
+
+> **V21 三裁决落地收官（2026-07-19，workflow 实现+复核+主会话四针收尾）**：①**自队金额可见**三面
+> 同源——共享判定 own_team_amount_visible 落 agent/tools.py 单一来源，驾驶舱聚合/objects 读/AI 工具
+> 面 SensitiveFieldMasker 三处消费，assignee 缺失保守照掩，三面一致性测试+mcp 面 10 断言钉死；
+> 边界守住（只放提案金额，货值/敞口不扩大）；live 实证 ops 自队见真值他队仍锁。②**证据全空提示**
+> ——四块判定复用各块自身空态逻辑（含"非缺数"型），琥珀条文案照裁决。③键盘列表候 Daniel 真机验。
+> **主会话收尾四针**：真机使用第三/四例顶翻静态假设（runtime 空态/待批锚点→状态相对+自愈种子）；
+> **拆一颗预存隔离地雷**（missing_payments 测试 finally 直接 pop 模块 override→其后用例静默漏真库，
+> 改保存/恢复式并全仓扫同型确认唯一）。回归 130 passed 全绿+全套件+digest 确定性。
+> 环境事实：Daniel 真机在验证世界的实测活动（StartAgentRun/审批）持续入账——活系统常态。
+
+> **L-UX-1 陌生人加固循环收环（2026-07-18/19，轮1 发现→修复→轮2 复测确认，停止条件达成）**：
+> 三类陌生人（新专员/经理/建造者）不读文档实测抓 1 P0+4 P1——全部修复且轮2 新陌生人复测确认
+> （审批闭环端到端 30 秒走通、口径说明与放权导流各获 5/5）。核心修复：审批入任务卡（任何路径
+> 摸到提案皆可当场批，闭环物理不可断）/两段式编号正则 404/队列静默截断→50+共 N 条标注/风险号
+> 列防同船多险混淆/"静态快照"黑话→"当前值"/透视镜 93vs25 双世界口径互标/放权阶梯导流卡/
+> 本体地图键盘等价 HTML 列表（无障碍正统，绕开 SVG 焦点键盘事件疑云）/下钻同鲜/时间线对象号
+> 真按钮。**判决实验两则**：①轮2"Enter 无效"P1 系测试面板按键管道全哑（真实按键连 input 都
+> 打不进字，窗口级捕获 0 事件）——键盘类验收此面板不可信，真机 10 秒可验；②"22 vs 共20条"真
+> 根因=8100 API 进程跑旧代码（复发脚枪：改后端必须重启 API），重启后 22/22/22 三者一致。
+> 测试世界观二次更新：验证世界人批决策会归档处置记忆→先例测试改状态相对式（同 c14560a 教训）。
+> **候 Daniel 裁决两项**：①ops 对自队提案金额脱敏颗粒度（权限边界）②证据链四空的高额提案
+> 是否加"建议线下复核"提示（设计取舍）。
+
+> **波E 证据链智能收官（2026-07-17/18，V20：Opus 交付①②+主会话接手前端断针与验收——workflow
+> 验证段第 5 次停滞按惯例主会话收尾）**：**GET /proposals/{task_id}/evidence 证据包端点**
+> （影响量化/同类先例分布与事后有效率/该域信任档 rate+CI+n/备选代价对比；纯读、X-Role 脱敏、
+> 不 import gating、样本不足与"本就无此维度"如实分说）+**提案详情证据链卡**（批准键之前=
+> 证据先于拍板；R1 类满配四块、R19 类诚实空态亲验）+**真模型按趟开关**（发起块复选框，
+> 默认省钱剧本、白话标注、绝不静默烧订阅——请求体 llm 显式 opt-in 覆盖 env）+runtime 提案
+> note 引先例摘要。三座金矿（186 先例/180 例一致率/影响图谱）正式接上提案卡，V4"同类 8 例"
+> 画面欠账清偿。回归：pytest 125（+22 证据用例）/runtime/security/lint 全绿。
+> 另：独立小会话在修 test_cockpit ai-flow kind 断言（任务 f15cd416，勿重复动该处）。
+
+> **V19 波2 收尾批收官（2026-07-17，workflows 5 代理 + 主会话修复对抗 findings）**：①**runtime 治理
+> API 五端点**（起 run/列表/详情/resume 三分支/kill manager 专属双层 403+幂等，X-Actor 强制、
+> 审计落 action_log、白话错误、游标翻页）②**AI 处置正脸**（AiRuns.tsx：ImpactPanel「让 AI 处置」
+> ops 发起→右栏 AI 任务卡（状态徽章/预算条/步时间线/mode 如实标注）→等审批高亮→批后「继续执行」
+> →写后复读结论；kill 二次确认）③**ApproveQuoteDecision/Reject 产物指纹绑定**扩准入域（决策关键
+> 字段=商业条款六项，工作流可变列刻意排除防误杀）④**Streamlit 17 写调用点全量收编**（grep 自证
+> 全仓零绕总线生产写，欠账清零）。**对抗复核高危修复**：2b 接缝列曾致 admission_actions 四处
+> 位置式 INSERT 崩溃→真库上绑定基线通道断绝、合成基线单测遮洞（规则6教训）——四处改显式列名
+> +真通道堵门测试固化（真 CreateAdmissionCase 落基线→篡改商业条款即拒实证）；runtime 列表稳定
+> 排序+start 异常路径审计补齐。回归：pytest 103/admission_loop 复活/全套件/digest 确定性/tsc+build
+> 全绿。**候 Daniel 首用亲验**：驾驶舱 AI 处置一键流（风险详情→让 AI 处置→Z7 批→继续执行→done）
+> 与 B-1 三按钮 UI 点穿（后端路径全测试覆盖，UI 渲染 tsc+代码级复核）。
+
+> **波2-2c 持久 Agent runtime 收官（2026-07-17，Opus 执行断连后 SendMessage 原地续命完成，主会话
+> 独立复核全绿）**：agent/runtime.py 状态机（created→running→waiting_approval→…→done|failed|
+> timeout|budget_exhausted|killed，白名单迁移+CHECK 约束）；**写步骤全走 Command 总线**（幂等键
+> run:{run_id}:{step_no}，崩溃恢复重放同键恰一次，测试实证）；硬预算（步数/工具次数/真实执行秒，
+> 等审批不烧预算）+loop guard 防打转；等审批三分支（pending 如实等/approved 做写后复读三项核实/
+> rejected 白话失败）；kill switch CLI；think 步 LLM 不可用优雅降级如实标 mode。冻结区零可达
+> （读 approval_status 观察审批、永不能造成审批——6 处冻结字样全为读侧/文档，主会话亲查）。
+> as-built spec 落 specs/2026-07-17-wave2c-agent-runtime.md 候 Daniel 审。60 项 runtime 测试+
+> 全量回归绿，digest 确定性门在豁免登记后守住（9582dcb0）。**波2 余量**：runtime 驾驶舱接线、
+> ApproveQuoteDecision 绑定扩展、Streamlit 余量收编、B-1 按钮 UI 点穿。
+
+> **波2-2b 接缝列落地（2026-07-16 深夜，主会话贴身执行）**：35 对象表全员 **version 乐观锁列
+> （触发器自增：普通 UPDATE 自动+1、显式设值让位——未来乐观锁写路径零改造地基）+ tenant_id
+> 预留（恒 'default'，V14 接缝①）**。桥3 生成器出系统列（本体保持业务纯净，lint/影子对账共用
+> SYSTEM_COLUMNS 单一豁免源）；引擎自建表（tasks/risk_events 等）经**链尾幂等迁移步**
+> pipeline/apply_seam_columns 补齐（engine/ 零改动），同脚本完成 simworld 迁移（70 列+35 触发器）。
+> **诚实发现**：两次重建对照暴露"文件 md5 逐字节一致"不变量自 G-Ledger（真实 run_ts）起已不成立
+> ——尺子精化为 pipeline/db_digest 业务逻辑指纹（遥测表 rule_run_ledger/llm_calls/commands 豁免+
+> 理由在案），新基线 9582dcb0 两次全链重建实证一致；文件 md5 继续管"测试期间未触库"守恒。
+> 回归全绿：pytest 80/lint strict/影子 0 差异/安全 288/闭环/ux_p0/mcp/seam 六项堵门测试。
+> 验证世界重建致运行态遥测清零（llm_calls 等，属已知重建语义）；shadow.sqlite 旁路账本完整保留。
+
+> **波2 第一批收官（2026-07-16 深夜，workflows：Opus×2/Sonnet×2，首轮6次停滞后精简任务书续跑成功）**：
+> **Command 写总线**（app/command_bus.py：commands 台账/幂等键 claim-first 双发只执行一次/参数指纹/
+> **审批绑提案指纹**——批的那一刻校验"你看到的方案就是库里这一版"；三门 MCP dispatch+/actions+
+> /decisions 全贯通，Streamlit 本批仅任务处理台其余登记欠账；app/actions.py 一行未改）+**API 契约
+> 硬化**（统一错误信封/_StateConflict→409/Idempotency-Key/objects 游标分页）+**B-1 三冻结按钮**
+> （关闭风险[ops 按本体 executors 核正]/批准报价/驳回补件，零新写路复用 /decisions）。对抗复核
+> F1-F3 全修：绑定基线改**动作名不可知**的规范提案指纹列（ProposeCollection 族纳入覆盖）、异常
+> 撤坑防幂等键毒化、前端按意图记键防"每调换键去重虚设"+BUSY 窄窗闭合，新增 2 堵门用例。回归
+> 80 passed+安全套件+闭环+lint 零差异+tsc/build 干净+双库 md5 未动。**第二批挂账**：2b 乐观锁
+> version 列+tenant_id 预留（主会话贴身，涉真值新基线）、2c 持久 Agent runtime、ApproveQuoteDecision
+> 绑定扩展、Streamlit 余量收编。
+
+> **波U 用户正脸全量收官 + 档1 首份真一致率（2026-07-16 晚，V17 workflows 编排：7 代理三阶段，
+> Opus×3/Sonnet×4，进程中断后断点续跑意外收获"生成与验证物理隔离"双层质检）**：
+> **U1 双世界一键切换**（顶栏验证⇄模拟，X-World 头白名单枚举防注入，缺省 byte-identical）、
+> **U2 数字溯源**（七区卡"你从哪来"浮层：口径白话+来源表+样例 id+透视镜指引）、**U3 AI 信任档
+> 正脸**（/governance/gating 只读端点+AI 卡"信任档·21 域·影子"徽章，display-only 原样透传）、
+> **U4 三态系统化**（StateHint 四态组件全舱接入）、**U5 对象卡白话铺满 35 类/353 属性**（本体
+> 程序化提取，续跑复核抓出 3 处枚举转录缺陷并修复）、**U6 协作流真身**（sim 28 线程上屏）、
+> **U7 操作台迁移评估**（三候选方案书候裁）。对抗复核（Opus 证伪者）1 违规 3 存疑：治理端点
+> 主机路径泄露已修（basename 化+测试堵门）；X-World 达写端点/列表端点 world 信封两项判"设计内"
+> 待 Daniel 知悉；写死"28 条"文案已除。回归 65 passed+lint 零差异+双前端 build 干净。
+> test_decisions 自愈种子修复（人批完种子提案致 pending=0 暴露测试依赖易变演示态——3 条
+> ApproveMitigation 均人类通道 maker-checker 完好）。**档1 首份真一致率（180 例全测）**：
+> 总体 97/180=53.9%；critical 9/33=**27.3%**、high 88/147=59.9%（AI 在最严重案子上最不像人
+> ——proposal-only 的最硬实证）；分航线切片全带 Wilson CI+样本量标注。gating 报告 21 域全
+> shadow 档（真数据驱动）。候 Daniel：U7 方案裁决、X-World 写端点语义知悉。
+
+> **Monday 对标全面提升·波1 收官 + V13 两单落地（2026-07-16 下午，Fable 编排 + Opus×3 执行，逐单浏览器亲验）**：
+> Daniel 严正要求五维度实质性提升 → 两路只读探查交叉成**五维度差距诊断**（docs/research/
+> 2026-07-16-monday-uplift-gap-diagnosis.md）→ **V14 终局定位裁"路 C"**（单租户打底留三接缝：tenant_id
+> 预留/写路径归一/视图配置化，89afceb）→ **V15 提升路线裁"丙"三波纵向切片**（9afc6ea）。
+> **V13① A-1 审批搬回驾驶舱**（750991d）：POST /decisions/{name} 人类专用通道（frozen 四动作声明驱动
+> 白名单+X-Actor 必填+maker-checker 透传+MCP 零感知不变量测试）+Z7 批准/驳回按钮；亲验 manager 批准
+> →队列移出+action_log 留痕 trace_id=NULL，ops 灰态+金额脱敏。**V13② A-2 两处回放**（9681686）：世界
+> 时钟可拖时间轴+播放回放（as_of 串三聚合端点，诚实边界：可回放真重算/不可回放灰标"显示当前值"，
+> 清单存档 specs/2026-07-16-a2-replay-boundary.md）+AI 故事卡思考轨迹逐步点亮。
+> **波1「AI 可信度可测可放权」**（spec eaae5ca，交付 7977e2f）：G-Shadow 六项修复（透传副本路径——
+> 真通道实证业务库 md5 全程不变，勘误"全程只读"缺陷根除；shadow_llm_calls 拷回/tier+resume 断点续跑/
+> 退避重试/escalation recall/Wilson CI）+prompt 版本机（llm_calls.prompt_version，p1）+**放权门禁引擎
+> display-only**（agent/gating.py，17 域判档全 shadow，透视镜 15 视图新卡「放权阶梯」亲验；静态隔离
+> 测试钉死不接工具授权=V15 保护条款）。**影子首轮真数字**：金标 scripted 29/29=100%，真 AI 9/25=36%
+> （上下文/审计类通、简报/越权类挂——键词判分偏严+真差距并存，如实记录）；档1 一致率首轮因 CLI 通道
+> 连续失败**未测**（180 例可比底数已清点），修复后长跑已重启。陈旧基线补齐：test_ux_p0_fixes
+> ROLE_PERMS 4→6 键（F1 漏补，只增不改）。**候 Daniel**：放权阈值数字（gating_config draft-1）、
+> escalation recall 操作化定义（"更保守"={escalate,accept_delay}，业务语义候确认）、WAIVED 豁免通道、
+> 执行者纪律入宪法。
 
 > **V5 本体运行时化·第一批交付（2026-07-13，Daniel 三项全批后执行）**：缘起 Daniel 照透视镜 v2 后
 > "感觉不托底"——诊断证实本体 JSON 只被展示层引用（引擎/动作/AI 层零引用，两张皮），主通道 claude_cli
@@ -15,12 +180,139 @@
 > 后本体滞后，**桥 2 补本体，勿删代码授权**。B 类另有 3 动作无权限登记（CreateRiskEvent/A9/A10），桥 2 厘清。
 > **MCP PoC 部分通**（poc/mcp-ontology/，新顶层目录=V5-② 工作区，此处登记）：零依赖 stdio MCP server
 > 3 只读工具，独立客户端 8/8 断言过、答案与库真值逐字一致、call_log.jsonl 留证、mode=ro 物理只读；
-> 工具 schema 的对象/关系枚举已从本体 JSON 生成（桥 2 预演）。**唯一未验环节=claude CLI 端到端**，
-> 卡"Not logged in"（非交互环境无法 OAuth）——**待 Daniel 交互式 /login 后按 PoC 报告 §4 一条命令验完**
-> （docs/research/2026-07-13-mcp-poc-report.md）。独立 Sonnet 验收 7 项 6 过；唯一不符项（engine.evaluate
-> 50/51）经裁决为**评估基线状态前提**：seed_demo_ops 会改运营字段（设计内），跑过后个别匹配项偏移，
-> 从 build_ontology 重建起步则全绿（已实测两轮，test_closed_loop/agent.evaluate 用临时副本不污染工作库）。
-> **下一步：Daniel 补验 MCP 一条命令 → 开新会话（读本文件接管）做 API 层=桥2+桥3+MCP 正式化 → 驾驶舱 → 透视镜 v3**。
+> 工具 schema 的对象/关系枚举已从本体 JSON 生成（桥 2 预演）。独立 Sonnet 验收 7 项 6 过；唯一不符项
+> （engine.evaluate 50/51）经裁决为**评估基线状态前提**：seed_demo_ops 会改运营字段（设计内），跑过后
+> 个别匹配项偏移，从 build_ontology 重建起步则全绿（已实测两轮，test_closed_loop/agent.evaluate 用临时副本
+> 不污染工作库）。
+> **MCP PoC 终验 3/3 全过，PoC 收口（2026-07-13）**：Daniel /login 后第 1 次亲跑 + 接管会话补跑 2 次，
+> 三轮全部满足三条判定（call_log 17→32 行真调用留痕 / 答案与真值逐字一致 in_transit+RSK-0038/0039/0040 /
+> stream-json 可见 mcp__ontology__* tool_use 事件），每轮 num_turns=7、44-48s、订阅通道零 API 费——
+> 模型自主规划调用序列（查货件→沿关系走风险→逐个深查详情），"朗读简报"时代结束。
+> 回填见 PoC 报告 §4（docs/research/2026-07-13-mcp-poc-report.md）。
+> **API 层五单全交付（2026-07-14，worktree 分支 claude/project-handoff-api-layer-cd4f51，
+> Fable 编排评审 + Opus×4/Sonnet×1 执行，每单主会话重跑复核后提交）**——plan：
+> docs/superpowers/plans/2026-07-14-api-layer-bridges-mcp.md（执行中勘误 3 处，全部由执行层论证抓出）：
+> **M1 桥2-本体侧**（31f7ba2）：本体 0.9.0→0.10.0——roles 补 procurement（P4 追平）、31 动作加
+> exposed_as_tool/ai_executable(auto6/frozen4/never21)/enforcement/permission_key、A 类 4 列补登记、
+> payload 删除、links 加 storage 承载声明；lint 改读声明字段，差异 15→5+1 豁免。
+> **M2 桥2-运行时侧**（ea01134）：pipeline/ontology_runtime.py——5 权限字典+FORBIDDEN+TOOL_DEFS
+> 从本体解释生成，硬编码退役；迁移零行为漂移（落死基线+EXPECTED_* 人批口径双守护）；评审变异
+> 测试暴露"KeyError 运气防线"后加 _validate_ai_invariants 显式断言（frozen∩exposed=∅ 等）+
+> 三变异用例固化常驻。**M3 桥3 结构生成**（aeba1ac）：34 Pydantic 模型+DDL 从本体生成（GENERATED
+> 入版本库），影子模式确认恰 5 处（skus 五字段 TEXT→REAL）才切换 build_ontology；插入前
+> model_validate（enforce 0 违例）；本体 30 处 number→integer 精化（评审审计金额/费率/尺寸零降级）；
+> traverse 通用遍历下沉 ontology_runtime；**两张皮差异清零，--strict 退出码 0 入发版门**
+> （release-checklist §A 新增）。**M4 MCP 正式化**（ca9360b）：agent/mcp_server.py 四门槛——
+> 角色过滤（aiQueryTools.domain×角色矩阵）+本体 sensitiveFieldRules 脱敏、冻结区机制化+零写工具
+> （裁2 保守）、审计入库（llm_calls 加 call_type='mcp_tool'，查询连接 mode=ro 物理只读+审计连接
+> 仅 INSERT）、schema 本体驱动；llm_agent 新 provider claude_cli_mcp+回退链；**UI 询问按钮
+> provider 感知切换**（评审判执行层"UI 暂缓"为实质缺口发回补做——config/llm.yaml 一处开关控制
+> 全部入口，新通道模型真查库带审计、简报明示"本次回答未以其为依据"，旧单发档保留一行可回退）。
+> **M5 FastAPI 骨架**（7360f3c）：apps/api/ 五路由全本体驱动（/ontology 自描述、objects 读+过滤、
+> traverse、actions 仅 exposed 6 动作走 app.actions 原函数留审计），16 用例+真 uvicorn 冒烟绿——
+> React 驾驶舱与透视镜 v3 的底座。
+> **全程红线**：每单全量回归链（含 seed_demo_ops 步，勘误#2）+288 注入对抗+真值 md5 全绿；
+> EXPECTED_* 基线零改动。
+> **V6 三裁决已全部落地（2026-07-14，Daniel 亲批"1.补；2.可以；3.了解"）**：
+> **裁1=补（328129f）**：本体 0.10.1 增 RiskEvent.affected_sku_ids 正式承载列，declared_only
+> 豁免退场——**闸门首次 0 差异 + 0 豁免完全干净**；R14 历史 hack（affected_po_line_ids 装 sku_id）
+> 经证据链核查为评估器匹配键所消费，按 V6 约束保留为兼容载体、新列并行写入（双列逐字节相等）。
+> **裁2=可以（ecefb94）**：MCP server 开放 6 写提案工具，调用走 agent/tools.py 既有 dispatch
+> （ROLE_PERMS+FORBIDDEN+action_log 同一套，无第二写路径），冻结区协议层拦截（永不到达 dispatch）；
+> 端到端实弹：模型查 RSK-0001→真实 assign_task→TSK 落库+审计尾行 ai-agent/ok+llm_calls +2，
+> 模型自述 maker-checker 边界。执行层于验收阶段 watchdog 停滞，主会话接手验收收口（改动无缺陷）。
+> **裁3=了解**：新通道维持默认，结案。
+> **Monday 审计→治理证据包（2026-07-16，Monday研究3900行深度更新吸收后）**：以 monday.com
+> 方法论+产品实证为镜做七维交叉审计（报告 docs/research/2026-07-16-monday-cross-audit.md）——
+> 架构 DNA 同源、多处我方更强（认账3条措辞更正），逼出三真洞已修（原子性/幂等/并发窗口，
+> 21c5ac5，主会话独立验证幂等铁证）。Monday深度研究增量吸收（docs/research/
+> 2026-07-16-monday-deep-research-absorb.md）递三螺丝：放权阶梯/贯穿追踪号/指令版本机。
+> **治理证据包四件套全交付**（规格 docs/superpowers/specs/2026-07-16-governance-evidence-package.md，
+> 主题=把治理从文档承诺变成看得见的证据，纯测量零线上行为改变）：
+> G-Ledger 规则执行台账（af180e1，每次detect落账可diff重放）+ G-Shadow 影子测量台（5a6c9d9，
+> AI建议对人决定/金标双档比一致率，真AI一致率待专门长跑，诚实纪律范本绝不编假数）+ G-Trace
+> 贯穿追踪号（4ba6cfb，action_log加trace_id与llm_calls血缘可拼）+ G-Dashboard 治理控制室
+> （eee0149，透视镜第15视图六本账+护栏铁证+覆盖度卡+七问，空账如实暂无）。每件主会话复核
+> 检测不变性/真值md5/命根子。**待Daniel四道方向裁决**（放权阶梯数字/WAIVED豁免通道/执行者纪律
+> 入宪法/单租户vs多租户）+真AI影子一致率专门长跑（主会话采样3题每题~180s，需数小时后台专跑）。
+
+> **V12 对象卡用户语言化闭环（2026-07-14，Daniel"这里不容易懂"后治本+治表双线）**：
+> G5 sim Supplier 枚举清零+全对象扫描（55f8b00）→ G6 sim 全对象 3950 行违例→0、双世界 0/0
+> （839ad64，A类映射/B类收编 0.11.3，执行层反驳式核验纠正任务书 3 处计数+CIF 改判有据）→
+> B6 对象卡三层人话（835af68：字段中文/值人话/关系方向白话、警告折叠徽标；objectLabels.ts
+> 单一权威映射层"只翻译不加工事实"）。主会话亲验 Supplier 卡三层批评全根治。PR 已同步更新。
+
+> **企业级交付收官（2026-07-14，依 Daniel /goal 指令）**：
+> **透视镜 v3（50fe2ef）**：四板块——全局搜索（32k 实例索引）/影响分析（五维消费面，Shipment/
+> Payment 独立交叉核对）/动作↔AI 工具联动（冻结区红标）/依赖与使用折叠区；等距图以正确语义
+> 归位（对象类型分层，archive 删除）；Payment 补入透视镜分类（35 对象唯一遗漏者）。
+> **挂账全清**：G1 四项（判别式双向/枚举 R21/sim 枚举治本/脱敏声明化收敛+变化矩阵）、
+> G2 钱区应收应付+14 天净流出预警上画面、G3 死样式净减 486 行+译名归一（顺带修 R2 中文名
+> 历史 bug）、G4 词表对齐（V11 两个映射目标被执行层证伪并勘误——名字相似≠语义等价；
+> 治愈 seed 路径 6 条 finance 任务静默校验失败的预存 bug；双世界 Task 校验零警告）。
+> **F1 漏更的 4 个辅助测试基线债已由主会话收口**（34→35/EXPECTED 补两键）。
+> **发版门**：release-checklist A（R1-R21 全 P/R=1.000）+A+（运行时化与 AI 通道五门）+
+> A++（交付收口四项）全绿；README/ONBOARDING 对齐 0.11.2。
+> **遗留候后续（不阻塞交付）**：propose_collection vs collect 命名统一、ai-flow note 金额
+> ops 不脱敏（既有 API 行为，脱敏声明化二期）、SEV_RANK 三处重复、CORS 中间件（独立部署时）、
+> impact.json 主包 code-split、A9 ACTION_META 指向。**待 Daniel**：五分钟走查驾驶舱+透视镜
+> v3（启动命令见 README 快速开始）。
+
+> **V10 补记已落地（B5，f0bc0ad，2026-07-14，Daniel"是不是用地图更合适+工作流很难懂"）**：
+> ①履约视图升**夜景真地理地图**（Natural Earth 公有领域数据手工简化 253 点、9 港真实经纬度、
+> 太平洋居中欧洲港右上、航线弧向高纬弯、粗细=票数颜色=异常、点弧下钻不变；走廊图退役删除）
+> ②AI 工作流**故事卡化**（200 事件按风险链折叠 81 卡、主句人话零内部码"发现重复或不符付款
+> $7,157→AI 已提案对账追回，候审批"、展开=完整时间线；映射表逐字镜像 ux_copy.py 权威层+
+> R19-R21）。挂账：ImpactPanel 的 R1 译名与 ux_copy 既存不一致、ai-flow note 金额对 ops
+> 不脱敏（既有 API 行为）。**候 Daniel 验收**（刷新 http://localhost:5174，履约卡点「航线视图」）。
+
+> **V10 方案 C 已落地（B4，e7e86ae，2026-07-14）**：驾驶舱首屏重构为**七区指挥墙**（大卡+摘要行+
+> 告警排前辉光，体征带退役）+ 四段式下钻（墙→区队列→影响面板/对象卡→动作占位）+ 履约卡切换
+> **航线走廊图**（中国港列→目的港仓列弧线束，粗细=票数颜色=异常，点弧进航线队列）。形态依据=
+> Sonnet 12 厂商调研三发现（控制塔≠地图/KPI 异常永不画进中央图层/下钻四段式惯例），SAP tile
+> 切换范式。等距分层图归档 src/archive/（透视镜 v3 素材）。8 条保守歧义+死 CSS 清理挂账。
+> 主会话浏览器亲验：指挥墙可读性质变、走廊图 2 告警航线醒目。**候 Daniel 三次验收**
+> （刷新 http://localhost:5174）。PR 创建候画面收口后重启（Daniel 曾中止 push）。
+
+> **V9 双单交付（2026-07-14，Daniel"很low"+"很乱"两轮批评后，决策日志 V9+补记）**：
+> **F2 补灌（9f298dd）**：sim/enrich.py 五域灌入（收货3276/供票3276/准入36+成本17/盘点34/付款4568/
+> 申报价值补值）——体征带七区全非 null（供应商 0.822/AI 今日 4 检 4 提案=真实账龄事件/待拍板 21）；
+> 独立 rng 子流保 S1/S2 逐字节不变；71 断言全绿；主会话修 test_cockpit 缺域断言为动态跟随现实。
+> **B3 视觉升级（b566f14）**：等距 2.5D 五层浮板+三面棱柱组块聚合（州/航线/城市，512 细线→153
+> 聚合主干）+27 个几何 SVG 图标 emoji 清零+命令中心质感 token；**影响走廊新形态**（V9 补记）：
+> 全景只做聚合级高亮+≤5 粗光路，明细进结构化影响分析面板（受影响行→波及客户按敞口排序）；
+> 主会话亲验画面质变+修复 simworld 对象卡 500（读端点韧性：ValidationError→原样返回+违规警告
+> 如实暴露；根因=S1/S2 历史行枚举外值/缺 due_at 列，**sim 枚举对齐挂账**）。
+> **候 Daniel 二次验收**：刷新 http://localhost:5174 看新画面（等距分层图/影响面板/七区点亮）。
+
+> **V8 三线交付（2026-07-14，画面二稿三裁决+资金流四问后）**：
+> **B1 聚合层（698228a）**：/cockpit/vitals 七区体征+panorama 分层图+ai-flow 时间线，指标 SQL
+> 口径全入 docstring，双世界如实缺数、趋势不编造；34 用例+抽查逐分一致。
+> **B2 首屏画面（ebd583d）**：体征带七枚真数字块+五层 SVG 活图（512 边/异常脉动/影响走廊 56 节点
+> 点亮）+AI 工作流 60 卡（SIM 徽标/质量标签/最新呼吸）+协作流预留 tab+manager/ops 切换掩码；
+> 零新依赖、控制台零报错、主会话浏览器亲验。**查看**：`ONTOLOGY_DB=data/simworld.sqlite uvicorn
+> apps.api.main:app --port 8100` + `cd apps/cockpit && npm run dev` → http://localhost:5174。
+> **F1 资金流（7a79c71）**：本体 0.11.0（35 对象/56 关系/32 动作/21 规则）——Payment 对象+
+> 3 判别式关系+RecordPayment 转正+A26 ProposeCollection（完整处置器 maker-checker）+R19-R21
+> 全 P/R=1.000+真值第 9 表；EXPECTED 基线仅追加两键；288 注入扩资金流工具全绿；三座桥自动跟随
+> （API 34 用例/MCP 暴露集 7 写零手改）。R20 阈值 $500K 代定候调。
+> **候 Daniel**：看驾驶舱首屏给画面意见（三稿或直接迭代）。**排队 F2/B3**：sim 补灌资金流+S3
+> 补灌采购/准入域（体征带"无数据"格点亮）+驾驶舱钱区应收应付回填+panorama 角色粒度参数+
+> traverse 判别式 reverse+RiskEvent 枚举清理。
+> 画面复述历史：一稿+二稿并存于 docs/superpowers/specs/2026-07-14-cockpit-screen-narrative.md。
+> **地基已交付（51fd4b8）**：
+> apps/cockpit React 骨架（Vite+React18+TS 照透视镜栈零新依赖，三占位视图，连接状态条全字段来自
+> /ontology）+ apps/api 双世界数据源（ONTOLOGY_DB 环境变量切 verification/simulation，18 用例）；
+> CORS 经 vite 同源反代解决（独立静态部署时需补 CORS 中间件，README 挂账）。
+> **启动**：`uvicorn apps.api.main:app --port 8100` → `cd apps/cockpit && npm install && npm run dev`
+> （或 ./start.sh）；模拟世界：`ONTOLOGY_DB=data/simworld.sqlite uvicorn ...`（simworld 由
+> `python3 -m sim.backfill` 生成）。**下一步：Daniel 回画面复述 → 驾驶舱画面级实现 → 透视镜 v3**。**遗留挂账（后续项）**：credit_terms/risk_tier 本体声明与 tools.py gate
+> 分叉、COST_FIELDS 等硬编码脱敏集全量声明化。
+> **Daniel 验收走查（5 分钟）**：完整重启 streamlit → 任意风险工作台点「询问」问一个问题
+> （预期 40-105 秒，回答头标"真实查库作答"，简报折叠区明示未被用作依据）→ 控制室审计视图查
+> llm_calls 出现 call_type='mcp_tool' 行。**合流**：worktree 分支领先 codex 主干 8 commit
+> （d1ad559..7360f3c+收尾），在主仓库跑 `git merge --ff-only claude/project-handoff-api-layer-cd4f51`
+> 即快进（纯 ff 无冲突；先关闭运行中的 streamlit）。**下一步：前台驾驶舱 → 透视镜 v3（V4/V5 序）**。
 
 > **FDE × Ontology 系列研究手册（2026-07-12）**：已用 Record & Replay 确认“纳米巨人”抖音主页第 1—11 集系列边界，逐集取得真实媒体（约 75 分钟）并用本地 Whisper small 离线转写；结合 Palantir/OpenAI/Blackstone 官方资料完成事实核验与方法内化。新增 `docs/fde-ontology-delivery-playbook.md`：把系列观点转成 1—5 天 Bootcamp、最小本体、动作/权限、自主权、评估与 FDE 产品化的可执行手册，并明确未证实实现细节与本仓库真实缺口。未修改 ontology、规则、代码、KPI 或决策日志。
 

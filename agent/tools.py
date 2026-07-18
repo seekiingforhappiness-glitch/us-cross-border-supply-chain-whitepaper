@@ -12,39 +12,86 @@ import sqlite3
 
 import yaml
 
-from app.actions import assign_task, propose_mitigation, _log, ROLE_PERMS
+from app.actions import (assign_task, propose_mitigation, propose_collection, _log, ROLE_PERMS,
+                         set_action_trace_id, reset_action_trace_id)
 from app.admission_actions import (ADM_PERMS, create_admission_case, run_compliance_precheck,
                                    build_logistics_plan, calculate_cost_scenario)
+# 波2 写总线（spec §一.4「三门贯通」之 dispatch 门）：AI 写动作经此落 commands 台账再原样调
+# app.actions/app.admission_actions（函数本体一行不改）。dispatch 不传幂等键（AI 不去重），故总线
+# 对成功路径透明——结果与副作用与直调一字不差，只多记一条命令行 + 透传 G-Trace 到台账。
+from app.command_bus import execute_command
 from engine.graph import explain_path
 # C1 只读检索处置记忆（写入函数不 import——AI 永远拿不到写工具）
 from engine.resolution_memory import find_similar, lane_for_shipment, render_precedent_block
+# 桥2 运行时侧（M2，V5 决议①）：FORBIDDEN_TOOLS / TOOL_DEFS / 读工具域分组从本体解释生成，
+# 硬编码字面量退役（本体成为唯一权威源；生成 == 迁移前基线守护见 app/test_ontology_runtime.py）。
+from pipeline.ontology_runtime import build_forbidden_tools, build_tool_defs, load_ontology
+
+_ONTO = load_ontology()
 
 AI_ACTOR = "ai-agent"
 AI_ROLE = "ops"  # 默认角色（不传 role 时的向后兼容值）
-# 审批/关闭/拒接类动作永不向任何 role 的 AI 会话开放（v0.2 E5 + v0.3 AD2 红线，原则2）
-FORBIDDEN_TOOLS = {"approve_mitigation", "close_risk_event",
-                   "approve_quote_decision", "reject_or_request_more_info"}
-COST_FIELDS = {"quote_price_usd", "product_cost_usd", "first_mile_cost_usd",
-               "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd",
-               "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd",
-               "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"}
+# 审批/关闭/拒接类动作永不向任何 role 的 AI 会话开放（v0.2 E5 + v0.3 AD2 红线，原则2）——
+# 桥2 M2 起从本体 ai_executable=frozen 声明生成（恰四个审批/关闭类动作的 snake，全局红线3）。
+FORBIDDEN_TOOLS = build_forbidden_tools(_ONTO)
+
+
+# ─── G1 脱敏全量声明化（M4/B5 挂账治本）：脱敏字段集与可见角色**唯一权威源 = 本体 sensitiveFieldRules** ───
+# 迁移前 COST_FIELDS/INVOICE_COST_FIELDS 是硬编码字面量、_can_see_* 是硬编码角色判断，与本体声明"两张皮"。
+# 本节把两者都改为从本体解释派生（本体成为唯一权威源，V5 桥的精神）：改本体重跑即生效，代码零脱敏字面量。
+def _sensitive_rules(onto):
+    return onto.get("sensitiveFieldRules", [])
+
+
+def _named_visible(onto, obj, field):
+    """具名字段规则(singular field) → 可见角色集；无声明返回空集（=脱敏不触发）。"""
+    for r in _sensitive_rules(onto):
+        if r.get("object") == obj and r.get("field") == field:
+            return set(r.get("visibleTo", []))
+    return set()
+
+
+def _group_rule(onto, obj):
+    """字段组规则(plural fields，按对象组脱敏) → (有序字段列表, 可见角色集)；无声明返回 ([], set())。"""
+    for r in _sensitive_rules(onto):
+        if r.get("object") == obj and r.get("fields"):
+            return list(r["fields"]), set(r.get("visibleTo", []))
+    return [], set()
+
+
+# 成本情景金额/毛利脱敏集：从本体 CostScenario.fields 派生（硬编码 12 字面量退役；集合值逐字等价迁移前）。
+_COST_FIELD_LIST, _COST_VISIBLE = _group_rule(_ONTO, "CostScenario")
+COST_FIELDS = set(_COST_FIELD_LIST)
 # 发票对账金额字段脱敏集（单一事实源，app.object_workbench / standard_object_view 复用本常量）：
-# 发票 total_usd + 逐行 amount/unit_price/baseline/diff。与 UI mask_cost 同规（finance/manager 可见）。
-INVOICE_COST_FIELDS = ("amount_usd", "unit_price_usd", "baseline_usd", "diff_usd")
+# 发票逐行 amount/unit_price/baseline/diff。从本体 Invoice.fields 派生，与 UI mask_cost 同规（finance/manager 可见）。
+_INVOICE_FIELD_LIST, _INVOICE_VISIBLE = _group_rule(_ONTO, "Invoice")
+INVOICE_COST_FIELDS = tuple(_INVOICE_FIELD_LIST)
+# 客户 tier / credit_terms 可见角色集：从本体具名规则派生（tier=cs/manager；credit_terms=risk_tier=finance/manager）。
+_TIER_VISIBLE = _named_visible(_ONTO, "Customer", "tier")
+_CREDIT_VISIBLE = _named_visible(_ONTO, "Customer", "credit_terms")
 MASK = "🔒无权查看"
 
 # --- 角色 → 工具集 scoping（对象工作台切片：给同一框架注入 role，不复制平行 agent）---
 # 读工具按域分组：风险/物流域对所有 role 开放（RiskEvent 对象工作台核心）；成本、准入域按
 # role 相关性 scoping。ops 保留全域（历史基线，不回归 agent.evaluate）；cs 无成本域（"无 cost 相关"）；
 # finance 可成本域；manager 全域只读。写工具白名单完全由 app.actions.ROLE_PERMS 决定（不复制权限）。
-RISK_READ_TOOLS = {"list_open_risks", "get_risk", "get_shipment_context",
-                   "get_impact_chain", "get_audit_trail", "explain_relationship_path",
-                   "get_similar_resolutions"}  # C1 先例检索：只读，随风险域对全角色开放
-COST_READ_TOOLS = {"list_invoices", "get_invoice_context"}
-ADMISSION_READ_TOOLS = {"list_admission_cases", "get_admission_context"}
+# 读工具域分组——桥2 M2 起从本体 aiQueryTools[].domain 字段派生（不再硬编码枚举），domain 值
+# 使角色域 scoping 行为与迁移前逐字相等（守护见 app/test_ontology_runtime.py ⑥）；C1 先例检索
+# get_similar_resolutions 在本体归 risk 域（只读，随风险域对全角色开放）。域→角色的访问矩阵
+# （COST_READ_ROLES / ADMISSION_READ_ROLES）仍是角色集常量、非工具集，本阶段不入本体（保守读法）。
+def _read_tools_in_domain(domain):
+    return {q["name"] for q in _ONTO.get("aiQueryTools", []) if q.get("domain") == domain}
+
+
+RISK_READ_TOOLS = _read_tools_in_domain("risk")
+COST_READ_TOOLS = _read_tools_in_domain("cost")
+ADMISSION_READ_TOOLS = _read_tools_in_domain("admission")
 COST_READ_ROLES = {"ops", "finance", "manager"}
 ADMISSION_READ_ROLES = {"ops", "finance", "manager", "sales", "compliance"}
-WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation"}
+WRITE_TOOL_PERM = {"assign_task": "AssignTask", "propose_mitigation": "ProposeMitigation",
+                   # F1（V8-②）：催收提案 maker 工具，按 ROLE_PERMS.ProposeCollection={cs,finance} gate，
+                   # 走既有 dispatch + app.actions.propose_collection（proposal-only，审批仍人做）。
+                   "propose_collection": "ProposeCollection"}
 # 准入准备动作 B1-B4（AdmissionCase 切片，同 RiskEvent 写工具模式：白名单由 ADM_PERMS gate，不复制权限）。
 # B5/B6（approve_quote_decision/reject_or_request_more_info）**永不**出现在此——它们在 FORBIDDEN_TOOLS，
 # agent 只做准备动作、不夺审批/拒接决策（maker-checker，原则2）。
@@ -73,108 +120,49 @@ def allowed_tools_for_role(role):
 
 
 def _can_see_tier(role):
-    """Customer.tier 脱敏规则（与 UI mask_tier 同规）：cs/manager 可见，其余脱敏。"""
-    return role in ("cs", "manager")
+    """Customer.tier 脱敏规则（本体 sensitiveFieldRules 派生，与 UI mask_tier 同规）：cs/manager 可见。"""
+    return role in _TIER_VISIBLE
 
 
 def _can_see_cost(role):
-    """成本字段脱敏规则（与 UI mask_cost 同规）：finance/manager 可见，其余脱敏。"""
-    return role in ("finance", "manager")
+    """成本字段脱敏规则（本体 sensitiveFieldRules 派生，与 UI mask_cost 同规）：finance/manager 可见。"""
+    return role in _COST_VISIBLE
 
-# Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）
-TOOL_DEFS = [
-    {"name": "list_open_risks",
-     "description": "列出未关闭的风险事件，可按 severity 过滤（critical/high/medium）",
-     "input_schema": {"type": "object", "properties": {
-         "severity": {"type": "string", "enum": ["critical", "high", "medium"]}}}},
-    {"name": "get_risk",
-     "description": "查单个风险事件详情（类型/规则/级别/根因/受影响行/金额/状态）",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
-    {"name": "get_shipment_context",
-     "description": "查货运完整上下文：基础信息、判重后事件流、所载订单行与客户（按角色脱敏）",
-     "input_schema": {"type": "object", "properties": {
-         "shipment_id": {"type": "string"}}, "required": ["shipment_id"]}},
-    {"name": "get_impact_chain",
-     "description": "查风险的影响链：受影响订单行→销售订单→客户，含分配数量与金额",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
-    {"name": "get_audit_trail",
-     "description": "查对象（风险/任务）的审计历史，含被拒绝的调用",
-     "input_schema": {"type": "object", "properties": {
-         "object_id": {"type": "string"}}, "required": ["object_id"]}},
-    {"name": "list_admission_cases",
-     "description": "列出准入案件（v0.3），可按 status 过滤（draft/in_precheck/plan_ready/priced/approved/quote_with_conditions/rejected/needs_more_info）",
-     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
-    {"name": "get_admission_context",
-     "description": "查准入案件完整上下文：案件、合规发现、物流方案、成本情景（成本字段按角色脱敏）、客户能力",
-     "input_schema": {"type": "object", "properties": {
-         "admission_case_id": {"type": "string"}}, "required": ["admission_case_id"]}},
-    {"name": "list_invoices",
-     "description": "列出发票（v0.4），可按 status 过滤（received/under_review/approved/disputed）。"
-                    "返回 invoice_id/vendor/type/shipment/total/status/issue_date",
-     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
-    {"name": "get_invoice_context",
-     "description": "查发票完整对账上下文：发票 + 行明细（join expected_costs 给出基准与差异列）"
-                    "+ 所属 shipment 摘要（incoterm/delay_days/status）。发票金额字段按角色脱敏"
-                    "（与 UI 费用工作台 mask_cost 同规：finance/manager 可见，其余掩码）",
-     "input_schema": {"type": "object", "properties": {
-         "invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
-    {"name": "get_similar_resolutions",
-     "description": "C1 只读检索处置记忆：按规则类型精确匹配+同航线（origin→destination LOCODE）"
-                    "查同类风险的历史处置——同类 N 次、按方案/决定的统计、最相似 1 案详情"
-                    "（当时提案/人的决定/实际结果/质量标签）。所有数字运行时从 resolution_memory "
-                    "现算可回查；无先例如实返回首例；被屏蔽（voided）的记忆不返回",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
-    {"name": "explain_relationship_path",
-     "description": "只读查询 object_relationships：解释两个对象之间的有向关系路径",
-         "input_schema": {"type": "object", "properties": {
-             "source_type": {"type": "string"},
-             "source_id": {"type": "string"},
-             "target_type": {"type": "string"},
-             "target_id": {"type": "string"},
-             "max_depth": {"type": "integer", "minimum": 1, "maximum": 6}},
-             "required": ["source_type", "source_id", "target_type", "target_id", "max_depth"]}},
-    {"name": "assign_task",
-     "description": "为 open 状态的风险派发处置任务（A3）。这是允许 AI 执行的写动作之一",
-     "input_schema": {"type": "object", "properties": {
-         "risk_event_id": {"type": "string"}, "assignee_role": {"type": "string", "enum": ["ops", "cs"]},
-         "priority": {"type": "string", "enum": ["P1", "P2", "P3"]}, "due_at": {"type": "string"}},
-         "required": ["risk_event_id", "assignee_role", "priority", "due_at"]}},
-    {"name": "propose_mitigation",
-     "description": "对 assigned 状态的任务提交处置提案（A4），最终须人工审批。proposal-only 的体现",
-     "input_schema": {"type": "object", "properties": {
-         "task_id": {"type": "string"},
-         "proposed_action": {"type": "string", "enum": ["reschedule", "expedite", "accept_delay"]},
-         "proposal_params": {"type": "object"}},
-         "required": ["task_id", "proposed_action", "proposal_params"]}},
-    # ---- 准入准备动作 B1-B4（AdmissionCase 切片；按会话 role 经 ADM_PERMS gate，B5/B6 永不注册）----
-    {"name": "create_admission_case",
-     "description": "B1 建案（仅销售）：为 candidate SKU 建准入案。AI 准备动作之一，不做审批",
-     "input_schema": {"type": "object", "properties": {
-         "customer_id": {"type": "string"}, "sku_id": {"type": "string"},
-         "request_type": {"type": "string"}, "incoterm_candidate": {"type": "string"},
-         "target_launch_date": {"type": "string"}, "monthly_order_estimate": {"type": "integer"}},
-         "required": ["customer_id", "sku_id", "request_type", "incoterm_candidate",
-                      "target_launch_date", "monthly_order_estimate"]}},
-    {"name": "run_compliance_precheck",
-     "description": "B2 合规预审（仅合规）：提交 findings 列表，风险等级重算。AI 准备动作，不做审批",
-     "input_schema": {"type": "object", "properties": {
-         "admission_case_id": {"type": "string"},
-         "findings": {"type": "array", "items": {"type": "object"}}},
-         "required": ["admission_case_id", "findings"]}},
-    {"name": "build_logistics_plan",
-     "description": "B3 物流方案（仅运营）：建方案，DDP 门禁自动校验。AI 准备动作，不做审批",
-     "input_schema": {"type": "object", "properties": {
-         "admission_case_id": {"type": "string"}, "plan": {"type": "object"}},
-         "required": ["admission_case_id", "plan"]}},
-    {"name": "calculate_cost_scenario",
-     "description": "B4 成本情景（仅财务）：算成本与毛利。AI 准备动作，不做审批/拒接决策",
-     "input_schema": {"type": "object", "properties": {
-         "logistics_plan_id": {"type": "string"}, "scenario": {"type": "object"}},
-         "required": ["logistics_plan_id", "scenario"]}},
-]
+
+def _can_see_credit(role):
+    """Customer.credit_terms / risk_tier 脱敏规则（本体 sensitiveFieldRules 派生）：finance/manager 可见。
+    G1 治本：迁移前此二字段误用 tier gate(cs/manager)、与本体声明(finance/manager)分叉——现按本体校正
+    （行为变化：cs 失去 credit_terms/risk_tier 可见、finance 获得；与 standard_object_view/MCP masker 同口径）。"""
+    return role in _CREDIT_VISIBLE
+
+
+# ─── V21① 自队金额可见（docs/control-tower-plan-v0.2.md 决策日志 V21①，Daniel 2026-07-19 裁"1.可以"）───
+# 唯一权威源（代码层单一来源，本体 JSON 不落例外元数据）：指派给某团队的待批提案，其金额对该团队角色
+# 可见（ops 见 assignee_role=ops 行金额），驾驶舱聚合脱敏 / 对象读端点(/objects) / AI 工具面(MCP masker)
+# **三面共用此一处判定**，杜绝驾驶舱单点开洞造成口径漂移。仅涉"提案金额"（Task.proposal_params.est_cost_usd
+# 与驾驶舱待批队列 amount_usd），不放宽订单行/客户敞口等其他金额（V21① 边界，见 evidence.py）。
+def own_team_amount_visible(role, assignee_role):
+    """自队例外判定（纯函数、无副作用）：该角色是否为提案指派团队本身。
+    兜底保守（任务书 §2）：role / assignee_role 任一缺失或空 → False（照旧脱敏，宁可多掩）。"""
+    if not role or not assignee_role:
+        return False
+    return role == assignee_role
+
+
+def proposal_amount_visible(role, assignee_role):
+    """提案金额统一可见性 = 成本可见基线 ∪ 自队例外——V21① 三面同源单一口径。
+    · 基线 _can_see_cost（finance/manager）：与其余每个 _usd 字段同门（提案金额本是成本字段，
+      不再是 [ops,manager] 那条与全系统金额门分叉的特例——V21① 规则语义收敛，代码层单一来源）。
+    · 自队例外 own_team_amount_visible：ops/cs 等无成本基线的角色，只见自己被指派行、掩他队行。
+    manager 照旧全见（成本角色，V21① '其余角色与非自队行为脱敏照旧' 中的成本可见档不变）。"""
+    return _can_see_cost(role) or own_team_amount_visible(role, assignee_role)
+
+# Anthropic tool-use 格式的工具定义（任何支持 tool-use 的 LLM 均可转换使用）——桥2 M2 起
+# 从本体解释生成：aiQueryTools 节的 11 读工具 + exposed_as_tool=true 的 6 写动作（原样搬家、
+# 11 读在前 6 写在后、顺序逐一对应迁移前）。迁移前的 17 条硬编码字面量已下沉本体（顶层
+# aiQueryTools 节 + 6 动作的 tool_description/tool_input_schema）；本体成为唯一权威源，
+# 生成 == 迁移前基线的守护见 app/test_ontology_runtime.py（逐工具 name/description/input_schema 深度相等）。
+TOOL_DEFS = build_tool_defs(_ONTO)
 
 
 class AgentSession:
@@ -202,6 +190,8 @@ class AgentSession:
         # Warehouse focus（仓储对象工作台切片）：仓储 RiskEvent(R16-R18) 无 shipment/po_id，
         # 用 warehouse_id 锚点做对象 scoping（检索聚焦本仓的库存/预留/盘点及锚定风险）。
         self.focus_warehouse_id = focus_warehouse_id
+        # 波2-2c：本次 dispatch 的幂等键（runtime 恰一次通道），per-call 设置、finally 复位（同 trace 模式）。
+        self._idempotency_key = None
         self.allowed_tools = allowed_tools_for_role(role)
 
     def _rows(self, sql, *a):
@@ -398,10 +388,11 @@ class AgentSession:
         if not case:
             return {"error": f"准入案件 {admission_case_id} 不存在"}
         case = case[0]
-        # 字段脱敏随 role：credit_terms/risk_tier 仅 tier 可见角色（cs/manager）返回
-        tier_visible = _can_see_tier(self.role)
+        # 字段脱敏随 role：credit_terms/risk_tier 按本体 sensitiveFieldRules（finance/manager）返回
+        # ——G1 治本：迁移前误用 tier gate(cs/manager)、与本体声明分叉；现按本体校正（cs 失、finance 得）。
+        credit_visible = _can_see_credit(self.role)
         cust_cols = "customer_id, customer_name, business_model, ior_capability, broker_status"
-        if tier_visible:
+        if credit_visible:
             cust_cols += ", credit_terms, risk_tier"
         cust = self._rows(f"SELECT {cust_cols} FROM customers WHERE customer_id=?",
                           case["customer_id"])[0]
@@ -420,7 +411,7 @@ class AgentSession:
         return {"case": case, "customer": cust, "findings": finds, "plans": plans,
                 "cost_scenarios": scens,
                 "note": f"cost fields {'visible' if cost_visible else 'masked'} for role={self.role}; "
-                        f"credit_terms/risk_tier {'returned' if tier_visible else 'not returned'}"}
+                        f"credit_terms/risk_tier {'returned' if credit_visible else 'not returned'}"}
 
     def list_invoices(self, status=None):
         sql = """SELECT invoice_id, vendor_type, vendor_name, shipment_id, total_usd,
@@ -667,32 +658,47 @@ class AgentSession:
         }
 
     # ---------- 写动作（仅 proposal-only 白名单；role 随会话注入，动作层再校验一次） ----------
+    # 波2：七个写动作全部经 execute_command（写总线，spec §一.4 dispatch 门）——落 commands 台账 +
+    # 透传 G-Trace，再原样调既有函数。dispatch 不传 idempotency_key（AI 不去重），总线对结果透明。
+    def _bus(self, action, params, action_func):
+        # 波2-2c：透传本次 dispatch 的幂等键（runtime 写步骤传 run:{run_id}:{step_no}，崩溃后 resume
+        # 重放同键拿首次结果=恰一次；其余调用方不传 → None → 现状不变，AI 仍不去重）。
+        return execute_command(self.con, action=action, params=params, actor=AI_ACTOR,
+                               role=self.role, as_of=self.as_of, action_func=action_func,
+                               idempotency_key=self._idempotency_key)
+
     def _assign_task(self, risk_event_id, assignee_role, priority, due_at):
-        return assign_task(self.con, risk_event_id, assignee_role, priority, due_at,
-                           actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("AssignTask", {"risk_event_id": risk_event_id,
+                         "assignee_role": assignee_role, "priority": priority, "due_at": due_at},
+                         assign_task)
 
     def _propose_mitigation(self, task_id, proposed_action, proposal_params):
-        return propose_mitigation(self.con, task_id, proposed_action, proposal_params,
-                                  actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("ProposeMitigation", {"task_id": task_id, "proposed_action": proposed_action,
+                         "proposal_params": proposal_params}, propose_mitigation)
+
+    def _propose_collection(self, payment_id, note=None):
+        return self._bus("ProposeCollection", {"payment_id": payment_id, "note": note},
+                         propose_collection)
 
     # 准入准备动作 B1-B4：role 随会话注入，动作层 ADM_PERMS + 门禁再校验一次（双闸）。
     def _create_admission_case(self, customer_id, sku_id, request_type, incoterm_candidate,
                                target_launch_date, monthly_order_estimate):
-        return create_admission_case(self.con, customer_id, sku_id, request_type, incoterm_candidate,
-                                     target_launch_date, monthly_order_estimate,
-                                     actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("CreateAdmissionCase", {"customer_id": customer_id, "sku_id": sku_id,
+                         "request_type": request_type, "incoterm_candidate": incoterm_candidate,
+                         "target_launch_date": target_launch_date,
+                         "monthly_order_estimate": monthly_order_estimate}, create_admission_case)
 
     def _run_compliance_precheck(self, admission_case_id, findings):
-        return run_compliance_precheck(self.con, admission_case_id, findings,
-                                       actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("RunCompliancePrecheck", {"admission_case_id": admission_case_id,
+                         "findings": findings}, run_compliance_precheck)
 
     def _build_logistics_plan(self, admission_case_id, plan):
-        return build_logistics_plan(self.con, admission_case_id, plan,
-                                    actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("BuildLogisticsPlan", {"admission_case_id": admission_case_id,
+                         "plan": plan}, build_logistics_plan)
 
     def _calculate_cost_scenario(self, logistics_plan_id, scenario):
-        return calculate_cost_scenario(self.con, logistics_plan_id, scenario,
-                                       actor=AI_ACTOR, role=self.role, as_of=self.as_of)
+        return self._bus("CalculateCostScenario", {"logistics_plan_id": logistics_plan_id,
+                         "scenario": scenario}, calculate_cost_scenario)
 
     def _audit_denied(self, tool_name, args, result):
         """把一次被拒的调用写入 action_log（越权/越域一律留痕，AI 没有静默后门）。"""
@@ -704,7 +710,22 @@ class AgentSession:
         self.con.commit()
 
     # ---------- 统一调度 ----------
-    def dispatch(self, tool_name, args):
+    def dispatch(self, tool_name, args, trace_id=None, idempotency_key=None):
+        # G-Trace：AI 触发的写动作（含被拒的越权写）在本次 dispatch 期间把 trace_id 透传给 app.actions._log，
+        #   使 action_log 该行 trace_id == 触发它的 LLM 调用 trace_id（血缘可拼）。trace_id=None（人工/测试
+        #   直调 dispatch 不传）时不设置上下文 → _log 写 NULL。finally 复位防跨调用泄漏。
+        # 波2-2c idempotency_key：runtime 写步骤经此透传总线（run:{run_id}:{step_no}，恰一次）；
+        #   缺省 None = 既有调用方语义一字不变（不去重）。finally 复位防跨调用泄漏（同 trace 模式）。
+        token = set_action_trace_id(trace_id) if trace_id is not None else None
+        self._idempotency_key = idempotency_key
+        try:
+            return self._dispatch(tool_name, args)
+        finally:
+            self._idempotency_key = None
+            if token is not None:
+                reset_action_trace_id(token)
+
+    def _dispatch(self, tool_name, args):
         # 原则2：审批/关闭类对任何 role 永不开放——最先拦截并审计（诱导越权 → 拒绝 + 留痕）
         if tool_name in FORBIDDEN_TOOLS:
             self._audit_denied(tool_name, args,
@@ -724,6 +745,7 @@ class AgentSession:
                     "explain_relationship_path": self.explain_relationship_path,
                     "assign_task": self._assign_task,
                     "propose_mitigation": self._propose_mitigation,
+                    "propose_collection": self._propose_collection,
                     "create_admission_case": self._create_admission_case,
                     "run_compliance_precheck": self._run_compliance_precheck,
                     "build_logistics_plan": self._build_logistics_plan,

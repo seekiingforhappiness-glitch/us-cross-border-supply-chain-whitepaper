@@ -135,8 +135,8 @@ def main():
     check("③ 未知类型 → unknown", sov.route_object("Nonexistent") == "unknown")
     check("③ OBJECT_REGISTRY 不含六核心（只覆盖非核心）",
           not (sov.RICH_OBJECT_TYPES & set(sov.OBJECT_REGISTRY)))
-    check("③ OBJECT_REGISTRY 覆盖 28 个非核心类型（CL1 新增 CoordinationThread：27→28）",
-          len(sov.OBJECT_REGISTRY) == 28, str(len(sov.OBJECT_REGISTRY)))
+    check("③ OBJECT_REGISTRY 覆盖 29 个非核心类型（F1 新增 Payment：28→29）",
+          len(sov.OBJECT_REGISTRY) == 29, str(len(sov.OBJECT_REGISTRY)))
     # OBJECT_REGISTRY 值形如 (表名, 主键列, 关键展示字段)
     tbl, pkc, kf = sov.OBJECT_REGISTRY["Shipment"]
     check("③ OBJECT_REGISTRY[Shipment] = (shipments, shipment_id, 非空关键字段)",

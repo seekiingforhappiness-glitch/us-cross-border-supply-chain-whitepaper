@@ -1,0 +1,3320 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   驾驶舱首屏 · 设计系统（V8-③ 二稿画面级实现）
+   主题：跨境履约控制塔 / 港务夜值台。语义化多色状态盘（每个颜色都有含义），
+   仪表级等宽数字，高信息密度。风格锚：拒绝华而不实，重点突出 + 真实动态（V4①）。
+   智能感仅三处（AI 动线呼吸 / 异常红光脉动 / 影响走廊点亮），其余零动效数字说话。
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* —— 底色：深板岩海军蓝，非纯黑（控制塔夜值台，不走"纯黑 + 单一荧光"套路）—— */
+  --bg-0: #0b1220; /* 页面底 */
+  --bg-1: #0f1826; /* 面板 */
+  --bg-2: #131f30; /* 抬升块 */
+  --bg-3: #18293d; /* 悬停/选中抬升 */
+  --line: #1e2c40; /* 发丝分隔线 */
+  --line-strong: #2a3c56;
+
+  /* —— 墨色阶 —— */
+  --ink-0: #e6edf5; /* 主文字 */
+  --ink-1: #9fb0c6; /* 次要 */
+  --ink-2: #64768e; /* 弱化/caption */
+  --ink-3: #3d4c62; /* 极弱/占位 */
+
+  /* —— 语义状态盘（每色一义：真实业务信号，非装饰）—— */
+  --sev-red: #ff5c6b; /* 击穿/违约（红光脉动） */
+  --sev-red-dim: #7a2a34;
+  --sev-amber: #f5a623; /* 需关注/延误 */
+  --sev-amber-dim: #6e5019;
+  --sev-green: #3dd68c; /* 准时/清空 */
+  --sev-green-dim: #1f5e42;
+  --beacon: #5b9df9; /* AI / 系统 / 选中焦点（信标蓝） */
+  --beacon-dim: #294872;
+  --gold: #e8b23a; /* 钱区专属 */
+
+  /* —— 字族：等宽数字给仪表感，CJK 系统字给标签 —— */
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-num: ui-monospace, "SF Mono", "JetBrains Mono", "Roboto Mono", Menlo, Consolas, monospace;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+  --stage-split: 60%; /* 中央全景 60% / 右栏 40% */
+
+  /* —— 等距组块三面色（顶亮/右中/左暗，微渐变=立体）：每态一组，语义色不变 —— */
+  --blk-ok-top: #45617f;
+  --blk-ok-right: #33506d;
+  --blk-ok-left: #223b52;
+  --blk-busy-top: #5f9bf2;
+  --blk-busy-right: #3f74c8;
+  --blk-busy-left: #2b5495;
+  --blk-amber-top: #f7b74d;
+  --blk-amber-right: #cf8a24;
+  --blk-amber-left: #9a6414;
+  --blk-red-top: #ff7079;
+  --blk-red-right: #d84450;
+  --blk-red-left: #a52b37;
+
+  /* —— 辉光层次（核心亮 + 外晕）—— */
+  --glow-red: 0 0 10px rgba(255, 92, 107, 0.55), 0 0 22px rgba(255, 92, 107, 0.3);
+  --glow-amber: 0 0 9px rgba(245, 166, 35, 0.5), 0 0 20px rgba(245, 166, 35, 0.26);
+  --glow-beacon: 0 0 10px rgba(91, 157, 249, 0.5), 0 0 22px rgba(91, 157, 249, 0.28);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--ink-0);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 等宽数字统一开 tabular-nums，读数列对齐 */
+.num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ═══════════════════════════ 整屏布局 ═══════════════════════════ */
+.cockpit {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cp-degrade {
+  background: var(--sev-amber-dim);
+  color: #ffd98a;
+  padding: 6px 16px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ═══════════════════════════ 顶栏：世界徽标 + 世界时钟 + 角色切换 ═══════════════════════════ */
+.cp-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  height: 46px;
+  background: linear-gradient(180deg, var(--bg-1), var(--bg-0));
+  border-bottom: 1px solid var(--line);
+}
+
+.cp-topbar__brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-size: 13px;
+  color: var(--ink-0);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cp-topbar__brand::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--beacon);
+  box-shadow: 0 0 8px var(--beacon);
+}
+
+.cp-world {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--line-strong);
+}
+.cp-world::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.cp-world--verification {
+  color: var(--sev-green);
+  background: color-mix(in srgb, var(--sev-green) 12%, transparent);
+}
+.cp-world--simulation {
+  color: var(--beacon);
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+}
+
+.cp-clock {
+  color: var(--ink-1);
+  font-size: 12px;
+}
+.cp-clock b {
+  color: var(--ink-0);
+  font-weight: 600;
+}
+
+.cp-topbar__spacer {
+  flex: 1;
+}
+
+.cp-roles {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.cp-role-btn {
+  background: transparent;
+  color: var(--ink-1);
+  border: 0;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.cp-role-btn + .cp-role-btn {
+  border-left: 1px solid var(--line-strong);
+}
+.cp-role-btn:hover {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}
+.cp-role-btn.is-active {
+  background: var(--beacon);
+  color: #04101f;
+  font-weight: 600;
+}
+.cp-role-hint {
+  color: var(--ink-2);
+  font-size: 11px;
+  margin-left: 2px;
+}
+
+/* cp-trend：原公司体征带（cp-vitals/cp-vital 系列）V10 已退役下线，趋势箭头样式被
+   七区指挥墙 cp-wall-card 复用，故单独保留（不随体征带一并删除）。 */
+.cp-trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-num);
+}
+.cp-trend--up {
+  color: var(--sev-green);
+}
+.cp-trend--down {
+  color: var(--sev-red);
+}
+.cp-trend--flat {
+  color: var(--ink-2);
+}
+.cp-trend--none {
+  color: var(--ink-3);
+}
+
+/* ═══════════════════════════ 主舞台：全景（左）+ AI 工作流（右） ═══════════════════════════ */
+.cp-stage {
+  display: grid;
+  grid-template-columns: var(--stage-split) 1fr;
+  min-height: 0;
+  overflow: hidden;
+}
+.cp-center {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+.cp-side {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+}
+
+/* 通用面板头 */
+.cp-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  min-height: 38px;
+}
+.cp-panel-head__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-0);
+  letter-spacing: 0.02em;
+}
+.cp-panel-head__meta {
+  color: var(--ink-2);
+  font-size: 11px;
+}
+.cp-panel-head__spacer {
+  flex: 1;
+}
+
+/* ═══════════════════════════ 中央区详情（点体征块切入） ═══════════════════════════ */
+.cp-zone {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-card {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 13px;
+}
+.cp-card--wide {
+  grid-column: 1 / -1;
+}
+.cp-card__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-1);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cp-metric-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+.cp-metric-row + .cp-metric-row {
+  border-top: 1px solid var(--line);
+}
+.cp-metric-row__label {
+  color: var(--ink-1);
+  font-size: 12px;
+}
+.cp-metric-row__value {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-0);
+}
+.cp-metric-row__value.pos {
+  color: var(--sev-green);
+}
+.cp-metric-row__value.neg {
+  color: var(--sev-red);
+}
+.cp-metric-big {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--ink-0);
+  line-height: 1.1;
+}
+.cp-metric-big.gold {
+  color: var(--gold);
+}
+.cp-metric-big.neg {
+  /* G2：现金水位预警击穿态（净流出 > 阈值）——沿用告警红，不新增色板 */
+  color: var(--sev-red);
+}
+
+/* 缺数/掩码：如实标注，绝不空白冒充 */
+.cp-missing {
+  color: var(--ink-2);
+  font-size: 11.5px;
+  background: color-mix(in srgb, var(--sev-amber) 8%, var(--bg-2));
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  line-height: 1.4;
+}
+.cp-missing b {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+.cp-masked {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+/* 简表 */
+.cp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.cp-table th {
+  text-align: left;
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 8px 6px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.cp-table td {
+  padding: 5px 8px 5px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-0);
+}
+.cp-table td.num,
+.cp-table th.num {
+  text-align: right;
+  padding-right: 0;
+}
+.cp-table tr:last-child td {
+  border-bottom: 0;
+}
+.cp-table .name {
+  color: var(--ink-1);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 分桶条（延误直方图 / 毛利分布 / 健康度） */
+.cp-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.cp-bar {
+  display: grid;
+  grid-template-columns: 68px 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.cp-bar__label {
+  color: var(--ink-1);
+  white-space: nowrap;
+}
+.cp-bar__track {
+  height: 8px;
+  background: var(--bg-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.cp-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--beacon);
+}
+.cp-bar__fill.amber {
+  background: var(--sev-amber);
+}
+.cp-bar__fill.red {
+  background: var(--sev-red);
+}
+.cp-bar__fill.green {
+  background: var(--sev-green);
+}
+.cp-bar__fill.gold {
+  background: var(--gold);
+}
+.cp-bar__num {
+  text-align: right;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-0);
+}
+
+.cp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-1);
+  font-family: var(--font-num);
+}
+.cp-chip.red {
+  color: var(--sev-red);
+  border-color: var(--sev-red-dim);
+  background: color-mix(in srgb, var(--sev-red) 10%, transparent);
+}
+.cp-chip.amber {
+  color: var(--sev-amber);
+  border-color: var(--sev-amber-dim);
+  background: color-mix(in srgb, var(--sev-amber) 10%, transparent);
+}
+.cp-basis {
+  color: var(--ink-2);
+  font-size: 10.5px;
+  margin-top: 8px;
+  line-height: 1.4;
+}
+
+/* ═══════════════════════════ AI 工作流 / 协作流 ═══════════════════════════ */
+.cp-flow {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.cp-flow__tabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.cp-flow__tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  color: var(--ink-2);
+  padding: 6px 13px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  font-family: var(--font-ui);
+}
+.cp-flow__tab:hover {
+  color: var(--ink-1);
+}
+.cp-flow__tab.is-active {
+  color: var(--ink-0);
+  background: var(--bg-2);
+  border-color: var(--line);
+  font-weight: 600;
+}
+.cp-flow__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* @keyframes slidein / breathe：原 cp-flow-card（事件日志卡）已被 cp-story（V10 用户故事卡）
+   取代，但两组 keyframes 与 cp-flow-card__sim 徽标仍被 cp-story 系列复用，故保留。 */
+@keyframes slidein {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--beacon) 22%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 10px 1px color-mix(in srgb, var(--beacon) 34%, transparent);
+  }
+}
+.cp-flow-card__sim {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--beacon);
+  border: 1px solid var(--beacon-dim);
+  border-radius: 3px;
+  padding: 0 4px;
+  letter-spacing: 0.05em;
+}
+.cp-flow__empty {
+  color: var(--ink-2);
+  font-size: 12px;
+  padding: 20px 4px;
+  text-align: center;
+}
+
+/* ── AI 工作流「用户故事卡」（V10 补记：一事一卡 + 人话主句 + 展开时间线）── */
+.cp-story {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 2%, var(--bg-1)), var(--bg-1));
+  padding: 9px 11px 8px;
+  animation: slidein 0.35s ease;
+}
+.cp-story.is-latest {
+  border-left-color: var(--beacon);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--beacon) 30%, transparent);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+.cp-story__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.cp-story__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--beacon-dim);
+  color: #cfe2ff;
+}
+.cp-story__state[data-kind="detect"] {
+  background: var(--beacon-dim);
+  color: #cfe2ff;
+}
+.cp-story__state[data-kind="propose"],
+.cp-story__state[data-kind="task_flow"] {
+  background: var(--sev-amber-dim);
+  color: #ffdfa3;
+}
+.cp-story__state[data-kind="approve"],
+.cp-story__state[data-kind="close"] {
+  background: var(--sev-green-dim);
+  color: #a7f0c9;
+}
+.cp-story__state[data-kind="reject"] {
+  background: var(--sev-red-dim);
+  color: #ffc3c9;
+}
+.cp-story__time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.cp-story__line {
+  font-size: 12.5px;
+  color: var(--ink-0);
+  line-height: 1.5;
+}
+.cp-story__amount {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 13.5px;
+  margin: 0 1px;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--gold) 26%, transparent);
+}
+.cp-story__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 8px;
+}
+.cp-story__detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--beacon);
+}
+.cp-story__detail:hover {
+  text-decoration: underline;
+}
+.cp-story__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--ink-1);
+}
+.cp-story__toggle:hover {
+  color: var(--ink-0);
+  background: var(--bg-3);
+}
+.cp-story__toggle svg {
+  transition: transform 0.15s;
+}
+.cp-story__toggle.is-open svg {
+  transform: rotate(90deg);
+}
+/* 展开时间线（原始事件序列保留） */
+.cp-story__timeline {
+  list-style: none;
+  margin: 9px 0 2px;
+  padding: 9px 0 2px 2px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.cp-tl {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  gap: 8px;
+  position: relative;
+}
+.cp-tl:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 20px;
+  bottom: -9px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.cp-tl__dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--beacon-dim);
+  color: #cfe2ff;
+  z-index: 1;
+}
+.cp-tl__dot[data-kind="approve"],
+.cp-tl__dot[data-kind="close"] {
+  background: var(--sev-green-dim);
+  color: #a7f0c9;
+}
+.cp-tl__dot[data-kind="propose"] {
+  background: var(--sev-amber-dim);
+  color: #ffdfa3;
+}
+.cp-tl__dot[data-kind="reject"] {
+  background: var(--sev-red-dim);
+  color: #ffc3c9;
+}
+.cp-tl__body {
+  min-width: 0;
+}
+.cp-tl__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cp-tl__kind {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-1);
+}
+.cp-tl__time {
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+.cp-tl__text {
+  font-size: 11.5px;
+  color: var(--ink-1);
+  line-height: 1.45;
+  margin-top: 1px;
+}
+.cp-tl__ref {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: var(--beacon);
+  cursor: pointer;
+}
+.cp-tl__ref:hover {
+  text-decoration: underline;
+}
+
+/* 协作流预留态 */
+.cp-collab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 30px 24px;
+  text-align: center;
+  color: var(--ink-2);
+}
+.cp-collab__icons {
+  font-size: 26px;
+  letter-spacing: 6px;
+  filter: grayscale(0.4);
+  opacity: 0.8;
+}
+.cp-collab__title {
+  color: var(--ink-1);
+  font-size: 13px;
+  font-weight: 600;
+}
+.cp-collab__body {
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 300px;
+}
+.cp-collab__tag {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--beacon);
+  border: 1px dashed var(--beacon-dim);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+
+/* ═══════════════════════════ 对象卡抽屉（第二层） ═══════════════════════════ */
+.cp-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, #000 46%, transparent);
+  z-index: 40;
+  animation: fade 0.15s ease;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.cp-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 440px;
+  max-width: 92vw;
+  background: var(--bg-1);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.4);
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  animation: slidein-right 0.2s ease;
+}
+@keyframes slidein-right {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.cp-drawer__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.cp-drawer__type {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--beacon);
+  font-weight: 700;
+}
+.cp-drawer__id {
+  font-family: var(--font-num);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-0);
+}
+.cp-drawer__close {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-1);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+.cp-drawer__close:hover {
+  color: var(--ink-0);
+  background: var(--bg-3);
+}
+.cp-drawer__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 24px;
+}
+.cp-drawer__section-title {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  font-weight: 600;
+  margin: 14px 0 8px;
+}
+.cp-drawer__section-title:first-child {
+  margin-top: 0;
+}
+.cp-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.cp-field {
+  display: grid;
+  grid-template-columns: 148px 1fr;
+  gap: 10px;
+  background: var(--bg-1);
+  padding: 5px 10px;
+}
+.cp-field__k {
+  color: var(--ink-2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cp-field__v {
+  font-family: var(--font-num);
+  font-size: 11.5px;
+  color: var(--ink-0);
+  word-break: break-word;
+}
+.cp-field__v.null {
+  color: var(--ink-3);
+}
+.cp-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cp-link-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  transition: background 0.12s;
+}
+.cp-link-btn:hover {
+  background: var(--bg-3);
+  color: var(--ink-0);
+}
+.cp-link-btn__type {
+  font-family: var(--font-num);
+  color: var(--beacon);
+}
+.cp-link-btn__dir {
+  margin-left: auto;
+  color: var(--ink-2);
+  font-size: 10px;
+}
+.cp-neighbors {
+  margin: 4px 0 8px 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--beacon-dim);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.cp-neighbor {
+  font-family: var(--font-num);
+  font-size: 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+  color: var(--ink-1);
+  cursor: pointer;
+}
+.cp-neighbor:hover {
+  color: var(--beacon);
+  border-color: var(--beacon-dim);
+}
+.cp-neighbor.is-plain {
+  cursor: default;
+}
+.cp-neighbor.is-plain:hover {
+  color: var(--ink-1);
+  border-color: var(--line-strong);
+}
+
+.cp-inline-load {
+  color: var(--ink-2);
+  font-size: 11px;
+  padding: 4px 0;
+}
+
+/* 数据质量提示徽标（V12：_validation_warnings 原始 JSON 改折叠人话呈现，默认折叠）。
+   配色/折叠交互复用既有 .cp-chip.amber + .cp-story__toggle 的图案，不新增 token。 */
+.cp-dq {
+  margin-bottom: 14px;
+}
+.cp-dq__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: color-mix(in srgb, var(--sev-amber) 10%, transparent);
+  border: 1px solid var(--sev-amber-dim);
+  border-radius: 999px;
+  padding: 3px 10px 3px 9px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--sev-amber);
+}
+.cp-dq__toggle:hover {
+  background: color-mix(in srgb, var(--sev-amber) 18%, transparent);
+}
+.cp-dq__chev {
+  transition: transform 0.15s;
+}
+.cp-dq__toggle.is-open .cp-dq__chev {
+  transform: rotate(90deg);
+}
+.cp-dq__list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--sev-amber) 6%, var(--bg-2));
+  border: 1px dashed var(--sev-amber-dim);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cp-dq__list li {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-1);
+}
+
+/* ═══════════════════════════ 空/错误态 ═══════════════════════════ */
+.cp-fill-msg {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2);
+  font-size: 13px;
+  padding: 30px;
+  text-align: center;
+}
+
+/* ═══════════════════════════ 影响分析面板（右栏，替代实体线爆炸） ═══════════════════════════ */
+.cp-impact {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  animation: slidein-right 0.2s ease;
+}
+.cp-impact__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px 9px 14px;
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--beacon);
+  position: relative;
+}
+.cp-impact__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--beacon);
+  font-weight: 700;
+}
+.cp-impact__title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.cp-impact__layer {
+  font-size: 10px;
+  color: var(--ink-2);
+  letter-spacing: 0.06em;
+}
+.cp-impact__name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink-0);
+  font-family: var(--font-num);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 提案头部风险编号（P2 防混淆）：同船多险靠它区分；可点开风险对象卡。 */
+.cp-impact__riskno {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  margin-top: 1px;
+}
+.cp-impact__riskno:hover {
+  color: var(--ink-0);
+  text-decoration: underline;
+}
+.cp-impact__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 12px 20px;
+}
+.cp-impact__sect {
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+.cp-impact__sect:last-child {
+  border-bottom: 0;
+}
+.cp-impact__sect-t {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.cp-impact__agg {
+  margin-left: auto;
+  font-size: 11px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-1);
+  font-family: var(--font-num);
+}
+.cp-impact__agg .gold {
+  color: var(--gold);
+  font-weight: 600;
+}
+.cp-impact__ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--sev-green);
+  font-size: 13px;
+  font-weight: 600;
+}
+.cp-impact__risks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 10px 0 2px;
+}
+.cp-riskchip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 3px 7px;
+  font-size: 11px;
+  font-family: var(--font-num);
+  color: var(--ink-1);
+  cursor: pointer;
+}
+.cp-riskchip.is-active {
+  border-color: var(--beacon);
+  color: var(--ink-0);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--beacon) 40%, transparent);
+}
+.cp-impact__risk {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--line);
+  border-top-color: color-mix(in srgb, #fff 6%, var(--line));
+  border-radius: var(--radius);
+  padding: 10px 11px;
+}
+.cp-impact__risk-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+.cp-impact__rule {
+  color: var(--ink-0);
+  font-weight: 700;
+  font-size: 12px;
+}
+.cp-impact__rule-cn {
+  color: var(--ink-1);
+  font-size: 12px;
+}
+.cp-impact__risk-id {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--beacon);
+  cursor: pointer;
+}
+.cp-impact__risk-id:hover {
+  text-decoration: underline;
+}
+.cp-impact__cause {
+  color: var(--ink-0);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.cp-impact__meta {
+  color: var(--ink-2);
+  font-size: 11px;
+}
+.cp-impact__members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.cp-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--ink-1);
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.cp-member:hover {
+  color: var(--beacon);
+  border-color: var(--beacon-dim);
+}
+.cp-member.is-plain {
+  cursor: default;
+  color: var(--ink-2);
+}
+.cp-member.is-plain:hover {
+  color: var(--ink-2);
+  border-color: var(--line-strong);
+}
+.cp-member__note {
+  color: var(--ink-3);
+  font-size: 10px;
+}
+/* 紧凑表（影响面板明细）+ 可点行 + 严重度左缘 */
+.cp-table--tight th {
+  font-size: 9.5px;
+  padding: 2px 6px 4px 0;
+}
+.cp-table--tight td {
+  padding: 4px 6px 4px 0;
+  font-size: 11.5px;
+}
+.cp-table--tight th + th,
+.cp-table--tight td + td {
+  padding-left: 12px;
+}
+.cp-table tr.is-click {
+  cursor: pointer;
+}
+.cp-table tr.is-click:hover td {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}
+/* a11y（P1，L-UX 轮2）：可点行 hover 加左侧强调条，让可点/不可点行视觉可区分（原先只变背景色，
+   不可点行悬停时容易被误读成也能点）；键盘 focus 走独立 :focus-visible 规则，比全局 outline 更贴合表格行。 */
+.cp-table tr.is-click:hover td:first-child {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--beacon) 55%, transparent);
+}
+.cp-table tr.is-click:focus-visible {
+  outline: 2px solid var(--beacon);
+  outline-offset: -2px;
+}
+.cp-table tr.is-click:focus-visible td {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}
+/* 工具类 */
+.gold {
+  color: var(--gold);
+}
+.cp-masked--row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* tab / 协作图标对齐（cp-flow-card__kind 徽标随退役的 cp-flow-card 一并清理） */
+.cp-flow__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.cp-collab__icons {
+  display: inline-flex;
+  gap: 14px;
+  color: var(--ink-2);
+}
+
+/* 卡片玻璃仪表微高光（命令中心质感） */
+.cp-card {
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 2%, var(--bg-1)), var(--bg-1));
+  border-top-color: color-mix(in srgb, #fff 6%, var(--line));
+}
+
+/* ═══════════════════════════ 七区指挥墙（V10 方案 C · 体征带放大态） ═══════════════════════════ */
+.cp-wall-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-wall {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(236px, 1fr));
+  gap: 12px;
+  padding: 14px;
+  align-content: start;
+}
+.cp-wall-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 3%, var(--bg-1)), var(--bg-1));
+  border: 1px solid var(--line);
+  border-top-color: color-mix(in srgb, #fff 7%, var(--line));
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 13px 14px 14px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  color: var(--ink-0);
+  min-height: 172px;
+  transition: background 0.14s, transform 0.14s, border-color 0.14s;
+}
+.cp-wall-card:hover {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  transform: translateY(-2px);
+  border-left-color: var(--beacon);
+}
+.cp-wall-card.is-nodata {
+  filter: saturate(0.55);
+  opacity: 0.86;
+}
+/* 有告警卡：左缘红/琥珀 + 辉光呼吸 */
+.cp-wall-card.is-alerted {
+  border-left-color: var(--sev-amber);
+  animation: wallpulse 2.6s ease-in-out infinite;
+}
+@keyframes wallpulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev-amber) 16%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 12px 1px color-mix(in srgb, var(--sev-amber) 30%, transparent);
+  }
+}
+.cp-wall-card__alert {
+  position: absolute;
+  top: 10px;
+  right: 11px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--sev-red);
+  color: #1a0508;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-num);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sev-red) 22%, transparent);
+}
+.cp-wall-card__alert.is-amber {
+  background: var(--sev-amber);
+  color: #1c1200;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sev-amber) 22%, transparent);
+}
+.cp-wall-card__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-1);
+  margin-bottom: 9px;
+}
+.cp-wall-card__icon {
+  display: inline-flex;
+  line-height: 0;
+  color: var(--ink-1);
+}
+.cp-wall-card--money .cp-wall-card__icon {
+  color: var(--gold);
+}
+.cp-wall-card--ai .cp-wall-card__icon {
+  color: var(--beacon);
+}
+.cp-wall-card__name {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cp-wall-card__headline {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.cp-wall-card__big {
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  color: var(--ink-0);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.15;
+}
+.cp-wall-card--money .cp-wall-card__big:not(.is-missing):not(.is-masked) {
+  color: var(--gold);
+  text-shadow: 0 0 16px color-mix(in srgb, var(--gold) 20%, transparent);
+}
+.cp-wall-card__big.is-missing,
+.cp-wall-card__big.is-masked {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-2);
+  letter-spacing: 0;
+}
+.cp-wall-card__hllabel {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  margin-top: 2px;
+  letter-spacing: 0.02em;
+}
+/* 待拍板卡"其中超时/升级 N"消歧行（P2）：大数字下一行小灰字，语义色沿用琥珀（告警但非红警）。 */
+.cp-wall-card__subnote {
+  font-size: 10.5px;
+  color: var(--sev-amber);
+  margin-top: 3px;
+  letter-spacing: 0.02em;
+}
+.cp-wall-card__sum {
+  margin-top: 11px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cp-wall__sumrow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+}
+.cp-wall__sumk {
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.cp-wall__sumv {
+  color: var(--ink-0);
+  text-align: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cp-wall__sumv.gold {
+  color: var(--gold);
+}
+.cp-wall__sumv.pos {
+  color: var(--sev-green);
+}
+.cp-wall__sumv.neg {
+  color: var(--sev-amber);
+}
+.cp-wall__sumv.is-missing,
+.cp-wall__sumv.is-masked {
+  color: var(--ink-3);
+}
+/* 履约卡显眼「航线视图」切换钮（SAP 教训：切换钮必须显眼） */
+.cp-wall-card__switch {
+  margin-top: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid var(--beacon-dim);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+  color: var(--beacon);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background 0.12s, border-color 0.12s;
+}
+.cp-wall-card__switch:hover {
+  background: color-mix(in srgb, var(--beacon) 22%, transparent);
+  border-color: var(--beacon);
+}
+
+/* ═══════════════════════════ 面包屑 / 队列 / 上下文（下钻） ═══════════════════════════ */
+.cp-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.cp-crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.cp-crumb {
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+}
+.cp-crumb.is-link {
+  color: var(--beacon);
+  cursor: pointer;
+}
+.cp-crumb.is-link:hover {
+  background: var(--bg-2);
+  text-decoration: underline;
+}
+.cp-crumb.is-current {
+  color: var(--ink-0);
+  font-weight: 600;
+}
+.cp-crumb__sep {
+  color: var(--ink-3);
+}
+.cp-zone__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.cp-queue {
+  padding: 12px 14px 6px;
+}
+.cp-queue__table th:first-child,
+.cp-queue__table td.cp-queue__badge {
+  width: 46px;
+  padding-right: 8px;
+}
+.cp-queue__table th:last-child,
+.cp-queue__table td.cp-queue__go {
+  width: 22px;
+  text-align: right;
+}
+.cp-queue__go {
+  color: var(--ink-3);
+}
+.cp-table tr.is-active td {
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+}
+.cp-table tr.is-active td:first-child {
+  box-shadow: inset 2px 0 0 var(--beacon);
+}
+.cp-table td.neg {
+  color: var(--sev-red);
+}
+.cp-table td.pos {
+  color: var(--sev-green);
+}
+.cp-table td.gold {
+  color: var(--gold);
+}
+.cp-table td .cp-chip {
+  white-space: nowrap;
+}
+.cp-queue__empty {
+  margin: 14px;
+  padding: 12px 14px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-1);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+.cp-zone__context {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.cp-context-grid {
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+/* 头部动作钮：航线视图（区队列内）/ 返回指挥墙（走廊/航线队列） */
+.cp-switch-btn,
+.cp-return {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+  border: 1px solid var(--beacon-dim);
+  color: var(--beacon);
+  border-radius: var(--radius-sm);
+  padding: 4px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cp-switch-btn:hover,
+.cp-return:hover {
+  background: color-mix(in srgb, var(--beacon) 22%, transparent);
+}
+.cp-return__ic {
+  transform: rotate(180deg);
+}
+
+/* ═══════════════════════════ 动作区占位（影响面板底部） ═══════════════════════════ */
+.cp-action {
+  margin: 14px 0 0;
+  padding: 11px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--beacon) 5%, var(--bg-2));
+}
+.cp-action__t {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-1);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.cp-action__hint {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 7px;
+}
+.cp-action__hint-k {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--beacon);
+  font-weight: 700;
+  flex: none;
+}
+.cp-action__hint-v {
+  font-size: 12px;
+  color: var(--ink-0);
+  font-family: var(--font-num);
+}
+.cp-action__note {
+  font-size: 11px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+/* A-1（V13①）待拍板动作按钮：批准/驳回搬回驾驶舱。沿用既有语义色盘（绿=批准、红=驳回），
+   等距组块观感，无新依赖。灰态=无权（非经理）或提交中。 */
+.cp-decide {
+  margin: 2px 0 9px;
+}
+.cp-decide__row {
+  display: flex;
+  gap: 8px;
+}
+.cp-decide-btn {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-3);
+  color: var(--ink-0);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.cp-decide-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.cp-decide-btn--approve:not(:disabled) {
+  border-color: var(--sev-green-dim);
+  color: var(--sev-green);
+}
+.cp-decide-btn--approve:not(:disabled):hover {
+  background: color-mix(in srgb, var(--sev-green) 15%, var(--bg-3));
+  border-color: var(--sev-green);
+}
+.cp-decide-btn--reject:not(:disabled) {
+  border-color: var(--sev-red-dim);
+  color: var(--sev-red);
+}
+.cp-decide-btn--reject:not(:disabled):hover {
+  background: color-mix(in srgb, var(--sev-red) 15%, var(--bg-3));
+  border-color: var(--sev-red);
+}
+.cp-decide__hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.cp-decide__err {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--sev-red);
+  line-height: 1.5;
+}
+.cp-decide__basis {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+/* 灰态里的内联「切到老板/运营角色」小钮（欠账修复：角色钮太远——不必回顶栏，就地切、保留下钻上下文）。
+   低调 link 态，避免与真正的批准/驳回按钮抢视觉；hover 才提亮。 */
+.cp-role-switch {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-1);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cp-role-switch:hover {
+  background: var(--bg-3);
+  border-color: var(--accent, var(--line-strong));
+  color: var(--ink-0);
+}
+
+/* B-1（V18）关闭风险 / 准入决策的表单元件（结果选择/处理小结/审批理由等）——复用 .cp-decide
+   视觉语境，新增 select/textarea 两种输入控件，配色对齐既有 --bg-3/--line-strong/--ink-* 暗色
+   主题变量，不引入新色板。 */
+.cp-decide--form {
+  display: flex;
+  flex-direction: column;
+}
+.cp-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.cp-form-row__k {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+.cp-form-select,
+.cp-form-textarea {
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-0);
+  font-size: 12px;
+  font-family: var(--font-ui);
+  padding: 6px 8px;
+}
+.cp-form-textarea {
+  resize: vertical;
+  min-height: 44px;
+  line-height: 1.45;
+}
+.cp-form-select:focus,
+.cp-form-textarea:focus {
+  outline: none;
+  border-color: var(--beacon);
+}
+.cp-form-select:disabled,
+.cp-form-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════ 履约航线夜景地图（SVG 手绘零依赖） ═══════════════════════════ */
+.cp-map-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 深海夜底：地图带正后方柔光衬托（聚焦） + 顶部极光 + 纵向海面渐变（经纬网格由 SVG 地理经纬线担当） */
+.cp-map {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background-color: #060c16;
+  background-image: radial-gradient(96% 78% at 58% 44%, #0f2136 0%, transparent 60%),
+    radial-gradient(80% 55% at 62% -16%, #12263f 0%, transparent 58%),
+    linear-gradient(180deg, #070e1a 0%, #05090f 100%);
+}
+.cp-map__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* 经纬网格（极淡） */
+.cp-map__grid line {
+  stroke: color-mix(in srgb, var(--beacon) 8%, transparent);
+  stroke-width: 0.5;
+}
+/* 陆地：极淡填充 + 海岸线微光描边（描边略提亮确保三洲轮廓可辨） */
+.cp-map__land polygon {
+  fill: color-mix(in srgb, var(--beacon) 9%, #0c1927);
+  stroke: color-mix(in srgb, var(--beacon) 62%, transparent);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  paint-order: fill;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--beacon) 30%, transparent));
+}
+/* 航线弧：粗细=票数、颜色=异常状态；命中区透明加粗好点选 */
+.cp-lane__hit {
+  fill: none;
+  stroke: transparent;
+  stroke-linecap: round;
+  cursor: pointer;
+}
+.cp-lane__line {
+  fill: none;
+  stroke-linecap: round;
+  transition: opacity 0.14s, filter 0.14s;
+  pointer-events: none;
+}
+.cp-lane--blue .cp-lane__line {
+  stroke: var(--beacon);
+  opacity: 0.6;
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--beacon) 45%, transparent));
+}
+.cp-lane--amber .cp-lane__line {
+  stroke: var(--sev-amber);
+  opacity: 0.88;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--sev-amber) 55%, transparent));
+}
+.cp-lane--red .cp-lane__line {
+  stroke: var(--sev-red);
+  opacity: 0.95;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--sev-red) 60%, transparent));
+}
+.cp-lane.is-hover .cp-lane__line {
+  opacity: 1;
+}
+.cp-lane--blue.is-hover .cp-lane__line {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--beacon) 85%, transparent));
+}
+.cp-lane--amber.is-hover .cp-lane__line {
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--sev-amber) 85%, transparent));
+}
+.cp-lane--red.is-hover .cp-lane__line {
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--sev-red) 90%, transparent));
+}
+.cp-lane__dot {
+  fill: color-mix(in srgb, var(--bg-0) 88%, #000);
+  stroke: color-mix(in srgb, var(--beacon) 70%, var(--line-strong));
+  stroke-width: 1;
+}
+.cp-lane--amber .cp-lane__dot {
+  stroke: var(--sev-amber);
+}
+.cp-lane--red .cp-lane__dot {
+  stroke: var(--sev-red);
+}
+.cp-lane__num {
+  fill: var(--ink-0);
+  font-family: var(--font-num);
+  font-size: 10px;
+  font-weight: 600;
+}
+/* 港口发光点 + 标签 */
+.cp-portnode__halo {
+  fill: none;
+  stroke-width: 1;
+}
+.cp-portnode--origin .cp-portnode__halo {
+  stroke: color-mix(in srgb, var(--sev-amber) 55%, transparent);
+}
+.cp-portnode--dest .cp-portnode__halo {
+  stroke: color-mix(in srgb, var(--beacon) 60%, transparent);
+}
+.cp-portnode__dot {
+  fill: #fff;
+}
+.cp-portnode--origin .cp-portnode__dot {
+  fill: color-mix(in srgb, var(--sev-amber) 88%, #fff);
+  filter: drop-shadow(0 0 4px var(--sev-amber));
+}
+.cp-portnode--dest .cp-portnode__dot {
+  fill: color-mix(in srgb, var(--beacon) 80%, #fff);
+  filter: drop-shadow(0 0 4px var(--beacon));
+}
+.cp-portnode__leader {
+  stroke: color-mix(in srgb, var(--ink-2) 60%, transparent);
+  stroke-width: 0.6;
+  stroke-dasharray: 2 2;
+}
+.cp-portnode__code {
+  fill: var(--ink-0);
+  font-family: var(--font-num);
+  font-size: 11px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  stroke-width: 2.4;
+}
+.cp-portnode__name {
+  fill: var(--ink-1);
+  font-size: 9.5px;
+  font-family: var(--font-ui);
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--bg-0) 78%, transparent);
+  stroke-width: 2.4;
+}
+/* 悬停明细 tooltip */
+.cp-map__tip {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  max-width: 260px;
+  background: color-mix(in srgb, var(--bg-0) 92%, transparent);
+  backdrop-filter: blur(3px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  font-size: 11px;
+}
+.cp-map__tip-t {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-0);
+  margin-bottom: 2px;
+}
+.cp-map__tip-sub {
+  color: var(--ink-2);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.cp-map__tip-row {
+  display: flex;
+  gap: 12px;
+  color: var(--ink-1);
+  font-family: var(--font-num);
+}
+.cp-map__tip-row .neg {
+  color: var(--sev-amber);
+}
+.cp-map__tip-stat {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+.cp-map__tip-hint {
+  margin-top: 8px;
+  color: var(--beacon);
+  font-size: 10.5px;
+}
+.cp-map__legend {
+  position: absolute;
+  bottom: 10px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 10px;
+  color: var(--ink-1);
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+  backdrop-filter: blur(2px);
+  padding: 6px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+}
+.cp-map__legend span {
+  display: inline-flex;
+  align-items: center;
+}
+.cp-lane-lg {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+  margin-right: 6px;
+}
+.cp-lane-lg--blue {
+  background: var(--beacon);
+}
+.cp-lane-lg--amber {
+  background: var(--sev-amber);
+}
+.cp-lane-lg--red {
+  background: var(--sev-red);
+}
+.cp-map__legend-sep {
+  color: var(--ink-2);
+  border-left: 1px solid var(--line-strong);
+  padding-left: 14px;
+}
+/* 表外港口近似定位标注（歧义如实） */
+.cp-map__ambig {
+  position: absolute;
+  bottom: 10px;
+  right: 12px;
+  font-size: 10px;
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--bg-0) 82%, transparent);
+  backdrop-filter: blur(2px);
+  padding: 5px 10px;
+  border: 1px dashed var(--sev-amber-dim);
+  border-radius: var(--radius-sm);
+}
+
+/* ═══════════════════════════ A-2/V13② 时间轴回放（世界时钟滑条 + 思考轨迹逐步点亮）═══════════════════════════ */
+/* —— 顶栏世界时钟时间轴滑条：拖动/播放回放；回放态转琥珀强调 —— */
+.cp-scrub {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+.cp-scrub.is-replay {
+  border-color: color-mix(in srgb, var(--sev-amber) 55%, var(--line-strong));
+  background: color-mix(in srgb, var(--sev-amber) 8%, var(--bg-2));
+}
+.cp-scrub__play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-3);
+  color: var(--beacon);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.cp-scrub__play:hover {
+  background: var(--beacon);
+  color: #04101f;
+}
+.cp-scrub.is-replay .cp-scrub__play {
+  color: var(--sev-amber);
+}
+.cp-scrub__track {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 210px;
+}
+.cp-scrub__range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--beacon-dim), var(--line-strong));
+  cursor: pointer;
+  outline: none;
+}
+.cp-scrub__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ink-0);
+  border: 2px solid var(--beacon);
+  box-shadow: var(--glow-beacon);
+  cursor: grab;
+}
+.cp-scrub.is-replay .cp-scrub__range::-webkit-slider-thumb {
+  border-color: var(--sev-amber);
+  box-shadow: 0 0 9px rgba(245, 166, 35, 0.5);
+}
+.cp-scrub__range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ink-0);
+  border: 2px solid var(--beacon);
+  cursor: grab;
+}
+.cp-scrub.is-replay .cp-scrub__range::-moz-range-thumb {
+  border-color: var(--sev-amber);
+}
+.cp-scrub__ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 8.5px;
+  color: var(--ink-3);
+  letter-spacing: -0.02em;
+}
+.cp-scrub__at {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--ink-1);
+  white-space: nowrap;
+}
+.cp-scrub__at.is-replay {
+  color: var(--sev-amber);
+  font-weight: 600;
+}
+.cp-scrub__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sev-amber);
+  box-shadow: 0 0 6px var(--sev-amber);
+}
+.cp-scrub__now {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  padding: 2px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cp-scrub__now:hover {
+  color: var(--ink-0);
+  background: var(--bg-3);
+}
+
+/* —— 指挥墙卡片：回放态 headline 诚实小标（存量类显"显示当前值"）—— */
+.cp-asof-tag {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: middle;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0 5px;
+  border-radius: 3px;
+}
+.cp-asof-tag.is-current {
+  color: var(--ink-2);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+}
+.cp-asof-tag.is-replayed {
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--sev-amber) 12%, transparent);
+  border: 1px solid var(--sev-amber-dim);
+}
+
+/* —— AI 故事卡：思考轨迹「回放/跳过」控件 + 时间线逐步点亮 —— */
+.cp-story__acts {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cp-story__acts .cp-story__toggle {
+  margin-left: 0;
+}
+.cp-story__replay {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--beacon);
+}
+.cp-story__replay:hover {
+  background: var(--bg-3);
+  color: #cfe2ff;
+}
+.cp-story__replay.is-active {
+  color: var(--sev-amber);
+  border-color: var(--sev-amber-dim);
+}
+.cp-tl {
+  transition: opacity 0.45s ease;
+}
+.cp-tl.is-dim {
+  opacity: 0.16;
+}
+.cp-tl.is-lit {
+  opacity: 1;
+}
+.cp-tl.is-activating .cp-tl__dot {
+  animation: tlpulse 0.62s ease;
+}
+@keyframes tlpulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--beacon) 55%, transparent);
+    transform: scale(0.85);
+  }
+  50% {
+    box-shadow: 0 0 9px 2px color-mix(in srgb, var(--beacon) 45%, transparent);
+    transform: scale(1.14);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    transform: scale(1);
+  }
+}
+
+/* ═══════════════════════════ 无障碍 / 减少动效 ═══════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .cp-story,
+  .cp-story.is-latest,
+  .cp-drawer,
+  .cp-drawer-scrim,
+  .cp-impact,
+  .cp-tl.is-activating .cp-tl__dot,
+  .cp-wall-card.is-alerted {
+    animation: none !important;
+  }
+  .cp-wall-card.is-alerted {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev-amber) 22%, transparent);
+  }
+  .cp-wall-card:hover {
+    transform: none;
+  }
+  * {
+    transition: none !important;
+  }
+}
+:focus-visible {
+  outline: 2px solid var(--beacon);
+  outline-offset: 1px;
+}
+
+/* 窄屏：右栏折到下方（原型主要面向宽屏值台，窄屏保证不横向溢出即可） */
+@media (max-width: 980px) {
+  .cp-wall {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .cp-stage {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+  .cp-center {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
+/* ═══════════════════════════ U4 三态底座：StateHint 统一态组件（components/StateHint.tsx） ═══════════════════════════
+   四态各自的观感锚点（延续既有 token，零新色板）：
+   loading       = 骨架屏脉动（bg-2⇄bg-3 扫光），不借告警色，纯"请稍候"；
+   empty         = ink-2 灰阶（同 cp-queue__empty / cp-flow__empty 观感），"正常但没内容"不是故障，
+                   不用告警色；
+   error         = sev-red 少量强调（图标环 + 错误原文框），原文照抄不加工，给重试出口；
+   no-permission = 灰锁（ink-2，非红非橙——这不是系统错误，是身份边界，语义对齐既有 cp-masked /
+                   DecisionButtons 无权提示的用色）。
+   compact：抽屉/面板局部行内小尺寸（对齐 cp-inline-load 观感）；默认铺满容器居中（对齐 cp-fill-msg /
+   cp-queue__empty 观感）。 */
+.cp-state {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 32px 22px;
+  text-align: center;
+}
+.cp-state__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-2);
+}
+.cp-state--error .cp-state__icon {
+  color: var(--sev-red);
+  border-color: var(--sev-red-dim);
+  background: color-mix(in srgb, var(--sev-red) 12%, var(--bg-2));
+}
+.cp-state__text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  max-width: 360px;
+}
+.cp-state__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-0);
+}
+.cp-state__body {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-1);
+}
+.cp-state--error .cp-state__body {
+  color: var(--ink-1);
+  background: color-mix(in srgb, var(--sev-red) 6%, var(--bg-2));
+  border: 1px dashed var(--sev-red-dim);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+}
+.cp-state--empty .cp-state__body,
+.cp-state--no-permission .cp-state__body {
+  color: var(--ink-2);
+}
+.cp-state__suggestion {
+  font-size: 11.5px;
+  color: var(--beacon);
+}
+.cp-state__retry {
+  margin-top: 3px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 16px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-0);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cp-state__retry:hover {
+  background: color-mix(in srgb, var(--sev-red) 12%, var(--bg-3));
+  border-color: var(--sev-red-dim);
+  color: var(--sev-red);
+}
+
+/* no-permission 态：灰锁——图标沿用 .cp-state__icon 的默认 ink-2 灰底（不额外上色），
+   语义对齐既有 cp-masked（身份边界不是系统故障，不用红/橙抢戏）。 */
+
+/* loading 态：骨架屏脉动 */
+.cp-state--loading {
+  align-items: stretch;
+  padding: 18px 20px;
+}
+.cp-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cp-skel__row {
+  height: 13px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--bg-2) 25%, var(--bg-3) 50%, var(--bg-2) 75%);
+  background-size: 200% 100%;
+  animation: cp-skel-pulse 1.6s ease-in-out infinite;
+}
+.cp-state__caption {
+  margin-top: 2px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+@keyframes cp-skel-pulse {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* compact 内联态：抽屉/面板局部行内（对齐既有 cp-inline-load / DecisionButtons 无权提示观感） */
+.cp-state--compact {
+  flex: none;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 3px 0;
+  text-align: left;
+}
+.cp-state--compact .cp-state__icon {
+  width: 21px;
+  height: 21px;
+}
+.cp-state--compact .cp-state__text {
+  align-items: flex-start;
+  max-width: none;
+  gap: 2px;
+}
+.cp-state--compact .cp-state__title {
+  font-size: 12px;
+}
+.cp-state--compact .cp-state__body {
+  font-size: 11.5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.cp-state--compact .cp-state__retry {
+  margin-top: 1px;
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.cp-state--compact .cp-state__caption {
+  margin-top: 0;
+  text-align: left;
+}
+.cp-skel__row--inline {
+  display: inline-block;
+  width: 88px;
+  height: 10px;
+}
+
+/* 无障碍 / 减少动效：新增追加块（不改上方既有 @media (prefers-reduced-motion: reduce) 规则），
+   骨架脉动动画在该偏好下静止为纯色块，仍保留占位可读性。 */
+@media (prefers-reduced-motion: reduce) {
+  .cp-skel__row {
+    animation: none !important;
+    background: var(--bg-2);
+  }
+}
+
+/* ═══════════════════════════ 波U 前端整装（U1/U2/U3/U6）═══════════════════════════ */
+/* 仅追加，不改上方任何既有规则；全部复用既有 token（--ink/--bg/--sev/--beacon/--gold/--line/--radius）。 */
+
+/* —— U1 世界切换钮（验证世界 ⇄ 模拟世界）：分段控件，沿用 cp-world 的世界语义色（绿=验证、蓝=模拟）—— */
+.cp-worlds {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.cp-world-seg {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: background 0.14s, color 0.14s;
+}
+.cp-world-seg + .cp-world-seg {
+  border-left: 1px solid var(--line-strong);
+}
+.cp-world-seg::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+}
+.cp-world-seg:hover {
+  color: var(--ink-1);
+  background: var(--bg-2);
+}
+.cp-world-seg.is-active::before {
+  opacity: 1;
+}
+.cp-world-seg--verification.is-active {
+  color: var(--sev-green);
+  background: color-mix(in srgb, var(--sev-green) 14%, transparent);
+}
+.cp-world-seg--simulation.is-active {
+  color: var(--beacon);
+  background: color-mix(in srgb, var(--beacon) 14%, transparent);
+}
+
+/* —— U2 溯源钮：卡片顶行右侧的小胶囊（点开数字溯源浮层）—— */
+.cp-prov-trigger {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-2);
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.cp-prov-trigger:hover {
+  color: var(--beacon);
+  background: color-mix(in srgb, var(--beacon) 10%, transparent);
+  border-color: var(--beacon-dim);
+}
+/* 告警卡右上角有绝对定位的告警徽标——溯源钮让出横向空间避免叠压 */
+.cp-wall-card.is-alerted .cp-prov-trigger {
+  margin-right: 22px;
+}
+
+/* —— U3 AI 信任档徽章（AI 运营账卡底部）—— */
+.cp-trust-badge {
+  align-self: flex-start;
+  margin-top: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--beacon);
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+  border: 1px solid var(--beacon-dim);
+  border-radius: 999px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.cp-trust-badge:hover {
+  background: color-mix(in srgb, var(--beacon) 20%, transparent);
+}
+.cp-trust-badge.is-muted {
+  color: var(--ink-2);
+  background: var(--bg-2);
+  border-color: var(--line-strong);
+}
+
+/* —— U2/U3 共用浮层（轻量 popover，固定定位 + 遮罩 + Esc 关，见 CommandWall.Popover）—— */
+.cp-pop-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: transparent;
+}
+.cp-pop {
+  position: fixed;
+  z-index: 61;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.52);
+  padding: 12px 13px;
+  max-height: 64vh;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--ink-1);
+  animation: cp-pop-in 0.14s ease-out;
+}
+.cp-pop--up {
+  animation: cp-pop-in-up 0.14s ease-out;
+}
+@keyframes cp-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes cp-pop-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.cp-pop__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-0);
+  margin-bottom: 8px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--line);
+}
+.cp-pop__sect {
+  margin-bottom: 9px;
+}
+.cp-pop__k {
+  font-size: 10px;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.cp-pop__caliber {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-1);
+}
+.cp-pop__srcs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cp-pop__src {
+  font-size: 11px;
+  color: var(--ink-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+}
+.cp-pop__samples {
+  font-size: 11.5px;
+  color: var(--ink-0);
+  word-break: break-all;
+}
+.cp-pop__muted {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.cp-pop__tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--sev-amber) 10%, transparent);
+  border: 1px solid var(--sev-amber-dim);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-bottom: 8px;
+}
+.cp-pop__foot {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--beacon);
+}
+
+/* —— U3 分域档位小列表（浮层内）—— */
+.cp-gating__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.cp-gating__row {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+.cp-gating__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.cp-gating__name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-0);
+}
+.cp-gating__tier {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--ink-1);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+}
+.cp-gating__tier--suggest {
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--sev-amber) 10%, transparent);
+  border-color: var(--sev-amber-dim);
+}
+.cp-gating__tier--assist,
+.cp-gating__tier--act {
+  color: var(--beacon);
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+  border-color: var(--beacon-dim);
+}
+.cp-gating__tier--auto {
+  color: var(--sev-green);
+  background: color-mix(in srgb, var(--sev-green) 12%, transparent);
+  border-color: var(--sev-green-dim);
+}
+.cp-gating__meta {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  margin-top: 3px;
+}
+.cp-gating__gap {
+  font-size: 11px;
+  color: var(--ink-1);
+  margin-top: 3px;
+}
+
+/* —— U6 协作流真身（右栏协作流标签的真数据列表）—— */
+/* 协作流 tab 外层（诚实导流条 + 面板本体）：note 固定高度，面板占满剩余空间自行滚动。 */
+.cp-collab-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-collab-note {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--bg-2);
+}
+.cp-collab-live {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+.cp-collab-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--ink-1);
+}
+.cp-collab-bar__esc {
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--sev-amber) 10%, transparent);
+  border: 1px solid var(--sev-amber-dim);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.cp-collab-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.cp-thread-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cp-thread-group__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.cp-thread-group__risk {
+  color: var(--ink-0);
+  font-weight: 600;
+}
+.cp-thread-group__rule {
+  color: var(--ink-2);
+}
+.cp-thread-group__count {
+  margin-left: auto;
+  color: var(--ink-2);
+  font-size: 10.5px;
+}
+.cp-thread {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+}
+.cp-thread.is-esc {
+  border-left-color: var(--sev-amber);
+}
+/* a11y + 可点化（P1，李珊任务3）：线程卡有关联任务/风险时可点开对象卡，键盘可达同 WorkQueue 行标准。 */
+.cp-thread.is-click {
+  cursor: pointer;
+}
+.cp-thread.is-click:hover {
+  background: var(--bg-3);
+  border-left-color: var(--beacon);
+}
+.cp-thread.is-click:focus-visible {
+  outline: 2px solid var(--beacon);
+  outline-offset: -2px;
+}
+.cp-thread__top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.cp-thread__parties {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ink-0);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.cp-thread__esc {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--sev-amber);
+  background: color-mix(in srgb, var(--sev-amber) 12%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+}
+.cp-thread__state {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ink-1);
+  background: var(--bg-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.cp-thread__task {
+  font-size: 11.5px;
+  color: var(--ink-1);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.cp-thread__meta {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  margin-top: 4px;
+}
+.cp-collab-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+/* 减少动效：浮层入场动画在该偏好下静止（不改上方既有块，独立追加） */
+@media (prefers-reduced-motion: reduce) {
+  .cp-pop,
+  .cp-pop--up {
+    animation: none !important;
+  }
+}
+
+/* ═══════════════════════════ 规格④ AI 处置正脸（AI 任务区 + 让 AI 处置按钮）═══════════════════════════
+   持久 Agent runtime 的 run 卡/时间线/预算条/审批联动/急停。语义色沿用既有色盘（琥珀=需人拍板、
+   绿=完成、红=停/杀、信标蓝=在跑），时间线复用 cp-tl / cp-story__replay / cp-story__toggle，不新增色板。 */
+
+/* —— 状态徽章 —— */
+.cp-run__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-1);
+  background: var(--bg-2);
+  font-family: var(--font-ui);
+  line-height: 1.5;
+}
+.cp-run__badge.is-beacon {
+  color: #cfe2ff;
+  border-color: var(--beacon-dim);
+  background: color-mix(in srgb, var(--beacon) 14%, var(--bg-2));
+}
+.cp-run__badge.is-amber {
+  color: var(--sev-amber);
+  border-color: var(--sev-amber-dim);
+  background: color-mix(in srgb, var(--sev-amber) 12%, var(--bg-2));
+}
+.cp-run__badge.is-green {
+  color: var(--sev-green);
+  border-color: var(--sev-green-dim);
+  background: color-mix(in srgb, var(--sev-green) 12%, var(--bg-2));
+}
+.cp-run__badge.is-red {
+  color: var(--sev-red);
+  border-color: var(--sev-red-dim);
+  background: color-mix(in srgb, var(--sev-red) 12%, var(--bg-2));
+}
+
+/* —— 预算条 —— */
+.cp-run__budget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 7px 0 6px;
+}
+.cp-run__budget-track {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.cp-run__budget-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.cp-run__budget-fill.is-beacon {
+  background: var(--beacon);
+}
+.cp-run__budget-fill.is-amber {
+  background: var(--sev-amber);
+}
+.cp-run__budget-txt {
+  font-size: 10px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* —— run 列表容器 —— */
+.cp-runs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.cp-runs__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.cp-runs__n {
+  font-size: 11px;
+  color: var(--ink-1);
+  font-weight: 600;
+}
+.cp-runs__wait {
+  font-size: 10.5px;
+  color: var(--sev-amber);
+  border: 1px solid var(--sev-amber-dim);
+  border-radius: 999px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--sev-amber) 10%, transparent);
+}
+.cp-runs__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.cp-runs__foot {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.cp-runs__foot > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.cp-runs__foot-mode {
+  color: var(--ink-2);
+}
+
+/* —— 单个 run 卡 —— */
+.cp-run {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, color-mix(in srgb, #fff 2%, var(--bg-1)), var(--bg-1));
+  padding: 9px 11px 8px;
+}
+.cp-run.is-waiting {
+  border-left-color: var(--sev-amber);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sev-amber) 24%, transparent);
+}
+.cp-run.is-killed {
+  border-left-color: var(--sev-red-dim);
+  opacity: 0.82;
+}
+.cp-run__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.cp-run__mode {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink-2);
+}
+.cp-run__mode.is-llm {
+  color: var(--beacon);
+  border-color: var(--beacon-dim);
+}
+.cp-run__mode.is-det {
+  color: var(--ink-2);
+}
+.cp-run__time {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+.cp-run__goal {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-0);
+}
+.cp-run__goal-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--beacon);
+  cursor: pointer;
+  font-size: 12px;
+}
+.cp-run__goal-link:hover {
+  text-decoration: underline;
+}
+.cp-run__last {
+  font-size: 11.5px;
+  color: var(--ink-1);
+  line-height: 1.45;
+  margin: 2px 0 0;
+}
+.cp-run__waitbanner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--sev-amber) 9%, var(--bg-2));
+  border: 1px dashed var(--sev-amber-dim);
+  font-size: 11px;
+  color: var(--sev-amber);
+  line-height: 1.4;
+}
+.cp-run__acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  flex-wrap: wrap;
+}
+.cp-run__acts .cp-story__toggle {
+  margin-left: 0;
+}
+.cp-run__resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 4px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sev-green-dim);
+  background: color-mix(in srgb, var(--sev-green) 12%, var(--bg-3));
+  color: var(--sev-green);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.cp-run__resume:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--sev-green) 20%, var(--bg-3));
+  border-color: var(--sev-green);
+}
+.cp-run__resume:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cp-run__resume-msg {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--ink-1);
+  line-height: 1.5;
+}
+.cp-run__resume-msg b {
+  color: var(--ink-0);
+}
+.cp-run__detail {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.cp-run__detail-meta {
+  font-size: 10px;
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+.cp-run__nosteps {
+  font-size: 11px;
+  color: var(--ink-3);
+  padding: 4px 0;
+}
+.cp-run__tl-ctl {
+  margin-bottom: 8px;
+}
+.cp-run__kill {
+  margin-top: 9px;
+}
+.cp-run__kill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+.cp-run__kill-btn:hover:not(:disabled) {
+  color: var(--sev-red);
+  border-color: var(--sev-red-dim);
+}
+.cp-run__kill-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.cp-run__kill-confirm {
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sev-red-dim);
+  background: color-mix(in srgb, var(--sev-red) 7%, var(--bg-2));
+}
+.cp-run__kill-ask {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-1);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+/* —— ImpactPanel「让 AI 处置」按钮/状态块 —— */
+.cp-dispatch {
+  margin: 2px 0 9px;
+}
+.cp-dispatch__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  justify-content: center;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--beacon-dim);
+  background: color-mix(in srgb, var(--beacon) 12%, var(--bg-3));
+  color: #cfe2ff;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: var(--font-ui);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.cp-dispatch__btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--beacon) 20%, var(--bg-3));
+  border-color: var(--beacon);
+}
+.cp-dispatch__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.cp-dispatch__note {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.cp-dispatch.is-shown {
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--beacon);
+  background: var(--bg-2);
+}
+.cp-dispatch__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.cp-dispatch__t {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-0);
+}
+.cp-dispatch__plain {
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--ink-1);
+  line-height: 1.5;
+}
+.cp-dispatch__hint {
+  margin-top: 7px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+/* 发起 AI 处置入口（可发现性修复 2026-07-17）：AI 任务标签页常驻块 */
+.cp-dispatch-launcher { border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin-bottom: 10px; background: var(--bg-2); }
+.cp-dispatch-launcher__head { font-size: 12px; color: var(--ink-1); margin-bottom: 8px; letter-spacing: .04em; }
+.cp-dispatch-launcher__row { display: flex; gap: 8px; }
+.cp-dispatch-launcher__row .cp-form-input { flex: 1; min-width: 0; background: var(--bg-1);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm); color: var(--ink-0);
+  padding: 6px 10px; font: inherit; font-size: 13px; }
+.cp-dispatch-launcher__hint { margin-top: 8px; font-size: 11px; line-height: 1.6; color: var(--ink-2); }
+.cp-dispatch-launcher__msg { margin-top: 8px; font-size: 12px; color: var(--beacon); }
+
+/* 波E：发起块真模型复选框 */
+.cp-dispatch-launcher__llm { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px;
+  font-size: 11px; line-height: 1.6; color: var(--ink-1); cursor: pointer; }
+.cp-dispatch-launcher__llm input { margin-top: 2px; }
+
+/* V21② 证据全空复核提示（docs/control-tower-plan-v0.2.md V21 条②，EvidenceCard.tsx cp-ev__all-empty）：
+   四块证据均无数据的提案，卡顶加琥珀提示条——配色/边框图案复用既有 .cp-state--error .cp-state__body /
+   .cp-dq__list 的"语义色 6~10% 底 + 虚线同色边框"图案（不新增 token），图标+文案单行对齐 StateHint
+   compact 态观感。 */
+.cp-ev__all-empty { display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+  padding: 6px 10px; border-radius: var(--radius-sm); border: 1px dashed var(--sev-amber-dim);
+  background: color-mix(in srgb, var(--sev-amber) 8%, var(--bg-2)); color: var(--sev-amber);
+  font-size: 11.5px; line-height: 1.5; }
+.cp-ev__all-empty svg { flex: none; }

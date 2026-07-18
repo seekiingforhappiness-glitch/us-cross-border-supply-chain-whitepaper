@@ -1,7 +1,8 @@
 import { Fragment, useState } from "react";
 import { actions } from "../data";
 import ViewHead from "../components/ViewHead";
-import type { ActionRow } from "../types";
+import { useNav } from "../components/Nav";
+import type { ActionRow, ToolInputSchema } from "../types";
 
 const TIER_TONE: Record<string, string> = { machine: "cyan", human: "amber", frozen: "red" };
 
@@ -15,12 +16,82 @@ function FiveElements({ a }: { a: ActionRow }) {
       <div className="ac-five-row"><span className="ac-five-l">成功效果</span><span className="ac-five-v">{a.successEffects.join("；") || "—"}</span></div>
       <div className="ac-five-row"><span className="ac-five-l">失败处理</span><span className="ac-five-v">{a.failureHandling.join("；") || "—"}</span></div>
       <div className="ac-five-row"><span className="ac-five-l">审计留痕</span><span className="ac-five-v mono">{a.audit.join(" · ") || "—"}</span></div>
-      {a.frozen && <div className="wv-frozen-note">🔴 冻结区：FORBIDDEN_TOOLS，从未注册给 AI。</div>}
+    </div>
+  );
+}
+
+/* JSON Schema 语法高亮块（轻量·纯 CSS 着色，不引库） */
+function SchemaBlock({ schema }: { schema: ToolInputSchema }) {
+  const json = JSON.stringify(schema, null, 2);
+  return (
+    <pre className="ac-schema mono">
+      {json.split("\n").map((line, i) => {
+        // 高亮 "key":  和 枚举/类型值
+        const m = line.match(/^(\s*)"([^"]+)"(\s*:\s*)(.*)$/);
+        if (m) {
+          return (
+            <div key={i} className="ac-schema-line">
+              <span>{m[1]}</span>
+              <span className="ac-sk-key">"{m[2]}"</span>
+              <span>{m[3]}</span>
+              <span className="ac-sk-val">{m[4]}</span>
+            </div>
+          );
+        }
+        return <div key={i} className="ac-schema-line">{line}</div>;
+      })}
+    </pre>
+  );
+}
+
+/* 「作为 AI 工具长什么样」联动面板（板块③ · Stripe 概念↔代码联动） */
+function ToolPanel({ a }: { a: ActionRow }) {
+  const tool = a.tool;
+  if (a.frozen || tool.aiExecutable === "frozen") {
+    return (
+      <div className="ac-tool ac-tool--frozen">
+        <div className="ac-tool-head">
+          <span className="tag red">永不暴露给 AI · frozen</span>
+        </div>
+        <p className="ac-tool-forbidden">
+          🔴 <b>FORBIDDEN</b>——此动作的工具函数<b>从未注册</b>给 AI（agent.tools.FORBIDDEN_TOOLS）。
+          不是权限不够，是根本不存在：审批 / 关闭 / 合规裁决属冻结区，AI 提案后交人拍板（maker-checker）。
+        </p>
+        <div className="ac-tool-line"><span className="ac-tool-l">ai_executable</span><span className="mono">{tool.aiExecutable}</span></div>
+        <div className="ac-tool-line"><span className="ac-tool-l">enforcement</span><span className="mono">{tool.enforcement || "—"}</span></div>
+      </div>
+    );
+  }
+  if (!tool.exposedAsTool) {
+    return (
+      <div className="ac-tool ac-tool--internal">
+        <div className="ac-tool-head"><span className="tag" style={{ fontSize: 10 }}>不暴露 · {tool.aiExecutable}</span></div>
+        <p className="ac-tool-forbidden muted">
+          未暴露为 AI 工具——{tool.aiExecutablePlain}。引擎/人内部动作，不进 TOOL_DEFS。
+        </p>
+        <div className="ac-tool-line"><span className="ac-tool-l">enforcement</span><span className="mono">{tool.enforcement || "—"}</span></div>
+      </div>
+    );
+  }
+  return (
+    <div className="ac-tool ac-tool--exposed">
+      <div className="ac-tool-head">
+        <span className="tag green">exposed_as_tool</span>
+        <span className="tag cyan" style={{ fontSize: 10 }}>{tool.aiExecutable}</span>
+      </div>
+      <div className="ac-tool-line"><span className="ac-tool-l">工具名</span><span className="ac-tool-name mono">{tool.toolName}</span></div>
+      <div className="ac-tool-line"><span className="ac-tool-l">enforcement</span><span className="mono">{tool.enforcement || "—"}</span></div>
+      {tool.toolDescription && <p className="ac-tool-desc">{tool.toolDescription}</p>}
+      <div className="ac-tool-schema-label mono">tool_input_schema</div>
+      {tool.toolInputSchema
+        ? <SchemaBlock schema={tool.toolInputSchema} />
+        : <p className="muted" style={{ fontSize: 12 }}>（本体未声明 input_schema）</p>}
     </div>
   );
 }
 
 export default function ViewActions() {
+  const { navigate } = useNav();
   const [open, setOpen] = useState<string | null>(null);
   const [roleFilter, setRoleFilter] = useState<string | null>(null);
   const roles = actions.roles;
@@ -33,13 +104,32 @@ export default function ViewActions() {
     <div>
       <ViewHead idx="05" question={actions.question} subtitle={actions.subtitle} />
 
+      {/* P2 修复：陌生人建造者在本页找"AI 信任程度"未果，兜两跳才到 15 页放权阶梯（实测困惑）——
+          本页的权限矩阵是静态设定（谁被允许下手），"信任到什么程度"是动态实测（15 页放权阶梯按域算），
+          两者不同不能合并展示，加一张可点跳转的导航提示卡，复用既有 navigate() 切视图机制。 */}
+      {/* P2 修复：跳转只切视图不锚定，落地治理控制室顶部还要再手动找放权阶梯（在第 6 张卡）——带 focus
+          锚点，镜像 04 规则档案页现成的 route.focus → scrollIntoView 模式（见 ViewGovernance.tsx）。 */}
+      <button className="ac-nav-hint" onClick={() => navigate("governance", "gating-ladder")}>
+        <span className="ac-nav-hint-text">
+          想看 <b>AI 被信任到什么程度</b>（量化档位，不是感觉）？这页是谁被允许下手的静态设定——
+          动态实测的信任档位在 <b>治理控制室 · 放权阶梯</b>。
+        </span>
+        <span className="ac-nav-hint-cta">治理控制室 · 放权阶梯 →</span>
+      </button>
+
       <div className="ac-legend">
         {actions.tiers.map((t) => (
           <span className="ac-leg" key={t.key}>
             <span className={`ac-leg-dot tone-${t.tone}`} />{t.mark} {t.name}
           </span>
         ))}
-        <span className="ac-leg-hint mono">点行看五要素 · 冻结区红条</span>
+        <span className="ac-leg-hint mono">点行看五要素 + 「作为 AI 工具」JSON Schema · 冻结区红条</span>
+      </div>
+
+      <div className="ac-toolsum">
+        <span className="ac-toolsum-seg"><span className="tag green" style={{ fontSize: 10 }}>exposed</span> {actions.toolSummary.exposed} 个写提案工具</span>
+        <span className="ac-toolsum-seg"><span className="tag red" style={{ fontSize: 10 }}>frozen</span> {actions.toolSummary.frozen} 个冻结区永不暴露</span>
+        <span className="ac-toolsum-note muted">{actions.toolSummary.note}</span>
       </div>
 
       <div className="ac-rolefilter">
@@ -85,7 +175,16 @@ export default function ViewActions() {
                   <tr className="ac-detail-row">
                     <td colSpan={roles.length + 2}>
                       <p className="ac-detail-plain">{a.plain}</p>
-                      <FiveElements a={a} />
+                      <div className="ac-detail-split">
+                        <div className="ac-detail-left">
+                          <div className="ac-detail-cap mono">五要素（本体动作定义）</div>
+                          <FiveElements a={a} />
+                        </div>
+                        <div className="ac-detail-right">
+                          <div className="ac-detail-cap mono">作为 AI 工具长什么样</div>
+                          <ToolPanel a={a} />
+                        </div>
+                      </div>
                     </td>
                   </tr>
                 )}

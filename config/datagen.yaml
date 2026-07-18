@@ -121,6 +121,24 @@ sourcing:                       # P3 采购富化2：RFQ 询价 + R14 单一来�
     r15: 4                       # 绕流程采购：发票供应商≠PO 供应商 且非该 SKU 的 approved 备源
     r15_gray: 1                  # 灰区：发票供应商≠PO 供应商 但为该 SKU approved 备源 → 豁免（不触发）
 
+finance:                        # F1 资金流域（V8-②）——独立随机流 seed+7000（既有数据零扰动，§7 可复现）
+  seed_offset: 7000             # 独立随机流偏移
+  supplier_terms_days: [30, 45, 60]   # Supplier.payment_terms_days 档位（问3 账期；out 向 due 推算）
+  customer_terms_days: 30       # 对客回款账期常量（in 向 due = order_date + 此值，manual §5）
+  vendor_terms_days: 30         # 物流/费用商账期（out 向 vendor invoice due = issue_date + 此值）
+  out_paid_rate: 0.85           # out 向 ~85% 已 paid，其余 scheduled
+  in_paid_rate: 0.80            # in 向 ~80% paid，其余 scheduled
+  overdue_receivable_days: 7    # R19：as_of > due_date + 此天数 且未 paid → 逾期应收
+  overdue_high_usd: 50000       # R19：逾期额 amount_usd > 此值 → critical，否则 high
+  cash_watch_window_days: 14    # R20：未来 N 天净流出窗口 (as_of, as_of+N]
+  cash_watch_threshold_usd: 500000  # R20：窗口内 Σout.scheduled − Σin.scheduled > 此值 → critical（V8 补记初值，代定候调）
+  amount_mismatch_tol_usd: 0.01 # R21：|paid amount − 单据金额| > 此值 → 金额不符
+  inject:                       # 注入画像计数（固定，可复现；verify 精确断言）
+    r19: 8                       # 逾期应收（in 向 scheduled 且逾期 > 7 天）
+    r20_cluster_margin_usd: 80000  # R20 密集应付段：cluster 累计供应商发票额 > 阈值 + 此余量才停（保证击穿）
+    r21_dup: 3                   # 重复付款（同 ref 两条 paid，锚 duplicate payment_id）
+    r21_mismatch: 4              # 金额不符（paid amount ≠ 单据金额）
+
 scoring:                        # v0.6 专题一 Y1 风险评分模型（H1/H2）
   split_ratio: 0.7              # 按 shipment_id 的 sha256 十六进制排序取前 70% 训练
   lr: 0.5                       # 全批量梯度下降步长

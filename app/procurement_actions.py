@@ -17,11 +17,19 @@ except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上�
     from action_context import transaction
     from actions import _log, _res
 
-# 采购摄入动作权限矩阵（system 供引擎/自动化用；收货=运营，供票匹配=财务）
-PROC_PERMS = {
-    "RecordGoodsReceipt": {"ops", "system"},
-    "MatchSupplierInvoice": {"finance", "system"},
-}
+# 桥2 运行时侧（M2，V5 决议①）：采购摄入权限矩阵从本体解释生成，硬编码字面量退役（与 actions.py 同源）。
+from pipeline.ontology_runtime import build_role_perms, load_ontology
+
+_ONTOLOGY_PERMS = build_role_perms(load_ontology())
+
+
+def _perm_slice(*keys):
+    """从本体生成的全域权限映射取本模块负责的键（桥2 M2「同构分片取用」）。"""
+    return {k: _ONTOLOGY_PERMS[k] for k in keys}
+
+
+# 采购摄入动作权限矩阵（system 供引擎/自动化用；收货=运营，供票匹配=财务）——生成结果须等于基线。
+PROC_PERMS = _perm_slice("RecordGoodsReceipt", "MatchSupplierInvoice")
 GRN_LINE_KEYS = {"po_line_id", "received_qty", "accepted_qty", "rejected_qty",
                  "qc_status", "defect_ppm"}
 SINV_LINE_KEYS = {"po_line_id", "qty", "unit_price_usd"}

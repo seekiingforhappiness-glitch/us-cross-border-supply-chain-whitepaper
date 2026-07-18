@@ -22,13 +22,19 @@ except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上�
     from action_context import transaction
     from actions import _log, _res
 
-# 仓储操作动作权限矩阵（system 供引擎/自动化用；上架/预留/盘点均运营职责，与收货同域）
-WH_PERMS = {
-    "Putaway": {"ops", "system"},
-    "ReserveInventory": {"ops", "system"},
-    "ReleaseReservation": {"ops", "system"},
-    "RecordCycleCount": {"ops", "system"},
-}
+# 桥2 运行时侧（M2，V5 决议①）：仓储操作权限矩阵从本体解释生成，硬编码字面量退役（与 actions.py 同源）。
+from pipeline.ontology_runtime import build_role_perms, load_ontology
+
+_ONTOLOGY_PERMS = build_role_perms(load_ontology())
+
+
+def _perm_slice(*keys):
+    """从本体生成的全域权限映射取本模块负责的键（桥2 M2「同构分片取用」）。"""
+    return {k: _ONTOLOGY_PERMS[k] for k in keys}
+
+
+# 仓储操作动作权限矩阵（system 供引擎/自动化用；上架/预留/盘点均运营职责，与收货同域）——生成须等于基线。
+WH_PERMS = _perm_slice("Putaway", "ReserveInventory", "ReleaseReservation", "RecordCycleCount")
 RESERVATION_TERMINAL = ("released", "fulfilled")
 
 

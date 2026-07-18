@@ -1,5 +1,5 @@
 {
-  "version": "0.9.0",
+  "version": "0.11.3",
   "name": "cross_border_unified_ontology",
   "displayName": "跨境供应链统一 Ontology（控制塔 + SKU 准入 + 费用对账 + 采购三方对账 + 仓储库存，五场景共享）",
   "scope": "Five scenarios on one ontology: (1) delay-risk control tower; (2) SKU admission & quote decision; (3) invoice reconciliation & cost anomaly loop; (4) procurement three-way match (PO line / goods receipt / supplier invoice); (5) warehouse inventory accuracy (Warehouse / InventoryPosition / InventoryReservation / CycleCount) — all REUSING the RiskEvent/Task closed loop (F1/P1/W1). Shared objects zero duplication.",
@@ -15,15 +15,17 @@
       "Synthetic keys must be generated in the data preparation layer and persisted before application usage."
     ]
   },
-  "roles": ["ops", "cs", "manager", "system", "sales", "compliance", "finance"],
+  "roles": ["ops", "cs", "manager", "system", "sales", "compliance", "finance", "procurement"],
   "sensitiveFieldRules": [
     {"object": "Customer", "field": "tier", "visibleTo": ["cs", "manager"]},
     {"object": "Task", "field": "proposal_params.est_cost_usd", "visibleTo": ["ops", "manager"]},
     {"object": "Customer", "field": "credit_terms", "visibleTo": ["finance", "manager"]},
     {"object": "Customer", "field": "risk_tier", "visibleTo": ["finance", "manager"]},
     {"object": "Supplier", "field": "uflpa_risk_flag", "visibleTo": ["compliance", "manager"]},
-    {"object": "CostScenario", "field": "*_usd and margin fields", "visibleTo": ["finance", "manager"]},
+    {"object": "CostScenario", "field": "*_usd and margin fields", "fields": ["quote_price_usd", "product_cost_usd", "first_mile_cost_usd", "international_freight_usd", "duty_tax_usd", "customs_brokerage_usd", "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd", "risk_buffer_usd", "gross_margin_usd", "gross_margin_rate"], "visibleTo": ["finance", "manager"], "description": "G1 全量声明化：成本情景金额/毛利字段脱敏的唯一权威源（agent.tools.COST_FIELDS 现从本 fields 派生，硬编码退役）。fields=机读具名列表；field 通配串保留供既有展示层(masker/standard_object_view/export_data)按原样跳过——避免对遍地 *_usd 运营列(affected_value_usd 等)误脱敏。"},
+    {"object": "Invoice", "fields": ["amount_usd", "unit_price_usd", "baseline_usd", "diff_usd"], "visibleTo": ["finance", "manager"], "description": "G1 全量声明化：发票行金额脱敏字段的唯一权威源（agent.tools.INVOICE_COST_FIELDS 现从本 fields 派生）。仅 plural fields、无 field——按对象组在会话层(get_invoice_context)脱敏，不作具名递归规则(否则 amount_usd/unit_price_usd 会跨对象 Payment/供票行等误脱敏)。"},
     {"object": "AdmissionCase", "field": "conditions", "visibleTo": ["finance", "manager"]},
+    {"object": "Payment", "field": "amount_usd", "visibleTo": ["finance", "manager"]},
     {"rendering": "Fields hidden by permission must render as 'no access', never as blank/null. null must not be interpreted as 'no risk'."}
   ],
   "objects": [
@@ -36,11 +38,12 @@
         {"name": "supplier_id", "type": "string", "required": true},
         {"name": "supplier_name", "type": "string", "required": true, "description": "Canonical name after entity resolution."},
         {"name": "city", "type": "string", "required": true},
-        {"name": "lead_time_days", "type": "number", "required": true},
+        {"name": "lead_time_days", "type": "integer", "required": true},
         {"name": "factory_audit_status", "type": "enum", "required": false, "values": ["not_started", "pending", "passed", "failed", "waived"], "description": "E2 admission fields; nullable."},
         {"name": "compliance_docs_status", "type": "enum", "required": false, "values": ["missing", "partial", "provided", "verified", "rejected"]},
         {"name": "uflpa_risk_flag", "type": "boolean", "required": false, "sensitive": true},
-        {"name": "origin_evidence_status", "type": "enum", "required": false, "values": ["missing", "provided", "verified", "rejected"]}
+        {"name": "origin_evidence_status", "type": "enum", "required": false, "values": ["missing", "provided", "verified", "rejected"]},
+        {"name": "payment_terms_days", "type": "integer", "required": false, "description": "F1 (V8-②): 应付账期天数（out 向 Payment.due_date = supplier_invoice.issue_date + 此值；问3 裁决自动推算）。datagen 赋 30/45/60 档；legacy 供应商可空。"}
       ],
       "dataQualityRules": ["supplier_id unique", "lead_time_days > 0"]
     },
@@ -52,7 +55,8 @@
       "properties": [
         {"name": "sku_id", "type": "string", "required": true},
         {"name": "sku_name", "type": "string", "required": true},
-        {"name": "category", "type": "enum", "required": true, "values": ["charger", "cable", "earbuds", "phone_case"]},
+        {"name": "supplier_id", "type": "string", "required": false, "description": "Denormalized FK, 承载 supplier_provides 关系"},
+        {"name": "category", "type": "enum", "required": true, "values": ["charger", "cable", "earbuds", "phone_case", "seasonal_gift"], "description": "v0.11.3 (G6, enum-absorbs-reality): added seasonal_gift — a real designed-in SKU category in the sim world (sim/world_def.py SKU_NAME_POOL: LED holiday lights, gift bundles, festive ornaments), previously outside the enum. datagen (verification world) uses only the first four; superset keeps it valid (zero verification-world impact)."},
         {"name": "unit_price_usd", "type": "number", "required": true, "description": "Used for affected_value_usd."},
         {"name": "sku_status", "type": "enum", "required": true, "values": ["candidate", "active"], "description": "E1 lifecycle: admission targets candidates; approval promotes to active."},
         {"name": "declared_value_usd", "type": "number", "required": false, "description": "Admission fields (E1); nullable for legacy active SKUs."},
@@ -110,11 +114,11 @@
         {"name": "so_line_id", "type": "string", "required": true},
         {"name": "so_id", "type": "string", "required": true},
         {"name": "sku_id", "type": "string", "required": true},
-        {"name": "qty", "type": "number", "required": true},
+        {"name": "qty", "type": "integer", "required": true},
         {"name": "unit_price_usd", "type": "number", "required": true, "description": "Negotiated line price, not catalog price (D11); basis of affected_value_usd."},
         {"name": "promised_delivery_date", "type": "date", "required": true, "description": "Current promise; updated only by approved reschedule (A5)."},
         {"name": "original_promised_date", "type": "date", "required": true, "description": "Immutable after creation."},
-        {"name": "reschedule_count", "type": "number", "required": true, "description": "Default 0; +1 per approved reschedule (D9/C1)."},
+        {"name": "reschedule_count", "type": "integer", "required": true, "description": "Default 0; +1 per approved reschedule (D9/C1)."},
         {"name": "line_status", "type": "enum", "required": true, "values": ["open", "allocated", "at_risk", "fulfilled", "cancelled"]}
       ],
       "dataQualityRules": ["qty > 0", "promised_delivery_date >= order_date", "original_promised_date immutable"]
@@ -128,7 +132,7 @@
         {"name": "po_id", "type": "string", "required": true},
         {"name": "supplier_id", "type": "string", "required": true},
         {"name": "sku_id", "type": "string", "required": true, "description": "Single-SKU PO (D2 simplification)."},
-        {"name": "qty", "type": "number", "required": true},
+        {"name": "qty", "type": "integer", "required": true},
         {"name": "po_date", "type": "date", "required": true},
         {"name": "expected_ready_date", "type": "date", "required": true},
         {"name": "status", "type": "enum", "required": true, "values": ["placed", "ready", "shipped", "closed", "cancelled"]}
@@ -152,11 +156,11 @@
         {"name": "incoterm", "type": "enum", "required": true, "values": ["FOB", "CIF", "DDP"], "description": "Trade term (D11); foundation for v0.3 cost loop."},
         {"name": "vessel_voyage", "type": "string", "required": false, "description": "Demoted attribute; nullable by noise."},
         {"name": "carrier_name", "type": "string", "required": false, "description": "Demoted attribute; nullable by noise (name may be blank while SCAC present)."},
-        {"name": "carrier_scac", "type": "enum", "required": true, "values": ["COSU", "OOLU", "MATS", "ZIMU", "EGLV"], "description": "Carrier SCAC code (D11)."},
+        {"name": "carrier_scac", "type": "enum", "required": true, "values": ["COSU", "OOLU", "MATS", "ZIMU", "EGLV", "ONEY", "MAEU", "MSCU", "CMDU", "HLCU"], "description": "Carrier SCAC code (D11). v0.11.3 (G6, enum-absorbs-reality): added ONEY/MAEU/MSCU/CMDU/HLCU (ONE, Maersk, MSC, CMA CGM, Hapag-Lloyd) — real ocean carriers serving the sim world's USEC + EU lanes (sim/world_def.py CARRIERS). datagen (verification world) uses only the first five USWC carriers; superset keeps it valid (zero verification-world impact)."},
         {"name": "origin_port", "type": "enum", "required": true, "values": ["yantian", "shekou", "ningbo"]},
         {"name": "origin_port_locode", "type": "enum", "required": true, "values": ["CNYTN", "CNSHK", "CNNGB"], "description": "UN/LOCODE (D11)."},
-        {"name": "destination_port", "type": "enum", "required": true, "values": ["los_angeles", "long_beach"]},
-        {"name": "destination_port_locode", "type": "enum", "required": true, "values": ["USLAX", "USLGB"], "description": "UN/LOCODE (D11)."},
+        {"name": "destination_port", "type": "enum", "required": true, "values": ["los_angeles", "long_beach", "new_york", "savannah", "rotterdam", "hamburg"], "description": "v0.11.3 (G6, enum-absorbs-reality): added new_york/savannah (USEC) + rotterdam/hamburg (EU) — real destination ports on the sim world's USEC + EU lanes (sim/world_def.py routes; F2/B5 European routes are designed-in real data). datagen (verification world) uses only the two USWC ports; superset keeps it valid (zero verification-world impact)."},
+        {"name": "destination_port_locode", "type": "enum", "required": true, "values": ["USLAX", "USLGB", "USNYC", "USSAV", "NLRTM", "DEHAM"], "description": "UN/LOCODE (D11). v0.11.3 (G6, enum-absorbs-reality): added USNYC/USSAV/NLRTM/DEHAM to match the destination_port absorption above (sim USEC + EU lanes). datagen uses only USLAX/USLGB; superset keeps it valid."},
         {"name": "destination_warehouse", "type": "string", "required": true},
         {"name": "etd", "type": "date", "required": true},
         {"name": "eta_initial", "type": "date", "required": true, "description": "Immutable after creation."},
@@ -165,7 +169,10 @@
         {"name": "customs_status", "type": "enum", "required": true, "values": ["not_filed", "filed", "hold", "released"]},
         {"name": "missing_docs", "type": "list", "required": true, "itemValues": ["commercial_invoice", "packing_list", "bill_of_lading", "isf"], "description": "Empty list = complete."},
         {"name": "expedite_flag", "type": "boolean", "required": true, "description": "Set true by approved expedite (D9/C2 simplification)."},
-        {"name": "delay_days", "type": "number", "derived": true, "description": "eta_current - eta_initial."},
+        {"name": "delay_days", "type": "integer", "derived": true, "description": "eta_current - eta_initial."},
+        {"name": "last_event_time", "type": "string", "derived": true, "description": "Derived 事件戳（最新里程碑 event_time）"},
+        {"name": "po_ids", "type": "string", "required": false, "description": "一票多 PO 反向 json 列，承载 po_shipped_by（D2）"},
+        {"name": "status_source", "type": "string", "required": false, "description": "状态来源标记"},
         {"name": "status", "type": "enum", "required": true, "values": ["planned", "in_transit", "arrived", "customs", "delivered"]}
       ],
       "dataQualityRules": ["eta_initial >= etd", "eta_current writable only via A1", "delay_days derived-only"]
@@ -175,6 +182,7 @@
       "primaryKey": "milestone_id",
       "ownerRole": "system",
       "immutable": true,
+      "description": "A#10：原始报文 payload 已下沉至 source_events.payload_json（M3 血缘/事件信封改造），对象层不再承载；本对象仅保留结构化里程碑字段。",
       "properties": [
         {"name": "milestone_id", "type": "string", "required": true},
         {"name": "shipment_id", "type": "string", "required": true},
@@ -184,7 +192,6 @@
         {"name": "event_locode", "type": "string", "required": true, "description": "UN/LOCODE where the event occurred (D11); transshipment at hub e.g. SGSIN."},
         {"name": "new_eta", "type": "date", "required": false, "description": "Required iff event_type=eta_change."},
         {"name": "source_system", "type": "enum", "required": true, "values": ["carrier_edi", "forwarder_portal", "manual"]},
-        {"name": "payload", "type": "json", "required": false},
         {"name": "ingested_at", "type": "datetime", "required": true},
         {"name": "is_duplicate", "type": "boolean", "derived": true, "description": "Set by pipeline; duplicates are kept but trigger no side effects."}
       ],
@@ -199,7 +206,7 @@
         {"name": "allocation_id", "type": "string", "required": true},
         {"name": "shipment_id", "type": "string", "required": true},
         {"name": "so_line_id", "type": "string", "required": true},
-        {"name": "allocated_qty", "type": "number", "required": true}
+        {"name": "allocated_qty", "type": "integer", "required": true}
       ],
       "dataQualityRules": [
         "sum(allocated_qty) per so_line <= line.qty",
@@ -213,8 +220,8 @@
       "statusField": "status",
       "properties": [
         {"name": "risk_event_id", "type": "string", "required": true},
-        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge", "supplier_delay", "short_receipt", "qc_failure", "price_qty_mismatch", "invoice_over_receipt", "prepayment_exposure", "qualification_expired", "stockout", "unfulfillable", "shrinkage"], "description": "Cost anomaly types added in v0.4 (F1); procurement three-way-match types added in v0.5 (P1); procurement enrichment in v0.6 (P2); warehouse inventory-accuracy types (stockout/unfulfillable/shrinkage) added in v0.7 (W1). Same closed loop."},
-        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R16", "R17", "R18"], "description": "R7-R10 = procurement three-way match (P1); R11-R13 = procurement enrichment (P2); R16-R18 = warehouse inventory accuracy (W1: stockout/unfulfillable/shrinkage)."},
+        {"name": "type", "type": "enum", "required": true, "values": ["delay_breach", "docs_missing", "stalled", "rate_overbilling", "duplicate_charge", "unplanned_charge", "supplier_delay", "short_receipt", "qc_failure", "price_qty_mismatch", "invoice_over_receipt", "prepayment_exposure", "qualification_expired", "single_source", "maverick_spend", "stockout", "unfulfillable", "shrinkage", "overdue_receivable", "cash_watch", "payment_anomaly"], "description": "Cost anomaly types added in v0.4 (F1); procurement three-way-match types added in v0.5 (P1); procurement enrichment in v0.6 (P2); procurement sourcing types (single_source/maverick_spend) added in P3; warehouse inventory-accuracy types (stockout/unfulfillable/shrinkage) added in v0.7 (W1); finance cash-flow types (overdue_receivable/cash_watch/payment_anomaly) added in F1 (V8-②). Same closed loop."},
+        {"name": "rule_id", "type": "enum", "required": true, "values": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "R16", "R17", "R18", "R19", "R20", "R21"], "description": "R7-R10 = procurement three-way match (P1); R11-R13 = procurement enrichment (P2); R14-R15 = procurement sourcing (P3: single_source/maverick_spend); R16-R18 = warehouse inventory accuracy (W1: stockout/unfulfillable/shrinkage); R19-R21 = finance cash-flow (F1 V8-②: overdue_receivable/cash_watch/payment_anomaly)."},
         {"name": "severity", "type": "enum", "required": true, "values": ["medium", "high", "critical"]},
         {"name": "shipment_id", "type": "string", "required": false, "description": "Nullable since v0.5 (P1): procurement anomalies (R7-R10) anchor on po_id/supplier_id, not a shipment. Logistics/cost risks still set it."},
         {"name": "po_id", "type": "string", "required": false, "description": "v0.5 (P1): anchor for procurement anomalies; null for logistics/cost risks. The only place RiskEvent touches a core object by fk (add-field-not-join-table philosophy)."},
@@ -223,6 +230,7 @@
         {"name": "warehouse_id", "type": "string", "required": false, "description": "v0.7 (W1): anchor for warehouse anomalies (R16-R18); null for other scenarios. Mimics the po_id anchor (add-field-not-join-table); the only new RiskEvent column W1 adds."},
         {"name": "affected_so_line_ids", "type": "json_list", "required": true, "description": "JSON list, no join table (D9/C3). Empty for cost/procurement anomalies. v0.7 (W1): for warehouse anomalies this generic list carries the primary affected business-object id — R16=[inventory_position_id], R17=[so_line_id], R18=[cycle_count_id] — same pattern as procurement's affected_po_line_ids, so W1 adds only warehouse_id."},
         {"name": "affected_invoice_line_ids", "type": "json_list", "required": false, "description": "v0.4: affected cost invoice lines; null for logistics/procurement risks."},
+        {"name": "affected_sku_ids", "type": "string", "required": false, "description": "N:M 承载列，json 数组存受影响 SKU 主键；risk_affects_sku 的正式承载（V6-裁1）。R14 单一来源断供锚定 SKU 时写入；affected_po_line_ids 仍并行装 [sku_id] 供既有采购评估器匹配（evaluate_procurement._anchor_det 消费 [0]），两列并存——退役需评估器改口，违『评估器全绿+真值不动』约束故保留。"},
         {"name": "affected_value_usd", "type": "number", "derived": true},
         {"name": "detected_at", "type": "date", "required": true, "description": "as_of_date at detection."},
         {"name": "root_cause", "type": "string", "required": true},
@@ -242,15 +250,15 @@
         {"name": "task_id", "type": "string", "required": true},
         {"name": "risk_event_id", "type": "string", "required": true},
         {"name": "title", "type": "string", "required": true},
-        {"name": "assignee_role", "type": "enum", "required": true, "values": ["ops", "cs", "manager"]},
+        {"name": "assignee_role", "type": "enum", "required": true, "values": ["ops", "cs", "manager", "finance"], "description": "v0.11.2 (G4/V11): added finance — real assignee for R21 payment-anomaly tasks (sim) and cost-workbench AssignTask (app/streamlit_app.py finance queue); previously only reachable via a validation-coverage gap (datagen.seed_demo_ops inserts bypass model_validate)."},
         {"name": "priority", "type": "enum", "required": true, "values": ["P1", "P2", "P3"]},
         {"name": "due_at", "type": "date", "required": true, "description": "Task handling deadline (when the handler must complete mitigation); NOT the delivery date or customer promise date."},
         {"name": "assignee_user_id", "type": "string", "required": false, "description": "M2 demo named owner from local roster; simulation-only, no real identity directory."},
         {"name": "assignee_team_id", "type": "string", "required": false, "description": "M2 demo team id such as team-ops-us."},
         {"name": "sla_state", "type": "enum", "required": false, "values": ["open", "due_today", "overdue"], "description": "Computed from explicit as_of_date and due_at."},
-        {"name": "escalation_level", "type": "number", "required": false, "description": "M2 minimal semantics: 0 before/on due date, 1 after due date; no real notification or shift system."},
+        {"name": "escalation_level", "type": "integer", "required": false, "description": "M2 minimal semantics: 0 before/on due date, 1 after due date; no real notification or shift system."},
         {"name": "policy_version", "type": "string", "required": false, "description": "Demo assignment/SLA policy version."},
-        {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay", "dispute", "accept_charge", "rebill_customer", "expedite_po", "raise_supplier_claim", "dispute_supplier_invoice", "accept_receipt_variance"], "description": "Logistics (expedite/reschedule/accept_delay), cost (dispute/accept_charge/rebill_customer, v0.4), procurement (expedite_po/raise_supplier_claim/dispute_supplier_invoice/accept_receipt_variance, v0.5/P1)."},
+        {"name": "proposed_action", "type": "enum", "required": false, "values": ["expedite", "reschedule", "accept_delay", "dispute", "accept_charge", "rebill_customer", "expedite_po", "raise_supplier_claim", "dispute_supplier_invoice", "accept_receipt_variance", "escalate_prepayment", "hold_balance_payment", "request_supplier_docs", "suspend_supplier", "suggest_substitution", "adjust_inventory", "escalate_replenishment", "initiate_second_source", "block_non_po_payment", "backfill_po", "collect", "chase_docs", "propose_collection", "reconcile_payment", "escalate"], "description": "Logistics (expedite/reschedule/accept_delay), cost (dispute/accept_charge/rebill_customer, v0.4), procurement (expedite_po/raise_supplier_claim/dispute_supplier_invoice/accept_receipt_variance, v0.5/P1; escalate_prepayment/hold_balance_payment/request_supplier_docs/suspend_supplier, P2), warehouse (suggest_substitution/adjust_inventory/escalate_replenishment, W1), sourcing (initiate_second_source/block_non_po_payment/backfill_po, P3), finance (collect, F1 app.actions.propose_collection real value). v0.11.2 (G4/V11 word-list alignment): widened to the full real vocabulary already implemented in app/actions.py PARAM_SCHEMAS (grep-verified), plus three sim-only-but-real values kept distinct rather than force-merged: chase_docs (R2 shipment missing-docs chase — no dedicated real remediation action exists yet; R2 is currently remediated via the generic reschedule/expedite/accept_delay triad same as R1/R3), propose_collection (R19 AI finance-daily-flow proposal — note this duplicates 'collect' in intent; app.actions.propose_collection() writes 'collect' verbatim, test-asserted in app/test_finance_loop.py; kept both rather than editing app/actions.py, which is out of this task's file scope — flagged for a follow-up naming-convergence decision), reconcile_payment (R21 duplicate/mismatched payment — R21 has a real detector in engine/finance_rules.py but no remediation action implemented anywhere yet, so this is not a conflict, just the first). Two rename targets in the V11 decision text were corrected after verification instead of applied literally: sim's R4/R5/R6 cost-invoice dispute action is 'dispute' (writes shipments-adjacent logistics `invoices.status`), not 'dispute_supplier_invoice' (that value belongs to the P1 procurement R7-R10 domain and writes the unrelated `supplier_invoices` table — confirmed via app/actions.py:557-572); sim's R2 'chase_docs' was left unrenamed rather than moved to 'request_supplier_docs' (that value belongs to the P2 R13 supplier-qualification domain and writes `supplier_qualifications` — confirmed via app/actions.py:543-547). Both corrections keep the enum honest to which table each action actually mutates; see decision log V11/G4 report for full evidence trail."},
         {"name": "proposal_params", "type": "json", "required": false, "sensitiveSubfields": ["est_cost_usd"]},
         {"name": "approval_status", "type": "enum", "required": false, "values": ["pending", "approved", "rejected"]},
         {"name": "approved_by_role", "type": "enum", "required": false},
@@ -276,7 +284,7 @@
         {"name": "request_type", "type": "enum", "required": true, "values": ["new_sku", "ddp_quote", "dap_quote", "plan_review"]},
         {"name": "incoterm_candidate", "type": "enum", "required": true, "values": ["FOB", "DAP", "DDP", "tbd"]},
         {"name": "target_launch_date", "type": "date", "required": true},
-        {"name": "monthly_order_estimate", "type": "number", "required": true},
+        {"name": "monthly_order_estimate", "type": "integer", "required": true},
         {"name": "risk_level", "type": "enum", "derived": true, "values": ["low", "medium", "high", "critical"], "description": "Max severity across findings; recomputed by B2."},
         {"name": "status", "type": "enum", "required": true, "values": ["draft", "in_precheck", "plan_ready", "priced", "approved", "quote_with_conditions", "rejected", "needs_more_info"]},
         {"name": "decision", "type": "enum", "required": false, "values": ["approve", "quote_with_conditions", "reject", "more_info"]},
@@ -319,7 +327,7 @@
         {"name": "destination_port_locode", "type": "enum", "required": true, "values": ["USLAX", "USLGB"]},
         {"name": "us_warehouse_region", "type": "enum", "required": true, "values": ["west", "central", "east", "platform"]},
         {"name": "last_mile_method", "type": "enum", "required": true, "values": ["UPS", "FedEx", "USPS", "OnTrac", "LTL", "platform"]},
-        {"name": "estimated_transit_days", "type": "number", "required": true},
+        {"name": "estimated_transit_days", "type": "integer", "required": true},
         {"name": "sla_risk", "type": "enum", "required": true, "values": ["low", "medium", "high"]},
         {"name": "operational_notes", "type": "string", "required": false}
       ],
@@ -358,7 +366,7 @@
         {"name": "shipment_id", "type": "string", "required": true, "description": "Shipment 1:N containers."},
         {"name": "container_type", "type": "enum", "required": true, "values": ["40HC", "40GP", "20GP"]},
         {"name": "is_primary", "type": "boolean", "required": true, "description": "Migration marker: matches legacy shipment.container_no."},
-        {"name": "free_days", "type": "number", "required": true, "description": "Free time before detention; basis for DET attribution (F4)."},
+        {"name": "free_days", "type": "integer", "required": true, "description": "Free time before detention; basis for DET attribution (F4)."},
         {"name": "gross_weight_kg", "type": "number", "required": true},
         {"name": "volume_cbm", "type": "number", "required": true}
       ],
@@ -389,9 +397,9 @@
       "properties": [
         {"name": "invoice_line_id", "type": "string", "required": true},
         {"name": "invoice_id", "type": "string", "required": true},
-        {"name": "charge_code", "type": "enum", "required": true, "values": ["OFT", "THC", "DOC", "FSC", "CUS", "DTY", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC"]},
+        {"name": "charge_code", "type": "enum", "required": true, "values": ["OFT", "THC", "DOC", "FSC", "CUS", "DTY", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC", "ISF", "INSP", "PSS"], "description": "v0.11.3 (G6, enum-absorbs-reality): added ISF (US Importer Security Filing, has a rate card), INSP (customs inspection/exam fee), PSS (peak-season surcharge) — real freight charge codes billed in the sim world (sim/config.yaml + sim/anomalies.py; INSP/PSS are sim's designed unplanned surcharges → R6). Absorbed into InvoiceLine only, NOT ExpectedCost (they carry no baseline rate card → correctly stay unplanned; R6 detection keys off SIM_UNPLANNED_CODES, independent of this enum). datagen (verification world) never bills them; superset keeps it valid."},
         {"name": "container_no", "type": "string", "required": false, "description": "Required for container-level charges (THC/DET/DEM/CHS)."},
-        {"name": "qty", "type": "number", "required": true},
+        {"name": "qty", "type": "integer", "required": true},
         {"name": "unit_price_usd", "type": "number", "required": true},
         {"name": "amount_usd", "type": "number", "required": true, "description": "qty x unit_price (DQ)."}
       ],
@@ -421,7 +429,7 @@
         {"name": "po_line_id", "type": "string", "required": true},
         {"name": "po_id", "type": "string", "required": true, "description": "References existing purchase_orders.po_id (reuse, not a new header)."},
         {"name": "sku_id", "type": "string", "required": true, "description": "One-PO-one-supplier invariant: every line's SKU belongs to the PO's supplier."},
-        {"name": "qty", "type": "number", "required": true, "description": "Authoritative ordered quantity for the line (overrides the legacy single-SKU PO header qty)."},
+        {"name": "qty", "type": "integer", "required": true, "description": "Authoritative ordered quantity for the line (overrides the legacy single-SKU PO header qty)."},
         {"name": "unit_price_usd", "type": "number", "required": true, "description": "Agreed PO unit price; basis for R10 price mismatch."},
         {"name": "currency", "type": "enum", "required": true, "values": ["USD"]},
         {"name": "expected_ready_date", "type": "date", "required": true, "description": "Line-level supplier ready date; basis for R7 delay. Sampled independently of the PO header date (audit view needs line-level timing control)."},
@@ -456,11 +464,11 @@
         {"name": "grn_line_id", "type": "string", "required": true},
         {"name": "grn_id", "type": "string", "required": true},
         {"name": "po_line_id", "type": "string", "required": true},
-        {"name": "received_qty", "type": "number", "required": true, "description": "R8: sum(received_qty) per po_line < qty (beyond tolerance) = short receipt."},
-        {"name": "accepted_qty", "type": "number", "required": true},
-        {"name": "rejected_qty", "type": "number", "required": true, "description": "received - accepted."},
+        {"name": "received_qty", "type": "integer", "required": true, "description": "R8: sum(received_qty) per po_line < qty (beyond tolerance) = short receipt."},
+        {"name": "accepted_qty", "type": "integer", "required": true},
+        {"name": "rejected_qty", "type": "integer", "required": true, "description": "received - accepted."},
         {"name": "qc_status", "type": "enum", "required": true, "values": ["passed", "failed", "waived"], "description": "R9: failed = QC reject."},
-        {"name": "defect_ppm", "type": "number", "required": true, "description": "R9: defect_ppm > config threshold also flags QC even when not fully failed."},
+        {"name": "defect_ppm", "type": "integer", "required": true, "description": "R9: defect_ppm > config threshold also flags QC even when not fully failed."},
         {"name": "received_date", "type": "date", "required": true, "description": "R7: per-line actual receipt date. Batched GRNs receive lines on different days; using this row-level date (not the GRN header min) lets an injected-late line in a multi-line PO be detected instead of being masked by an on-time sibling."},
         {"name": "as_of_date", "type": "date", "required": true},
         {"name": "created_at", "type": "datetime", "required": true}
@@ -496,7 +504,7 @@
         {"name": "supplier_invoice_line_id", "type": "string", "required": true},
         {"name": "supplier_invoice_id", "type": "string", "required": true},
         {"name": "po_line_id", "type": "string", "required": true},
-        {"name": "qty", "type": "number", "required": true},
+        {"name": "qty", "type": "integer", "required": true},
         {"name": "unit_price_usd", "type": "number", "required": true, "description": "R10: |unit_price - po_line.unit_price| / po_line.unit_price > config.price_tol."},
         {"name": "amount_usd", "type": "number", "required": true, "description": "qty x unit_price (DQ)."},
         {"name": "as_of_date", "type": "date", "required": true},
@@ -521,6 +529,28 @@
         {"name": "created_at", "type": "datetime", "required": true}
       ],
       "dataQualityRules": ["payment_id unique", "amount_usd >= 0", "po_id in purchase_orders"]
+    },
+    {
+      "type": "Payment",
+      "primaryKey": "payment_id",
+      "ownerRole": "finance",
+      "statusField": "status",
+      "description": "F1 资金往来单（收付一本子，V8-② 问1 裁决）：direction 区分应收(in=客户回款)与应付(out=付供应商货款或物流商费用)。ref_type+ref_id 单列判别式承载三条结算/催收关系。overdue 为派生标记(as_of>due_date 且未 paid)非状态(沿 D9)。基础为 R19-R21。",
+      "properties": [
+        {"name": "payment_id", "type": "string", "required": true, "description": "PK, `PAY-` 前缀。"},
+        {"name": "direction", "type": "enum", "required": true, "values": ["in", "out"], "description": "in=客户回款(应收)；out=付供应商货款或物流商费用(应付)。"},
+        {"name": "counterparty_type", "type": "enum", "required": true, "values": ["customer", "supplier", "vendor"], "description": "vendor=物流/费用商。"},
+        {"name": "counterparty_id", "type": "string", "required": true, "description": "对应主键(customer_id / supplier_id / vendor 名)。"},
+        {"name": "ref_type", "type": "enum", "required": true, "values": ["sales_order", "supplier_invoice", "invoice"], "description": "应收挂订单(问2 裁决)；应付挂两类发票。ref_type+ref_id 单列判别式承载三关系。"},
+        {"name": "ref_id", "type": "string", "required": true, "description": "单据主键(so_id / supplier_invoice_id / invoice_id，按 ref_type 判别)。"},
+        {"name": "amount_usd", "type": "number", "required": true, "sensitive": true, "description": "金额；对非 finance/manager 脱敏(sensitiveFieldRules)。"},
+        {"name": "due_date", "type": "date", "required": true, "description": "应收付日。out 向由 Supplier.payment_terms_days 自动推算(问3 裁决)；in 向对客 30 天。"},
+        {"name": "paid_date", "type": "date", "required": false, "description": "实收付日；空=未结。"},
+        {"name": "status", "type": "enum", "required": true, "values": ["scheduled", "paid"], "description": "状态机唯一迁移 scheduled→paid(RecordPayment 触发)。overdue 为派生标记(as_of>due_date 且未 paid)，非状态。"},
+        {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."},
+        {"name": "created_at", "type": "datetime", "required": true}
+      ],
+      "dataQualityRules": ["payment_id unique", "amount_usd >= 0", "paid_date <= as_of_date when present (D8)"]
     },
     {
       "type": "SupplierQualification",
@@ -551,7 +581,7 @@
         {"name": "type", "type": "enum", "required": true, "values": ["overseas", "bonded", "domestic", "FBA", "3PL"]},
         {"name": "operator", "type": "string", "required": true, "description": "Who runs it (self / 3PL name / amazon)."},
         {"name": "region", "type": "string", "required": true},
-        {"name": "capacity_units", "type": "number", "required": true, "description": "Storage capacity in units; basis for future R20 over-capacity (deferred)."},
+        {"name": "capacity_units", "type": "integer", "required": true, "description": "Storage capacity in units; basis for future R20 over-capacity (deferred)."},
         {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."}
       ],
       "dataQualityRules": ["warehouse_id unique", "capacity_units > 0"]
@@ -565,11 +595,11 @@
         {"name": "inventory_position_id", "type": "string", "required": true},
         {"name": "sku_id", "type": "string", "required": true, "description": "References catalog SKU."},
         {"name": "warehouse_id", "type": "string", "required": true},
-        {"name": "available_qty", "type": "number", "required": true, "description": "On-hand, sellable now. R16: available_qty <= safety_stock = stockout."},
-        {"name": "reserved_qty", "type": "number", "required": true, "description": "Committed to allocated reservations; subtracted in ATP."},
-        {"name": "in_transit_qty", "type": "number", "required": true, "description": "Inbound not yet received; added in ATP."},
-        {"name": "quarantine_qty", "type": "number", "required": true, "description": "Held (QC/damage); not sellable, excluded from ATP."},
-        {"name": "safety_stock", "type": "number", "required": true, "description": "R16 floor; config.warehouse.safety_stock_range."},
+        {"name": "available_qty", "type": "integer", "required": true, "description": "On-hand, sellable now. R16: available_qty <= safety_stock = stockout."},
+        {"name": "reserved_qty", "type": "integer", "required": true, "description": "Committed to allocated reservations; subtracted in ATP."},
+        {"name": "in_transit_qty", "type": "integer", "required": true, "description": "Inbound not yet received; added in ATP."},
+        {"name": "quarantine_qty", "type": "integer", "required": true, "description": "Held (QC/damage); not sellable, excluded from ATP."},
+        {"name": "safety_stock", "type": "integer", "required": true, "description": "R16 floor; config.warehouse.safety_stock_range."},
         {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."}
       ],
       "dataQualityRules": ["inventory_position_id unique", "at most one position per (sku_id, warehouse_id)", "sku_id in skus", "warehouse_id in warehouses"]
@@ -584,7 +614,7 @@
         {"name": "reservation_id", "type": "string", "required": true},
         {"name": "so_line_id", "type": "string", "required": true, "description": "The demand: a SalesOrderLine (same object as the control tower)."},
         {"name": "inventory_position_id", "type": "string", "required": true},
-        {"name": "qty", "type": "number", "required": true, "description": "Ordered/needed quantity; R17 compares it against position ATP."},
+        {"name": "qty", "type": "integer", "required": true, "description": "Ordered/needed quantity; R17 compares it against position ATP."},
         {"name": "status", "type": "enum", "required": true, "values": ["open", "allocated", "released", "fulfilled", "backordered"]},
         {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."}
       ],
@@ -600,9 +630,9 @@
         {"name": "cycle_count_id", "type": "string", "required": true},
         {"name": "inventory_position_id", "type": "string", "required": true},
         {"name": "warehouse_id", "type": "string", "required": true},
-        {"name": "system_qty", "type": "number", "required": true, "description": "Book quantity at count time."},
-        {"name": "counted_qty", "type": "number", "required": true, "description": "Physically counted quantity."},
-        {"name": "variance", "type": "number", "required": true, "description": "counted - system (negative = shrink)."},
+        {"name": "system_qty", "type": "integer", "required": true, "description": "Book quantity at count time."},
+        {"name": "counted_qty", "type": "integer", "required": true, "description": "Physically counted quantity."},
+        {"name": "variance", "type": "integer", "required": true, "description": "counted - system (negative = shrink)."},
         {"name": "status", "type": "enum", "required": true, "values": ["scheduled", "counted", "variance", "reconciled"]},
         {"name": "as_of_date", "type": "date", "required": true, "description": "Explicit simulation snapshot (D8)."}
       ],
@@ -634,7 +664,7 @@
         {"name": "rfq_line_id", "type": "string", "required": true},
         {"name": "rfq_id", "type": "string", "required": true},
         {"name": "sku_id", "type": "string", "required": true},
-        {"name": "qty", "type": "number", "required": true, "description": "Requested sourcing quantity."}
+        {"name": "qty", "type": "integer", "required": true, "description": "Requested sourcing quantity."}
       ],
       "dataQualityRules": ["rfq_line_id unique", "qty > 0", "rfq_id in rfqs"]
     },
@@ -670,8 +700,8 @@
         {"name": "counterparty_ref", "type": "string", "required": true, "description": "Free-text handle for the counterparty (e.g. supplier id/name, forwarder, broker)."},
         {"name": "ask", "type": "string", "required": true, "description": "What we need from the counterparty (e.g. 'confirm revised ready date after reschedule')."},
         {"name": "state", "type": "enum", "required": true, "values": ["awaiting", "responded", "escalated", "resolved", "dead_ended"]},
-        {"name": "followup_count", "type": "number", "required": true, "description": "How many outreach touches sent (starts at 1 on open, ++ on each record_outreach)."},
-        {"name": "escalation_level", "type": "number", "required": true, "description": "0 initially; ++ on each escalate_coordination."},
+        {"name": "followup_count", "type": "integer", "required": true, "description": "How many outreach touches sent (starts at 1 on open, ++ on each record_outreach)."},
+        {"name": "escalation_level", "type": "integer", "required": true, "description": "0 initially; ++ on each escalate_coordination."},
         {"name": "owner", "type": "string", "required": true, "description": "Internal owner chasing this thread (demo roster id)."},
         {"name": "next_action_due", "type": "date", "required": true, "description": "When the next internal action is due; basis for the DERIVED overdue flag (explicit as_of, D8)."},
         {"name": "last_response", "type": "string", "required": false, "description": "Latest counterparty response text; null until record_response."},
@@ -694,7 +724,7 @@
     {"linkType": "line_for_sku", "source": "SalesOrderLine", "target": "Sku", "cardinality": "N:1"},
     {"linkType": "supplier_provides", "source": "Supplier", "target": "Sku", "cardinality": "1:N", "rule": "single supplier per sku in v0.2"},
     {"linkType": "po_from_supplier", "source": "PurchaseOrder", "target": "Supplier", "cardinality": "N:1"},
-    {"linkType": "po_shipped_by", "source": "PurchaseOrder", "target": "Shipment", "cardinality": "N:1", "rule": "one shipment carries multiple POs (D2)"},
+    {"linkType": "po_shipped_by", "source": "PurchaseOrder", "target": "Shipment", "cardinality": "N:1", "rule": "one shipment carries multiple POs (D2)", "storage": {"kind": "reverse_json", "table": "shipments", "column": "po_ids"}},
     {"linkType": "shipment_has_milestone", "source": "Shipment", "target": "ShipmentMilestone", "cardinality": "1:N", "rule": "append-only"},
     {"linkType": "allocation_to_shipment", "source": "ShipmentAllocation", "target": "Shipment", "cardinality": "N:1"},
     {"linkType": "allocation_to_line", "source": "ShipmentAllocation", "target": "SalesOrderLine", "cardinality": "N:1"},
@@ -734,14 +764,17 @@
     {"linkType": "reservation_for_line", "source": "InventoryReservation", "target": "SalesOrderLine", "cardinality": "N:1", "rule": "W1: reservation ties demand (SalesOrderLine) to on-hand stock; drives R17"},
     {"linkType": "cycle_count_on_position", "source": "CycleCount", "target": "InventoryPosition", "cardinality": "N:1"},
     {"linkType": "cycle_count_in_warehouse", "source": "CycleCount", "target": "Warehouse", "cardinality": "N:1"},
-    {"linkType": "shipment_to_warehouse", "source": "Shipment", "target": "Warehouse", "cardinality": "N:1", "rule": "W1 connect point: shipment.destination_warehouse resolves to a Warehouse (goods land in a warehouse)"},
+    {"linkType": "shipment_to_warehouse", "source": "Shipment", "target": "Warehouse", "cardinality": "N:1", "rule": "W1 connect point: shipment.destination_warehouse resolves to a Warehouse (goods land in a warehouse)", "storage": {"kind": "column", "table": "shipments", "column": "destination_warehouse"}},
     {"linkType": "risk_on_warehouse", "source": "RiskEvent", "target": "Warehouse", "cardinality": "N:1", "rule": "W1: nullable anchor for warehouse anomalies (R16-R18)"},
     {"linkType": "rfq_for_sku", "source": "RFQ", "target": "Sku", "cardinality": "N:1", "rule": "P3: RFQ sources a single SKU"},
     {"linkType": "rfq_has_line", "source": "RFQ", "target": "RFQLine", "cardinality": "1:N"},
     {"linkType": "rfq_has_quote", "source": "RFQ", "target": "Quote", "cardinality": "1:N"},
     {"linkType": "rfq_line_for_sku", "source": "RFQLine", "target": "Sku", "cardinality": "N:1"},
     {"linkType": "quote_from_supplier", "source": "Quote", "target": "Supplier", "cardinality": "N:1", "rule": "P3: awarded quote certifies the supplier as an approved source for the SKU (AVL); drives R14/R15"},
-    {"linkType": "risk_affects_sku", "source": "RiskEvent", "target": "Sku", "cardinality": "N:M", "via": "affected_po_line_ids reused as [sku_id] carrier for R14 single-source (P3)"}
+    {"linkType": "risk_affects_sku", "source": "RiskEvent", "target": "Sku", "cardinality": "N:M", "via": "affected_sku_ids"},
+    {"linkType": "payment_settles_supplier_invoice", "source": "Payment", "target": "SupplierInvoice", "cardinality": "N:1", "rule": "F1: 应付 Payment 结算供应商发票；ref_type='supplier_invoice' 判别", "storage": {"kind": "column", "table": "payments", "column": "ref_id", "discriminator": "ref_type", "discriminator_value": "supplier_invoice"}},
+    {"linkType": "payment_settles_invoice", "source": "Payment", "target": "Invoice", "cardinality": "N:1", "rule": "F1: 应付 Payment 结算物流/费用发票；ref_type='invoice' 判别", "storage": {"kind": "column", "table": "payments", "column": "ref_id", "discriminator": "ref_type", "discriminator_value": "invoice"}},
+    {"linkType": "payment_collects_order", "source": "Payment", "target": "SalesOrder", "cardinality": "N:1", "rule": "F1: 应收 Payment 挂销售订单回款(问2 裁决)；ref_type='sales_order' 判别", "storage": {"kind": "column", "table": "payments", "column": "ref_id", "discriminator": "ref_type", "discriminator_value": "sales_order"}}
   ],
   "stateMachines": {
     "Shipment": {
@@ -874,12 +907,57 @@
         {"from": "escalated", "to": "dead_ended", "trigger": "MarkDeadEnded: store outcome"}
       ],
       "notes": "Coordination Loop (decision CL1). Terminal: resolved, dead_ended. overdue is DERIVED (state in {awaiting,escalated} and next_action_due < as_of), not a state. Actions gated by new COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance}, an independent permission group -- maker-checker ROLE_PERMS unchanged (ApproveMitigation stays manager-only, CloseRiskEvent stays ops-only)."
+    },
+    "Payment": {
+      "states": ["scheduled", "paid"],
+      "transitions": [
+        {"from": "scheduled", "to": "paid", "trigger": "RecordPayment: set paid_date + status->paid"}
+      ],
+      "notes": "F1 资金往来单状态机 (V8-②). Terminal: paid. overdue is DERIVED (status=scheduled and due_date < as_of), NOT a state (D9 precedent: delayed is derived). RecordPayment is the only transition trigger."
     }
   },
+  "aiQueryTools": [
+    {"name": "list_open_risks", "domain": "risk",
+     "description": "列出未关闭的风险事件，可按 severity 过滤（critical/high/medium）",
+     "input_schema": {"type": "object", "properties": {"severity": {"type": "string", "enum": ["critical", "high", "medium"]}}}},
+    {"name": "get_risk", "domain": "risk",
+     "description": "查单个风险事件详情（类型/规则/级别/根因/受影响行/金额/状态）",
+     "input_schema": {"type": "object", "properties": {"risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
+    {"name": "get_shipment_context", "domain": "risk",
+     "description": "查货运完整上下文：基础信息、判重后事件流、所载订单行与客户（按角色脱敏）",
+     "input_schema": {"type": "object", "properties": {"shipment_id": {"type": "string"}}, "required": ["shipment_id"]}},
+    {"name": "get_impact_chain", "domain": "risk",
+     "description": "查风险的影响链：受影响订单行→销售订单→客户，含分配数量与金额",
+     "input_schema": {"type": "object", "properties": {"risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
+    {"name": "get_audit_trail", "domain": "risk",
+     "description": "查对象（风险/任务）的审计历史，含被拒绝的调用",
+     "input_schema": {"type": "object", "properties": {"object_id": {"type": "string"}}, "required": ["object_id"]}},
+    {"name": "list_admission_cases", "domain": "admission",
+     "description": "列出准入案件（v0.3），可按 status 过滤（draft/in_precheck/plan_ready/priced/approved/quote_with_conditions/rejected/needs_more_info）",
+     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
+    {"name": "get_admission_context", "domain": "admission",
+     "description": "查准入案件完整上下文：案件、合规发现、物流方案、成本情景（成本字段按角色脱敏）、客户能力",
+     "input_schema": {"type": "object", "properties": {"admission_case_id": {"type": "string"}}, "required": ["admission_case_id"]}},
+    {"name": "list_invoices", "domain": "cost",
+     "description": "列出发票（v0.4），可按 status 过滤（received/under_review/approved/disputed）。返回 invoice_id/vendor/type/shipment/total/status/issue_date",
+     "input_schema": {"type": "object", "properties": {"status": {"type": "string"}}}},
+    {"name": "get_invoice_context", "domain": "cost",
+     "description": "查发票完整对账上下文：发票 + 行明细（join expected_costs 给出基准与差异列）+ 所属 shipment 摘要（incoterm/delay_days/status）。发票金额字段按角色脱敏（与 UI 费用工作台 mask_cost 同规：finance/manager 可见，其余掩码）",
+     "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}}, "required": ["invoice_id"]}},
+    {"name": "get_similar_resolutions", "domain": "risk",
+     "description": "C1 只读检索处置记忆：按规则类型精确匹配+同航线（origin→destination LOCODE）查同类风险的历史处置——同类 N 次、按方案/决定的统计、最相似 1 案详情（当时提案/人的决定/实际结果/质量标签）。所有数字运行时从 resolution_memory 现算可回查；无先例如实返回首例；被屏蔽（voided）的记忆不返回",
+     "input_schema": {"type": "object", "properties": {"risk_event_id": {"type": "string"}}, "required": ["risk_event_id"]}},
+    {"name": "explain_relationship_path", "domain": "risk",
+     "description": "只读查询 object_relationships：解释两个对象之间的有向关系路径",
+     "input_schema": {"type": "object", "properties": {"source_type": {"type": "string"}, "source_id": {"type": "string"}, "target_type": {"type": "string"}, "target_id": {"type": "string"}, "max_depth": {"type": "integer", "minimum": 1, "maximum": 6}}, "required": ["source_type", "source_id", "target_type", "target_id", "max_depth"]}}
+  ],
   "actions": [
     {
       "id": "A1",
       "name": "IngestMilestone",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "ingest_milestone(shipment_id, event_type, event_time, source_system, new_eta=None, payload=None, as_of_date=...) -> Result",
       "executors": ["system"],
       "preconditions": ["shipment exists", "eta_change requires new_eta", "exact duplicate -> store with is_duplicate=true and skip ALL side effects"],
@@ -890,6 +968,9 @@
     {
       "id": "A2",
       "name": "CreateRiskEvent",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "create_risk_event(shipment_id, rule_id, type, severity, affected_so_line_ids, root_cause, as_of_date, actor='system') -> Result",
       "executors": ["system", "ops"],
       "preconditions": ["affected lines non-empty for delay_breach", "existing non-terminal (shipment,type) event -> merge (max severity, union lines), return existing id"],
@@ -900,6 +981,11 @@
     {
       "id": "A3",
       "name": "AssignTask",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "为 open 状态的风险派发处置任务（A3）。这是允许 AI 执行的写动作之一",
+      "tool_input_schema": {"type": "object", "properties": {"risk_event_id": {"type": "string"}, "assignee_role": {"type": "string", "enum": ["ops", "cs"]}, "priority": {"type": "string", "enum": ["P1", "P2", "P3"]}, "due_at": {"type": "string"}}, "required": ["risk_event_id", "assignee_role", "priority", "due_at"]},
       "signature": "assign_task(risk_event_id, assignee_role, priority, due_at, actor) -> Result",
       "executors": ["system", "ops"],
       "preconditions": ["RiskEvent in {open}", "no non-terminal task for this risk"],
@@ -910,8 +996,13 @@
     {
       "id": "A4",
       "name": "ProposeMitigation",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "对 assigned 状态的任务提交处置提案（A4），最终须人工审批。proposal-only 的体现",
+      "tool_input_schema": {"type": "object", "properties": {"task_id": {"type": "string"}, "proposed_action": {"type": "string", "enum": ["reschedule", "expedite", "accept_delay"]}, "proposal_params": {"type": "object"}}, "required": ["task_id", "proposed_action", "proposal_params"]},
       "signature": "propose_mitigation(task_id, proposed_action, proposal_params, actor, role) -> Result",
-      "executors": ["ops", "cs", "finance"],
+      "executors": ["ops", "cs", "finance", "procurement"],
       "paramsSchema": {
         "expedite": {"new_mode": "air", "est_cost_usd": "number", "expected_new_eta": "date"},
         "reschedule": {"new_promise_date": "date", "notify_customer": true},
@@ -933,6 +1024,9 @@
     {
       "id": "A5",
       "name": "ApproveMitigation",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "approve_mitigation(task_id, decision, comment, actor, role='manager') -> Result",
       "executors": ["manager"],
       "preconditions": ["approval_status=pending", "M1 maker-checker: if proposer actor is known, approver actor_id must differ from proposal_actor_id"],
@@ -949,6 +1043,9 @@
     {
       "id": "A6",
       "name": "CloseRiskEvent",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "close_risk_event(risk_event_id, outcome, resolution_summary, actor_role) -> Result",
       "executors": ["ops"],
       "preconditions": ["all tasks terminal", "outcome=mitigated requires an approved proposal", "outcome=false_alarm cancels non-terminal tasks then closes"],
@@ -958,6 +1055,11 @@
     },
     {
       "id": "B1", "name": "CreateAdmissionCase",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "B1 建案（仅销售）：为 candidate SKU 建准入案。AI 准备动作之一，不做审批",
+      "tool_input_schema": {"type": "object", "properties": {"customer_id": {"type": "string"}, "sku_id": {"type": "string"}, "request_type": {"type": "string"}, "incoterm_candidate": {"type": "string"}, "target_launch_date": {"type": "string"}, "monthly_order_estimate": {"type": "integer"}}, "required": ["customer_id", "sku_id", "request_type", "incoterm_candidate", "target_launch_date", "monthly_order_estimate"]},
       "signature": "create_admission_case(customer_id, sku_id, request_type, incoterm_candidate, target_launch_date, monthly_order_estimate, actor, role) -> Result",
       "executors": ["sales"],
       "preconditions": ["customer and sku exist", "sku_status=candidate"],
@@ -967,6 +1069,11 @@
     },
     {
       "id": "B2", "name": "RunCompliancePrecheck",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "B2 合规预审（仅合规）：提交 findings 列表，风险等级重算。AI 准备动作，不做审批",
+      "tool_input_schema": {"type": "object", "properties": {"admission_case_id": {"type": "string"}, "findings": {"type": "array", "items": {"type": "object"}}}, "required": ["admission_case_id", "findings"]},
       "signature": "run_compliance_precheck(admission_case_id, findings, actor, role) -> Result",
       "executors": ["compliance"],
       "preconditions": ["case in {draft,in_precheck,needs_more_info}", "each finding passes schema", "finding_type=hts requires hts_candidate"],
@@ -976,6 +1083,11 @@
     },
     {
       "id": "B3", "name": "BuildLogisticsPlan",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "B3 物流方案（仅运营）：建方案，DDP 门禁自动校验。AI 准备动作，不做审批",
+      "tool_input_schema": {"type": "object", "properties": {"admission_case_id": {"type": "string"}, "plan": {"type": "object"}}, "required": ["admission_case_id", "plan"]},
       "signature": "build_logistics_plan(admission_case_id, plan, actor, role) -> Result",
       "executors": ["ops"],
       "preconditions": ["case in {in_precheck,plan_ready}", "DDP gate: customer.ior_capability=has_ior AND exists finding with hts_candidate"],
@@ -985,6 +1097,11 @@
     },
     {
       "id": "B4", "name": "CalculateCostScenario",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "B4 成本情景（仅财务）：算成本与毛利。AI 准备动作，不做审批/拒接决策",
+      "tool_input_schema": {"type": "object", "properties": {"logistics_plan_id": {"type": "string"}, "scenario": {"type": "object"}}, "required": ["logistics_plan_id", "scenario"]},
       "signature": "calculate_cost_scenario(logistics_plan_id, scenario, actor, role) -> Result",
       "executors": ["finance"],
       "preconditions": ["plan exists", "case in {plan_ready,priced}", "DDP scenario: duty_tax>0 AND customs_brokerage>0 AND risk_buffer>0"],
@@ -994,6 +1111,9 @@
     },
     {
       "id": "B5", "name": "ApproveQuoteDecision",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "approve_quote_decision(admission_case_id, approved_logistics_plan_id, approved_cost_scenario_id, decision, decision_reason, conditions, actor, role) -> Result",
       "executors": ["manager"],
       "preconditions": [
@@ -1007,6 +1127,9 @@
     },
     {
       "id": "B6", "name": "RejectOrRequestMoreInfo",
+      "exposed_as_tool": false,
+      "ai_executable": "frozen",
+      "enforcement": "role_dict",
       "signature": "reject_or_request_more_info(admission_case_id, decision, missing_documents, rejection_reason, actor, role) -> Result",
       "executors": ["compliance (more_info)", "manager (reject)"],
       "preconditions": ["case non-terminal", "reject requires rejection_reason", "more_info requires missing_documents"],
@@ -1016,6 +1139,9 @@
     },
     {
       "id": "A7", "name": "RecordGoodsReceipt",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "record_goods_receipt(po_id, received_date, lines, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "P1 Build 1 defines the shape only; ingest + R7/R8/R9 detection lands in Build 2.",
@@ -1026,6 +1152,9 @@
     },
     {
       "id": "A8", "name": "MatchSupplierInvoice",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "match_supplier_invoice(supplier_invoice_id, actor, role, as_of_date=...) -> Result",
       "executors": ["finance", "system"],
       "placeholder": "P1 Build 1 defines the shape only; three-way match + R10 detection lands in Build 2.",
@@ -1035,15 +1164,23 @@
       "audit": ["supplier_invoice_id", "match_result", "rules_triggered"]
     },
     {
-      "id": "A9", "name": "RecordPurchasePayment",
-      "signature": "record_purchase_payment(po_id, payment_type, amount_usd, paid_date, actor, role, as_of_date=...) -> Result",
+      "id": "A9", "name": "RecordPayment",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
+      "signature": "record_payment(payment_id, paid_date, amount_usd, actor, role, as_of_date=...) -> Result",
       "executors": ["finance", "system"],
-      "placeholder": "P2 Build A defines the object + R12 detection only. This ingest action (and R12 disposition, e.g. escalate/release prepayment hold) lands in Build B; not implemented in Build A.",
-      "preconditions": ["po_id in purchase_orders", "amount_usd >= 0", "paid_date <= as_of_date (D8)"],
-      "audit": ["payment_id", "po_id", "amount_usd"]
+      "note": "F1 (V8-②): A9 RecordPurchasePayment 更名转正合并，语义扩为收付通用(记录 Payment 收/付事实)。本系统是运营原型不接银行——'付款'是记录事实不是执行转账，故无需 ExecutePayment 冻结区扩充；AI 照旧不可达(exposed_as_tool=false, ai_executable=never)。旧 PurchasePayment/R12 数据由 datagen 生成、不依赖本动作。",
+      "preconditions": ["ref 单据存在(ref_id in 对应表，按 ref_type 判别)", "amount_usd > 0", "同 ref 未重复全额结清", "paid_date <= as_of_date (D8)"],
+      "successEffects": ["Payment.status -> paid", "paid_date recorded", "audit 落 action_log"],
+      "failureHandling": ["前提不满足 -> 拒绝并审计(Payment 状态不变)"],
+      "audit": ["payment_id", "ref_type", "ref_id", "amount_usd"]
     },
     {
       "id": "A10", "name": "RecordSupplierQualification",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "engine_internal",
       "signature": "record_supplier_qualification(supplier_id, cert_type, valid_from, valid_to, evidence_status, actor, role, as_of_date=...) -> Result",
       "executors": ["compliance", "system"],
       "placeholder": "P2 Build A defines the object + R13 detection only. This ingest action (and R13 disposition, e.g. request qualification renewal) lands in Build B; not implemented in Build A.",
@@ -1052,6 +1189,9 @@
     },
     {
       "id": "A11", "name": "Putaway",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "putaway(grn_line_id, warehouse_id, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; ingest (GoodsReceiptLine.accepted_qty -> InventoryPosition.available_qty) lands in Build 2/3. Connect point: procurement receipt feeds warehouse stock.",
@@ -1060,6 +1200,9 @@
     },
     {
       "id": "A12", "name": "ReserveInventory",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "reserve_inventory(so_line_id, inventory_position_id, qty, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; ATP check + reservation state land in Build 2/3. ATP available -> allocated; ATP short -> backordered (R17).",
@@ -1068,6 +1211,9 @@
     },
     {
       "id": "A13", "name": "ReleaseReservation",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "release_reservation(reservation_id, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; wiring lands in Build 2/3.",
@@ -1076,6 +1222,9 @@
     },
     {
       "id": "A14", "name": "SuggestSubstitution",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "suggest_substitution(risk_event_id, split_ship_qty, reschedule_qty, actor, role) -> Result",
       "executors": ["ops"],
       "placeholder": "W1 Build 1 defines the shape only; the business connect point (delay R1-R3 -> check destination-warehouse stock -> split-ship on-hand now + reschedule remainder, via A5 approval) lands in Build 2/3.",
@@ -1084,6 +1233,9 @@
     },
     {
       "id": "A15", "name": "RecordCycleCount",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "role_dict",
       "signature": "record_cycle_count(inventory_position_id, counted_qty, actor, role, as_of_date=...) -> Result",
       "executors": ["ops", "system"],
       "placeholder": "W1 Build 1 defines the shape only; ingest + R18 detection land in Build 2/3.",
@@ -1093,6 +1245,9 @@
     },
     {
       "id": "A16", "name": "AdjustInventory",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "adjust_inventory(cycle_count_id, actor, role) -> Result",
       "executors": ["ops"],
       "placeholder": "W1 Build 1 defines the shape only; approved adjustment (A5 gate) writes InventoryPosition.available_qty and reconciles the count in Build 2/3.",
@@ -1101,6 +1256,9 @@
     },
     {
       "id": "A17", "name": "InitiateSecondSource",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "initiate_second_source(sku_id, actor, role, as_of_date=...) -> Result",
       "executors": ["ops"],
       "placeholder": "P3 Build A defines the shape only; the remediation for R14 (create a draft RFQ to source a second approved supplier) lands in Build B as an approve_mitigation proposed_action.",
@@ -1110,6 +1268,9 @@
     },
     {
       "id": "A18", "name": "BlockNonPoPayment",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "block_non_po_payment(supplier_invoice_id, actor, role) -> Result",
       "executors": ["finance"],
       "placeholder": "P3 Build A defines the shape only; the R15 remediation (hold the off-process invoice pending PO backfill) lands in Build B as an approve_mitigation proposed_action.",
@@ -1118,6 +1279,9 @@
     },
     {
       "id": "A19", "name": "BackfillPo",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "enforcement": "proposal_flow",
       "signature": "backfill_po(supplier_invoice_id, po_id, actor, role) -> Result",
       "executors": ["ops"],
       "placeholder": "P3 Build A defines the shape only; the R15 remediation (retroactively attach the spend to an approved PO) lands in Build B as an approve_mitigation proposed_action.",
@@ -1126,6 +1290,10 @@
     },
     {
       "id": "A20", "name": "OpenCoordination",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "open_coordination(task_id, counterparty_type, counterparty_ref, ask, owner, next_action_due, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination (independent of maker-checker)", "task_id in tasks (anchor integrity)", "counterparty_type in enum"],
@@ -1135,6 +1303,10 @@
     },
     {
       "id": "A21", "name": "RecordOutreach",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "record_outreach(coordination_id, next_action_due, note, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state == awaiting"],
@@ -1144,6 +1316,10 @@
     },
     {
       "id": "A22", "name": "RecordResponse",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "record_response(coordination_id, last_response, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, escalated}"],
@@ -1153,6 +1329,10 @@
     },
     {
       "id": "A23", "name": "EscalateCoordination",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "escalate_coordination(coordination_id, next_action_due, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded}"],
@@ -1162,6 +1342,10 @@
     },
     {
       "id": "A24", "name": "ResolveCoordination",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "resolve_coordination(coordination_id, outcome, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded, escalated} (active)"],
@@ -1171,12 +1355,30 @@
     },
     {
       "id": "A25", "name": "MarkDeadEnded",
+      "exposed_as_tool": false,
+      "ai_executable": "never",
+      "permission_key": "ManageCoordination",
+      "enforcement": "role_dict",
       "signature": "mark_dead_ended(coordination_id, outcome, actor, role, as_of) -> Result",
       "executors": ["ops", "cs", "procurement", "finance"],
       "preconditions": ["role in COORD_PERMS.ManageCoordination", "state in {awaiting, responded, escalated} (active)"],
       "successEffects": ["state -> dead_ended (terminal)", "store outcome", "last_update=as_of"],
       "failureHandling": ["role not permitted -> deny + audit", "already terminal -> reject"],
       "audit": ["outcome"]
+    },
+    {
+      "id": "A26", "name": "ProposeCollection",
+      "exposed_as_tool": true,
+      "ai_executable": "auto",
+      "enforcement": "role_dict",
+      "tool_description": "对逾期应收(overdue 派生的 in 向 Payment)提交催收任务提案(F1)，最终须人工审批。proposal-only 的体现(maker-checker)",
+      "tool_input_schema": {"type": "object", "properties": {"payment_id": {"type": "string"}, "note": {"type": "string"}}, "required": ["payment_id"]},
+      "signature": "propose_collection(payment_id, note, actor, role) -> Result",
+      "executors": ["cs", "finance"],
+      "preconditions": ["payment_id in payments", "Payment.direction='in'", "Payment overdue 派生成立(status=scheduled 且 due_date < as_of)"],
+      "successEffects": ["生成催收任务提案(approval_status=pending)候人批", "proposal_actor 记录"],
+      "failureHandling": ["非 overdue in 向 Payment -> reject", "role not permitted -> deny + audit"],
+      "audit": ["payment_id", "actor", "role"]
     }
   ],
   "riskRules": [
@@ -1197,7 +1399,10 @@
     {"id": "R17", "type": "unfulfillable", "logic": "W1: an open InventoryReservation (status in {open, backordered}) whose SalesOrderLine is open, at a position where ATP < reservation.qty. ATP = available_qty + in_transit_qty - reserved_qty, computed from position buckets (NOT from reservations, to avoid a circular dependency). Anchored on so_line_id (warehouse_id = position.warehouse_id). This is the 'delay -> check on-hand -> substitute' business hook.", "severity": "ATP <= 0: high; else medium"},
     {"id": "R18", "type": "shrinkage", "logic": "W1: a CycleCount where |counted_qty - system_qty| / system_qty > config.warehouse.cycle_count_tol (equivalently IRA < config.warehouse.ira_target). Anchored on cycle_count_id (warehouse_id set). affected_value = |variance| * sku.unit_price_usd.", "severity": "ratio > config.warehouse.shrink_high_ratio: high; else medium"},
     {"id": "R14", "type": "single_source", "logic": "P3: an active SKU whose approved-supplier set has exactly ONE member AND that sole supplier has a recent R7/R9 RiskEvent (detected_at within config.sourcing.single_source_recent_days of as_of). Approved set = {catalog incumbent (skus.supplier_id)} UNION {suppliers with an awarded Quote (rfq.created_date <= as_of) for the SKU}. A SKU with 2+ approved suppliers is NOT single-source. Reads existing risk_events for R7/R9 (must run after R7-R10); never reads truth. Anchored on supplier_id; sku_id carried in affected_po_line_ids as [sku_id]. affected_value = sum(po_line.qty*unit_price) for the SKU (PO spend exposed to single-source disruption).", "severity": "PO spend exposure > config.sourcing.single_source_high_usd: high; else medium"},
-    {"id": "R15", "type": "maverick_spend", "logic": "P3: a supplier_invoice whose billing supplier_id != its PO's supplier_id (billed against a PO that is not this supplier's approved PO) AND the billing supplier is NOT an approved alternate source for the invoiced line's SKU (no awarded Quote for the SKU). Off-process / off-contract spend. Existing compliant invoices (supplier == PO supplier) never fire; an approved-alternate biller is exempt (gray). issue_date <= as_of. Anchored on po_id (supplier_id set, affected_invoice_line_ids carries the maverick line). affected_value = invoice total_usd.", "severity": "invoice total_usd > config.sourcing.maverick_high_usd: high; else medium"}
+    {"id": "R15", "type": "maverick_spend", "logic": "P3: a supplier_invoice whose billing supplier_id != its PO's supplier_id (billed against a PO that is not this supplier's approved PO) AND the billing supplier is NOT an approved alternate source for the invoiced line's SKU (no awarded Quote for the SKU). Off-process / off-contract spend. Existing compliant invoices (supplier == PO supplier) never fire; an approved-alternate biller is exempt (gray). issue_date <= as_of. Anchored on po_id (supplier_id set, affected_invoice_line_ids carries the maverick line). affected_value = invoice total_usd.", "severity": "invoice total_usd > config.sourcing.maverick_high_usd: high; else medium"},
+    {"id": "R19", "type": "overdue_receivable", "logic": "F1 (V8-②): a Payment with direction='in' and status='scheduled' (paid_date empty) where as_of_date > due_date + config.finance.overdue_receivable_days. Money-in past grace, not collected. Anchored on payment_id. affected_value = amount_usd. as_of safe (D8): only payments whose as_of_date <= as_of considered; overdue is derived, never trusts a status field.", "severity": "amount_usd > config.finance.overdue_high_usd: critical; else high"},
+    {"id": "R20", "type": "cash_watch", "logic": "F1 (V8-②): over the forward window (as_of, as_of + config.finance.cash_watch_window_days], sum(Payment.amount_usd where direction='out' and status='scheduled' and due_date in window) - sum(direction='in' and status='scheduled' and due_date in window) > config.finance.cash_watch_threshold_usd. Net scheduled outflow breaches the cash floor. Single alert per as_of snapshot, anchored on synthetic window key CASH14D-<as_of>. affected_value = net outflow. as_of safe (D8): window computed from explicit as_of; threshold is a V8 補记 initial value (代定候调).", "severity": "critical"},
+    {"id": "R21", "type": "payment_anomaly", "logic": "F1 (V8-②): a paid Payment (paid_date <= as_of) that is EITHER a duplicate (its (ref_type, ref_id) has >1 paid Payment; anchor the later payment_id) OR an amount mismatch (|amount_usd - settled document amount| > config.finance.amount_mismatch_tol_usd, where the document amount is supplier_invoice.total_usd / invoice.total_usd / sales_order line-sum by ref_type). Anchored on payment_id. affected_value = amount_usd. as_of safe (D8).", "severity": "high"}
   ],
   "config": {
     "customs_buffer_days": 3,

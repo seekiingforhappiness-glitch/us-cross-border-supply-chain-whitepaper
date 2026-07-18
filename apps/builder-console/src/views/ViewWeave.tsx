@@ -1,11 +1,107 @@
 import { useEffect, useMemo, useState } from "react";
-import { weave } from "../data";
+import { weave, impact } from "../data";
 import { useNav } from "../components/Nav";
 import ViewHead from "../components/ViewHead";
-import type { StateMachine, WeaveAction } from "../types";
+import type { StateMachine, WeaveAction, ImpactType } from "../types";
 
 const TIER_TONE: Record<string, string> = { machine: "cyan", human: "amber", frozen: "red" };
 const TIER_LABEL: Record<string, string> = { machine: "🔵 机器/AI 可自动", human: "🟠 人的判断", frozen: "🔴 冻结区" };
+
+/* 折叠板块（v3 板块④：依赖 / 使用情况——评估改动半径，Ontology Manager 7 板块补齐） */
+function Fold({ title, hint, count, defaultOpen, children }: {
+  title: string; hint: string; count: number; defaultOpen?: boolean; children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <div className={`wv-fold${open ? " open" : ""}`}>
+      <button className="wv-fold-head" onClick={() => setOpen((o) => !o)}>
+        <span className="wv-fold-title">{title}</span>
+        <span className="wv-fold-hint">{hint}</span>
+        <span className="wv-fold-count num">{count}</span>
+        <span className="wv-fold-caret">{open ? "−" : "+"}</span>
+      </button>
+      {open && <div className="wv-fold-body">{children}</div>}
+    </div>
+  );
+}
+
+/* 依赖板块：出边/入边承载列（本类型靠哪些列连出去 / 谁靠哪些列连进来） */
+function DependencyFold({ im, onJump }: { im: ImpactType; onJump: (t: string) => void }) {
+  const out = im.links.filter((l) => l.dir === "out");
+  const inc = im.links.filter((l) => l.dir === "in");
+  const carriers = im.fields.filter((f) => f.carriesLink);
+  return (
+    <Fold title="依赖" hint="本类型的关系出边 / 入边 + 承载列——它靠什么连接，谁靠什么连它" count={im.links.length}>
+      <div className="wv-rels">
+        <div className="wv-rel-col">
+          <div className="wv-rel-dir mono">→ 它依赖（出边 {out.length}）</div>
+          {out.length ? out.map((l, i) => (
+            <button className="wv-rel" key={i} onClick={() => onJump(l.other)}>
+              <span className="wv-rel-plain">{l.plain}</span>
+              <span className="wv-rel-target">{l.otherPlain}<span className="mono wv-rel-card">{l.cardinality}</span></span>
+              {l.storage && <span className="wv-rel-storage mono">承载列 {l.storage.column}</span>}
+            </button>
+          )) : <span className="muted wv-rel-empty">无</span>}
+        </div>
+        <div className="wv-rel-col">
+          <div className="wv-rel-dir mono">← 谁依赖它（入边 {inc.length}）</div>
+          {inc.length ? inc.map((l, i) => (
+            <button className="wv-rel in" key={i} onClick={() => onJump(l.other)}>
+              <span className="wv-rel-plain">{l.plain}</span>
+              <span className="wv-rel-target">{l.otherPlain}<span className="mono wv-rel-card">{l.cardinality}</span></span>
+              {l.storage && <span className="wv-rel-storage mono">承载列 {l.storage.column}</span>}
+            </button>
+          )) : <span className="muted wv-rel-empty">无</span>}
+        </div>
+      </div>
+      {carriers.length > 0 && (
+        <div className="wv-carriers">
+          <div className="wv-carriers-l mono">本类型的承载列（改这些列 = 改连接）</div>
+          {carriers.map((f) => (
+            <span className="wv-carrier mono" key={f.name}>{f.name} → {f.carriesLink}</span>
+          ))}
+        </div>
+      )}
+    </Fold>
+  );
+}
+
+/* 使用情况板块：下游消费面摘要 + 实例计数（②的浓缩，点跳影响分析看全） */
+function UsageFold({ im, onImpact }: { im: ImpactType; onImpact: () => void }) {
+  const c = im.counts;
+  const total = c.links + c.rules + c.actions + c.tools + c.sensitive;
+  return (
+    <Fold title="使用情况" hint="被谁消费——规则/动作/AI 工具/敏感约束摘要 + 实例计数" count={total}>
+      <div className="wv-usage-metrics">
+        <div className="wv-um"><span className="wv-um-n num">{im.covered ? im.count.toLocaleString() : "—"}</span><span className="wv-um-l">活世界实例</span></div>
+        <div className="wv-um"><span className="wv-um-n num">{c.rules}</span><span className="wv-um-l">规则盯它</span></div>
+        <div className="wv-um"><span className="wv-um-n num">{c.actions}</span><span className="wv-um-l">动作读写</span></div>
+        <div className="wv-um"><span className="wv-um-n num">{c.tools}</span><span className="wv-um-l">AI 工具暴露</span></div>
+        <div className="wv-um"><span className="wv-um-n num">{c.sensitive}</span><span className="wv-um-l">敏感约束</span></div>
+      </div>
+      <div className="wv-usage-lists">
+        {im.queryTools.length + im.writeTools.length > 0 && (
+          <div className="wv-usage-row">
+            <span className="wv-usage-l mono">AI 工具</span>
+            <span className="wv-usage-chips">
+              {im.queryTools.map((q) => <span className="wv-usage-chip cyan mono" key={q.name}>{q.name}</span>)}
+              {im.writeTools.map((w) => <span className="wv-usage-chip green mono" key={w.actionId}>{w.toolName}</span>)}
+            </span>
+          </div>
+        )}
+        {im.sensitive.length > 0 && (
+          <div className="wv-usage-row">
+            <span className="wv-usage-l mono">敏感字段</span>
+            <span className="wv-usage-chips">
+              {im.sensitive.map((s) => <span className="wv-usage-chip red mono" key={s.field}>{s.field} · {s.visibleTo.join("/")}</span>)}
+            </span>
+          </div>
+        )}
+      </div>
+      <button className="wv-goto" onClick={onImpact} style={{ marginTop: 10 }}>影响分析看全牵连面 →</button>
+    </Fold>
+  );
+}
 
 /* 迷你状态机图（SVG）——状态横排，转移画箭头 */
 function StateMachineSVG({ sm }: { sm: StateMachine }) {
@@ -100,6 +196,7 @@ export default function ViewWeave() {
   }, [route.view, route.focus]);
 
   const t = weave.types[selected];
+  const im = impact.types[selected];
   const rels = useMemo(() => {
     const out = t.relationships.filter((r) => r.dir === "out");
     const inc = t.relationships.filter((r) => r.dir === "in");
@@ -237,6 +334,14 @@ export default function ViewWeave() {
               </div>
             ) : <p className="muted wv-rel-empty">没有规则直接盯它。</p>}
           </div>
+
+          {/* v3 板块④：依赖 + 使用情况两折叠板块（评估改动半径，Ontology Manager 7 板块补齐） */}
+          {im && (
+            <div className="wv-block wv-folds">
+              <DependencyFold im={im} onJump={setSelected} />
+              <UsageFold im={im} onImpact={() => navigate("impact", t.type)} />
+            </div>
+          )}
         </section>
       </div>
     </div>

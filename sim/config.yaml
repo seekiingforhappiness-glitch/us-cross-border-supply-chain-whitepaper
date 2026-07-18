@@ -206,5 +206,48 @@ ai_loop:                          # AI 同事在世界中运转：检测→分�
     partial: 0.28
     ineffective: 0.10
 
+# ============================ F2：活世界数据补灌（采购收货 / 准入 / 库存盘点 / 资金流域）============================
+# 全部用独立命名 rng 子流（procurement/admission/finance，见 backfill.STREAMS 追加，附在末尾）——
+# 不扰动既有 world..ai 八条子流 → S1/S2 世界逐字节不变。补灌是回填后派生 pass（enrich.py）：
+# 收货对 PO、供票对收货、付款对发票、准入案含成本情景、盘点并轨自 sim_cycle_counts，全部 ≤ as_of 因果自洽。
+enrichment:
+  declared_value_factor: 0.55        # skus.declared_value_usd = unit_price × 此（报关价≈批发价）——钱区在途货值
+  supplier_terms_days: [30, 45, 60]  # Supplier.payment_terms_days 档（按供应商序确定性分配，无 rng 漂移）
+  procurement:                       # 供应商区四指标：交期达成率 / 缺陷率 / 单一依赖(R14) / 对账差异(R7-R13)
+    on_time_base: 0.86               # 收货交期达成基线（供应商 reliability 上下调制 → 整体率 ~78-88%）
+    early_days: [0, 3]               # 达成时相对齐货日的提前天数
+    late_days: [3, 16]               # 未达成时迟到天数（chronic/低可靠供应商更常落此）
+    defect_ppm_cap: 5200             # 缺陷 ppm 上界（× (1-quality) 调制；高质供应商趋 60-400）
+    qc_fail_rate: 0.03               # 收货行 QC 失败率（rejected>0 且 qc_status=failed）
+    invoice_lag_days: [2, 7]         # 供应商开票滞后（收货后）
+  admission:                         # 客户区漏斗 + 钱区毛利率分布
+    case_count: 36                   # 准入案件数
+    status_weights: {draft: 10, in_precheck: 9, plan_ready: 6, priced: 9, quote_with_conditions: 1, approved: 4, needs_more_info: 1, rejected: 2}
+    priced_statuses: [plan_ready, priced, quote_with_conditions, approved]  # 含成本情景的状态
+    margin_reps: [-0.06, 0.04, 0.08, 0.14, 0.18, 0.24, 0.31]  # 毛利率代表值（四桶 loss/0-10/10-20/≥20 全覆盖）
+  finance:                          # 资金流：payments（in 挂订单 / out 挂两类发票）+ AI 逾期应收今日流
+    receivable_terms_days: 30        # 对客账期（in 向 due = order_date + 此）
+    vendor_terms_days: 30            # 物流商账期（out invoice due = issue + 此）
+    receivable_paid_rate: 0.80       # in 向已回款比例（其余 scheduled，含近端逾期）
+    payable_paid_rate: 0.85          # out 向已付比例（其余 scheduled = 在途应付）
+    overdue_recent_days: 21          # AI 关注近端逾期窗：crossing_day ∈ [as_of-此, as_of] 逐日复核进活 AI 流
+    horizon_guarantee_days: 2        # 末端 N 天 crossing 的应收强制未付 → 保证 07-13/07-14（含 as_of）各有新逾期
+    r21_anomalies: 3                 # 付款异常纹理数（重复付款 / 金额不符 → R21，横向体检用）
+  # ── C 补全域：12 类零实例对象补灌（询价/合规预审/物流方案/基准成本/资质/预付款/预留/协调线程）──
+  # 独立命名 rng 子流（sourcing/compliance/logistics/qualification/coordination/purchase_pay，见
+  # backfill.STREAMS 追加、附在末尾）——既有 11 条子流索引不变 → seed 不变 → S1/S2/F2 逐字节零扰动。
+  # 全部派生自上面已建世界（PO/供票/准入案/船/供应商/风险任务），因果自洽、id 带 -SIM- 后缀。
+  purchase_pay:                      # 采购预付款（PO 定金/尾款 + R12 敞口）——独立于通用 payments（AP 发票结算）
+    deposit_ratio: 0.30              # 定金比例（× PO 货值）
+    overdue_grace_days: 7            # 敞口判据：已付定金 + 齐货日已过 grace 天仍无收货 → at_risk（货逾期未到，钱已出）
+  sourcing:                          # 询价-报价链（RFQ→Quote 多供应商比价）
+    rfq_count: 16                    # 生成 RFQ 数（抽部分 active SKU）
+    inflight_ratio: 0.25             # 在建（未 awarded）RFQ 占比
+  reservation:                       # 库存预留（so_line→inventory_position 待履约需求，区别于 shipment_allocation）
+    open_sample: 60                  # 额外覆盖 open 状态样本数（enum 多样性）
+    fulfilled_sample: 60             # 额外覆盖 fulfilled 状态样本数
+  coordination:                      # CL1 协调回路线程（跨角色协作快照，锚部分 sim task/risk）
+    thread_count: 28                 # 生成协调线程数
+
 output:
   sqlite_path: "data/simworld.sqlite"   # 与 data/ontology.sqlite 物理隔离

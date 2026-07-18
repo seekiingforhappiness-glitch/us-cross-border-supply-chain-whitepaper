@@ -120,6 +120,9 @@ def build_static_world(cfg, rng):
     chronic = set(rng.sample(range(1, n_sup + 1), cfg["counts"]["chronic_delay_suppliers"]))
     qual_exp = set(rng.sample(sorted(set(range(1, n_sup + 1)) - chronic),
                               cfg["counts"]["qual_expiring_suppliers"]))
+    # F2：account 账期档（本体 0.11.0 Supplier.payment_terms_days）按供应商序确定性分配——
+    # 不消费 rng → S1/S2 世界逐字节不变（补灌铁律：新字段不得漂移既有随机序列）。
+    terms = cfg.get("enrichment", {}).get("supplier_terms_days", [30, 45, 60])
     for i in range(1, n_sup + 1):
         sid = f"SUP-{i:04d}"
         city = rng.choice(CN_SUPPLIER_CITIES)
@@ -134,9 +137,14 @@ def build_static_world(cfg, rng):
             "price_increase_tendency": round(rng.uniform(0.0, 0.30), 3),  # 涨价倾向（S2 用）
             "chronic_delay": i in chronic,                       # 惯性延期 flag（S2 触发）
             "qual_expiring": i in qual_exp,                      # 资质将过期 flag（S2 触发）
-            # ontology schema 兼容字段（准入域，S1 给合规默认值）
-            "factory_audit_status": "passed", "compliance_docs_status": "complete",
-            "uflpa_risk_flag": "low", "origin_evidence_status": "verified",
+            "payment_terms_days": terms[(i - 1) % len(terms)],   # F2 账期（out 向 due 自动推算）
+            # G5 枚举对齐（本体 Supplier 枚举治本，V12 决策日志；G1 同款模式，其漏网之鱼）：
+            # compliance_docs_status 本体枚举无 "complete"，"齐全"语义最贴 provided（已提供单证；
+            # 不擅升 verified——那需另行核验）；uflpa_risk_flag 本体是 boolean（语义=是否有 UFLPA
+            # 风险），"low"→false（25 家实测均此值，无 medium/high 出现，故无需 true 分支）。纯
+            # 字面量改，不消费 rng → S1/S2 世界随机序列逐字节不变；仅这两列既有值被校正（可审计）。
+            "factory_audit_status": "passed", "compliance_docs_status": "provided",
+            "uflpa_risk_flag": False, "origin_evidence_status": "verified",
         }
     w["suppliers"] = suppliers
 
@@ -144,10 +152,14 @@ def build_static_world(cfg, rng):
     skus = {}
     cats = _weighted_categories(cfg, rng, cfg["counts"]["skus"])
     sup_ids = sorted(suppliers)
+    # F2：报关申报价值（钱区在途货值口径）——= 批发单价 × 常数因子，确定性派生不消费 rng
+    # （报关价 ≈ 批发价的固定比例，真实感够用且不扰动既有随机序列）。
+    dv_factor = cfg.get("enrichment", {}).get("declared_value_factor", 0.55)
     for i, cat in enumerate(cats, 1):
         kid = f"SKU-{i:04d}"
         spec = cfg["sku_categories"][cat]
         names = SKU_NAME_POOL[cat]
+        # rng 调用序严格保持 S1 原样（sku_name→unit_price→supplier→velocity）——补灌不得漂移世界流
         skus[kid] = {
             "sku_id": kid,
             "sku_name": f"{rng.choice(names)} ({i:03d})",
@@ -158,6 +170,8 @@ def build_static_world(cfg, rng):
             "daily_velocity": rng.randint(*spec["velocity"]),    # 日销（驱动补货与库存消耗）
             "sku_status": "active",
         }
+        # F2 报关价值（钱区在途货值）：unit_price × 常数，确定性派生不消费 rng
+        skus[kid]["declared_value_usd"] = round(skus[kid]["unit_price_usd"] * dv_factor, 2)
     w["skus"] = skus
 
     # --- 客户（40 家三层：3 大 B/12 中型/25 长尾）---
@@ -176,8 +190,12 @@ def build_static_world(cfg, rng):
                 "tolerance_days": rng.randint(*tspec["tolerance_days"]),
                 "lines_per_order_range": tspec["lines_per_order"],
                 "next_order_offset": rng.randint(0, tspec["order_interval_days"][1]),  # 错峰起点
-                "business_model": "wholesale", "sales_channel": "b2b",
-                "ior_capability": "has_ior", "broker_status": "active",
+                # G1 枚举对齐（本体 Customer 枚举治本）：wholesale→trader（批发/B2B 分销商在本体
+                # business_model 分类下最贴切 trader=贸易商；platform_seller/brand_dtc/service_provider
+                # 均不符批发分销业态）；active→has_broker（"有活跃报关行"= has_broker）。纯字面量改，不消费
+                # rng → S1/S2 世界随机序列逐字节不变；仅这两列既有值被校正（可审计，见报告值映射表）。
+                "business_model": "trader", "sales_channel": "b2b",
+                "ior_capability": "has_ior", "broker_status": "has_broker",
                 "credit_terms": "net30", "risk_tier": "low",
             }
     w["customers"] = customers

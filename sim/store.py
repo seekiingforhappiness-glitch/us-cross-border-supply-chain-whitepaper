@@ -7,7 +7,7 @@ SKU/客户性格参数、货代-船绑定、公司画像、船期、sim_event_lo
 ④ 写入顺序确定 → 内容可复现（verify 已核验逐字节一致）。
 """
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -15,7 +15,7 @@ from pathlib import Path
 OBJECT_DDL = {
     "suppliers": """(supplier_id TEXT PRIMARY KEY, supplier_name TEXT, city TEXT,
         lead_time_days INTEGER, factory_audit_status TEXT, compliance_docs_status TEXT,
-        uflpa_risk_flag TEXT, origin_evidence_status TEXT)""",
+        uflpa_risk_flag TEXT, origin_evidence_status TEXT, payment_terms_days INTEGER)""",
     "skus": """(sku_id TEXT PRIMARY KEY, sku_name TEXT, category TEXT, unit_price_usd REAL,
         supplier_id TEXT, sku_status TEXT, declared_value_usd TEXT, package_weight_kg TEXT,
         package_l_cm TEXT, package_w_cm TEXT, package_h_cm TEXT, battery_flag TEXT,
@@ -54,6 +54,62 @@ OBJECT_DDL = {
     "inventory_positions": """(inventory_position_id TEXT PRIMARY KEY, sku_id TEXT,
         warehouse_id TEXT, available_qty INTEGER, reserved_qty INTEGER, in_transit_qty INTEGER,
         quarantine_qty INTEGER, safety_stock INTEGER, as_of_date TEXT)""",
+    # F2 补灌域（列集严格对齐本体 0.11.0 / build_ontology 表——驾驶舱直接读点亮体征带）
+    "goods_receipts": """(grn_id TEXT PRIMARY KEY, po_id TEXT, received_date TEXT, status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "goods_receipt_lines": """(grn_line_id TEXT PRIMARY KEY, grn_id TEXT, po_line_id TEXT,
+        received_qty INTEGER, accepted_qty INTEGER, rejected_qty INTEGER, qc_status TEXT,
+        defect_ppm INTEGER, received_date TEXT, as_of_date TEXT, created_at TEXT)""",
+    "supplier_invoices": """(supplier_invoice_id TEXT PRIMARY KEY, supplier_id TEXT, po_id TEXT,
+        vendor_invoice_no TEXT, issue_date TEXT, currency TEXT, total_usd REAL, status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "admission_cases": """(admission_case_id TEXT PRIMARY KEY, case_title TEXT, customer_id TEXT,
+        sku_id TEXT, request_type TEXT, incoterm_candidate TEXT, target_launch_date TEXT,
+        monthly_order_estimate INTEGER, risk_level TEXT, status TEXT, decision TEXT,
+        decision_reason TEXT, conditions TEXT)""",
+    "cost_scenarios": """(cost_scenario_id TEXT PRIMARY KEY, logistics_plan_id TEXT,
+        scenario_type TEXT, quote_price_usd REAL, product_cost_usd REAL, first_mile_cost_usd REAL,
+        international_freight_usd REAL, duty_tax_usd REAL, customs_brokerage_usd REAL,
+        warehouse_cost_usd REAL, last_mile_cost_usd REAL, returns_allowance_usd REAL,
+        risk_buffer_usd REAL, gross_margin_usd REAL, gross_margin_rate REAL)""",
+    "cycle_counts": """(cycle_count_id TEXT PRIMARY KEY, inventory_position_id TEXT,
+        warehouse_id TEXT, system_qty INTEGER, counted_qty INTEGER, variance INTEGER, status TEXT,
+        as_of_date TEXT)""",
+    "payments": """(payment_id TEXT PRIMARY KEY, direction TEXT, counterparty_type TEXT,
+        counterparty_id TEXT, ref_type TEXT, ref_id TEXT, amount_usd REAL, due_date TEXT,
+        paid_date TEXT, status TEXT, as_of_date TEXT, created_at TEXT)""",
+    # C 补全域（12 类零实例对象；列集严格对齐本体 0.11.3 / pipeline.ontology_models——驾驶舱直接读）
+    "po_lines": """(po_line_id TEXT PRIMARY KEY, po_id TEXT, sku_id TEXT, qty INTEGER,
+        unit_price_usd REAL, currency TEXT, expected_ready_date TEXT, line_status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "supplier_invoice_lines": """(supplier_invoice_line_id TEXT PRIMARY KEY,
+        supplier_invoice_id TEXT, po_line_id TEXT, qty INTEGER, unit_price_usd REAL,
+        amount_usd REAL, as_of_date TEXT, created_at TEXT)""",
+    "purchase_payments": """(payment_id TEXT PRIMARY KEY, po_id TEXT, payment_type TEXT,
+        amount_usd REAL, paid_date TEXT, exposure_status TEXT, as_of_date TEXT, created_at TEXT)""",
+    "inventory_reservations": """(reservation_id TEXT PRIMARY KEY, so_line_id TEXT,
+        inventory_position_id TEXT, qty INTEGER, status TEXT, as_of_date TEXT)""",
+    "rfqs": """(rfq_id TEXT PRIMARY KEY, sku_id TEXT, status TEXT, created_date TEXT,
+        as_of_date TEXT)""",
+    "rfq_lines": """(rfq_line_id TEXT PRIMARY KEY, rfq_id TEXT, sku_id TEXT, qty INTEGER)""",
+    "quotes": """(quote_id TEXT PRIMARY KEY, rfq_id TEXT, supplier_id TEXT, unit_price_usd REAL,
+        currency TEXT, status TEXT, as_of_date TEXT)""",
+    "compliance_findings": """(compliance_finding_id TEXT PRIMARY KEY, admission_case_id TEXT,
+        finding_title TEXT, finding_type TEXT, severity TEXT, hts_candidate TEXT, pga_agency TEXT,
+        required_document TEXT, evidence_status TEXT, recommendation TEXT)""",
+    "logistics_plans": """(logistics_plan_id TEXT PRIMARY KEY, admission_case_id TEXT,
+        plan_name TEXT, route_type TEXT, incoterm TEXT, origin_port_locode TEXT,
+        destination_port_locode TEXT, us_warehouse_region TEXT, last_mile_method TEXT,
+        estimated_transit_days INTEGER, sla_risk TEXT, operational_notes TEXT)""",
+    "expected_costs": """(expected_cost_id TEXT PRIMARY KEY, shipment_id TEXT, charge_code TEXT,
+        container_no TEXT, baseline_usd REAL, source TEXT)""",
+    "supplier_qualifications": """(qualification_id TEXT PRIMARY KEY, supplier_id TEXT,
+        cert_type TEXT, evidence_status TEXT, valid_from TEXT, valid_to TEXT, status TEXT,
+        as_of_date TEXT, created_at TEXT)""",
+    "coordination_threads": """(coordination_id TEXT PRIMARY KEY, task_id TEXT, risk_event_id TEXT,
+        counterparty_type TEXT, counterparty_ref TEXT, ask TEXT, state TEXT, followup_count INTEGER,
+        escalation_level INTEGER, owner TEXT, next_action_due TEXT, last_response TEXT,
+        outcome TEXT, opened_at TEXT, last_update TEXT, policy_version TEXT)""",
 }
 
 # sim 专属表：世界谱系参数 / 性格模型 / 货代-船绑定 / 自审计——不污染对象层
@@ -94,7 +150,7 @@ S2_DDL = {
         affected_invoice_line_ids TEXT, po_id TEXT, supplier_id TEXT, affected_po_line_ids TEXT,
         warehouse_id TEXT, source TEXT)""",
     "tasks": """(task_id TEXT PRIMARY KEY, risk_event_id TEXT, title TEXT, assignee_role TEXT,
-        priority TEXT, proposed_action TEXT, proposal_params TEXT, approval_status TEXT,
+        priority TEXT, due_at TEXT, proposed_action TEXT, proposal_params TEXT, approval_status TEXT,
         approved_by_role TEXT, action_taken TEXT, status TEXT, proposal_actor_id TEXT,
         decided_at TEXT, decision_day TEXT, economics_json TEXT, precedent_block TEXT, source TEXT)""",
     # 对齐 engine.resolution_memory.COLUMNS（21 列，四件套血缘）+ source
@@ -151,6 +207,14 @@ def _inventory_snapshot(world):
     return rows
 
 
+# G6 枚举清零（本体 PurchaseOrder.status 治本，V12 决策日志延伸；同 _TASK_STATUS_MAP 对象层投影法）：
+# sim 内部采购单生命周期用通用词 "open"（generators 建单起始态，全程不流转），但本体 PurchaseOrder.status
+# 枚举为 placed/ready/shipped/closed/cancelled——对象层投影时把起始态 open 映射为 placed（订单已下给供应商，
+# 语义最贴的本体初态；真实世界 datagen 的 PO 已流转到 ready/shipped/closed 故不含 placed，sim PO 恒停在
+# 初态故恒为 placed）。纯投影不改 world["pos"]（保 verify 复现性），不消费 rng。
+_PO_STATUS_MAP = {"open": "placed"}
+
+
 def _rows(world):
     """世界状态 → 对象层各表行（确定性排序；列集对齐本体，sim 专属字段不入此层）。"""
     as_of = world["_as_of"].isoformat()
@@ -159,9 +223,11 @@ def _rows(world):
     t["suppliers"] = [{k: world["suppliers"][sid][k] for k in
                        ("supplier_id", "supplier_name", "city", "lead_time_days",
                         "factory_audit_status", "compliance_docs_status", "uflpa_risk_flag",
-                        "origin_evidence_status")} for sid in sorted(world["suppliers"])]
+                        "origin_evidence_status", "payment_terms_days")}
+                      for sid in sorted(world["suppliers"])]
     t["skus"] = [{"sku_id": s["sku_id"], "sku_name": s["sku_name"], "category": s["category"],
-                  "unit_price_usd": s["unit_price_usd"], "supplier_id": s["supplier_id"],
+                  "unit_price_usd": s["unit_price_usd"],
+                  "declared_value_usd": s["declared_value_usd"], "supplier_id": s["supplier_id"],
                   "sku_status": s["sku_status"]}
                  for s in (world["skus"][k] for k in sorted(world["skus"]))]
     t["customers"] = [{k: world["customers"][cid][k] for k in
@@ -182,7 +248,8 @@ def _rows(world):
         "po_id": p["po_id"], "supplier_id": p["supplier_id"],
         "sku_id": world["lines"][p["line_ids"][0]]["sku_id"], "qty": p["qty"],
         "po_date": p["po_date"].isoformat(),
-        "expected_ready_date": p["expected_ready_date"].isoformat(), "status": p["status"],
+        "expected_ready_date": p["expected_ready_date"].isoformat(),
+        "status": _PO_STATUS_MAP.get(p["status"], p["status"]),
     } for p in (world["pos"][k] for k in sorted(world["pos"]))]
     t["shipments"] = [{
         "shipment_id": s["shipment_id"], "booking_no": s["booking_no"], "mbl_no": s["mbl_no"],
@@ -214,6 +281,37 @@ def _rows(world):
                         "capacity_units": world["warehouses"][k]["capacity_units"],
                         "as_of_date": as_of} for k in sorted(world["warehouses"])]
     t["inventory_positions"] = _inventory_snapshot(world)
+    # F2 补灌域（enrich.py 派生填入 world[...]；确定性排序，列集对齐本体）
+    t["goods_receipts"] = sorted(world.get("goods_receipts", []), key=lambda r: r["grn_id"])
+    t["goods_receipt_lines"] = sorted(world.get("goods_receipt_lines", []),
+                                      key=lambda r: r["grn_line_id"])
+    t["supplier_invoices"] = sorted(world.get("supplier_invoices", []),
+                                    key=lambda r: r["supplier_invoice_id"])
+    t["admission_cases"] = sorted(world.get("admission_cases", []),
+                                  key=lambda r: r["admission_case_id"])
+    t["cost_scenarios"] = sorted(world.get("cost_scenarios", []),
+                                 key=lambda r: r["cost_scenario_id"])
+    t["cycle_counts"] = sorted(world.get("cycle_counts", []), key=lambda r: r["cycle_count_id"])
+    t["payments"] = sorted(world.get("payments", []), key=lambda r: r["payment_id"])
+    # C 补全域（enrich.py 派生填入 world[...]；确定性排序，列集对齐本体）
+    t["po_lines"] = sorted(world.get("po_lines", []), key=lambda r: r["po_line_id"])
+    t["supplier_invoice_lines"] = sorted(world.get("supplier_invoice_lines", []),
+                                         key=lambda r: r["supplier_invoice_line_id"])
+    t["purchase_payments"] = sorted(world.get("purchase_payments", []), key=lambda r: r["payment_id"])
+    t["inventory_reservations"] = sorted(world.get("inventory_reservations", []),
+                                         key=lambda r: r["reservation_id"])
+    t["rfqs"] = sorted(world.get("rfqs", []), key=lambda r: r["rfq_id"])
+    t["rfq_lines"] = sorted(world.get("rfq_lines", []), key=lambda r: r["rfq_line_id"])
+    t["quotes"] = sorted(world.get("quotes", []), key=lambda r: r["quote_id"])
+    t["compliance_findings"] = sorted(world.get("compliance_findings", []),
+                                      key=lambda r: r["compliance_finding_id"])
+    t["logistics_plans"] = sorted(world.get("logistics_plans", []),
+                                  key=lambda r: r["logistics_plan_id"])
+    t["expected_costs"] = sorted(world.get("expected_costs", []), key=lambda r: r["expected_cost_id"])
+    t["supplier_qualifications"] = sorted(world.get("supplier_qualifications", []),
+                                          key=lambda r: r["qualification_id"])
+    t["coordination_threads"] = sorted(world.get("coordination_threads", []),
+                                       key=lambda r: r["coordination_id"])
     return t
 
 
@@ -271,11 +369,38 @@ def _sim_rows(world, cfg):
     }
 
 
+# G1 枚举对齐（本体 Task 枚举治本）：sim 任务内部 status 用 "open"（同 RiskEvent 生命周期语义），
+# 但本体 Task.status 枚举为 assigned/in_progress/done/cancelled——对象层投影时把待审批(open,
+# approval_status=pending) 映射为 in_progress（与真实 data/ontology.sqlite 一致：pending 任务即 in_progress）。
+_TASK_STATUS_MAP = {"open": "in_progress"}
+# 处置 SLA（按优先级确定性推算 due_at；纯算术不消费 rng）：P1 紧 / P3 松。
+_TASK_SLA_DAYS = {"P1": 2, "P2": 5, "P3": 10}
+
+
+def _project_task(world, task):
+    """把 sim 任务投影到本体对象层：① 补 due_at（本体 required——从其风险 detected_at + 优先级 SLA
+    确定性推算的处置截止日，非交付日）；② status 枚举对齐（open→in_progress）。返回新 dict 不改
+    world（保 verify 复现性）——sim 内部逻辑仍用 "open"，仅对象层落库值对齐本体枚举。"""
+    t = dict(task)
+    t["status"] = _TASK_STATUS_MAP.get(t.get("status"), t.get("status"))
+    base = (world.get("risk_events", {}).get(t.get("risk_event_id"), {}) or {}).get("detected_at") or ""
+    if base:
+        try:
+            t["due_at"] = (date.fromisoformat(base)
+                           + timedelta(days=_TASK_SLA_DAYS.get(t.get("priority"), 5))).isoformat()
+        except ValueError:
+            t["due_at"] = base
+    else:
+        t["due_at"] = ""
+    return t
+
+
 def _s2_rows(world):
-    """AI 回路产物 → risk_events/tasks/resolution_memory/sim_ai_activity 行（确定性排序，全 source='sim'）。"""
+    """AI 回路产物 → risk_events/tasks/resolution_memory/sim_ai_activity 行（确定性排序，全 source='sim'）。
+    tasks 经 _project_task 投影：补本体 required 的 due_at + status 枚举对齐（G1 治本）。"""
     return {
         "risk_events": [world["risk_events"][k] for k in sorted(world.get("risk_events", {}))],
-        "tasks": [world["tasks"][k] for k in sorted(world.get("tasks", {}))],
+        "tasks": [_project_task(world, world["tasks"][k]) for k in sorted(world.get("tasks", {}))],
         "resolution_memory": sorted(world.get("memory", []), key=lambda m: m["memory_id"]),
         "sim_ai_activity": sorted(world.get("ai_activity", []), key=lambda a: a["ai_event_id"]),
     }

@@ -3,6 +3,28 @@
 > 最近一次全链验证：**2026-07-09**（loop 迭代 14，主会话 controller 从零重跑全链、捕获真实输出）。
 > 用途：发版 / 面客前的自检门。每条都有可复跑命令；任何一条变红都不得声称"可交付"。
 
+## W. WAIVED 豁免通道（V16③ 2026-07-16 Daniel 批准设立并认领签字人）
+
+本清单原本"全绿 or 不可交付"一刀切。WAIVED 是第三条**诚实的路**：某条已知是红的、但有兜底，
+可以带着"红得明明白白"交付，条件是**每条豁免必须登记四要素**：
+
+| 要素 | 要求 |
+|---|---|
+| 签字人 | **仅 Daniel**（不可代签、不可由 AI 或子代理记账时自行补签） |
+| 原因 | 白话写清为什么这条暂时做不全 |
+| 期限 | 到期必须复审（转绿或重新签） |
+| 补偿措施 | 红着的期间靠什么兜底 |
+
+**不可豁免清单（任何情况下不得 WAIVED，映射既有红线）**：
+① 真值指纹不变（datagen 真值 md5）②冻结区四动作不入任何 AI 工具面 + maker-checker 双人复核
+不削弱 ③ AI 越权全被拒 = 0 ④ 业务库只读边界（影子测量/评估不写业务库）⑤ 审计留痕不可关。
+
+**登记表（append-only，当前无豁免）**：
+
+| 日期 | 条目 | 原因 | 期限 | 补偿 | 签字 |
+|---|---|---|---|---|---|
+| — | （尚无豁免记录） | | | | |
+
 ## 0. 一键复现（从零到全绿）
 
 ```bash
@@ -16,6 +38,9 @@ python3 -m engine.detect
 python3 -m engine.evaluate && python3 -m engine.evaluate_cost \
   && python3 -m engine.evaluate_procurement && python3 -m engine.evaluate_warehouse
 python3 -m datagen.seed_demo_ops
+python3 -m pipeline.apply_seam_columns    # 波2-2b 接缝列链尾幂等步（tasks/risk_events 等引擎表补 version/tenant_id）
+# 重建确定性门（尺子=业务逻辑指纹，遥测表豁免见 pipeline/db_digest.py 头注）：两次全链重建
+# python3 -m pipeline.db_digest 输出必须一致（2026-07-16 起文件 md5 因 G-Ledger 真实时间戳在重建间合法不同）
 # ④ 五场景闭环
 python3 -m app.test_closed_loop && python3 -m app.test_cost_loop && python3 -m app.test_admission_loop \
   && python3 -m app.test_procurement_loop && python3 -m app.test_sourcing_loop && python3 -m app.test_warehouse_loop
@@ -35,12 +60,33 @@ streamlit run app/streamlit_app.py          # 改代码后【完整重启】，�
 
 ### A. 检测精度 · R1–R18 全 P/R = 1.000
 - [x] **可复现性**：同种子逐字节一致（`datagen.verify` PASS）、管道评估 PASS（`pipeline.evaluate`）
+- [x] **本体一致性闸门（桥1，V5 起新增发版门）**：`python3 -m pipeline.ontology_lint --strict`
+      退出码 0——本体↔表结构↔权限字典↔AI 工具四类断言零差异才放行（declared_only 显式豁免
+      不阻断但每次报告可见；2026-07-14 M3 后达成 strict-clean 并入此门）
 - [x] **检测覆盖**：`engine.detect` → 152 事件 / 152 created / 0 merged，`by_rule` 覆盖全部 R1–R18
       （R1:25 R2:10 R3:16 · R4:5 R5:2 R6:18 · R7:8 R8:8 R9:7 R10:8 R11:7 R12:7 R13:5 · R14:4 R15:4 · R16:6 R17:6 R18:6）
 - [x] **延误 R1–R3** `engine.evaluate` P/R=1.000
 - [x] **费用 R4–R6** `engine.evaluate_cost` P/R=1.000
 - [x] **采购 R7–R15** `engine.evaluate_procurement` P/R=1.000、灰区 0 误报
 - [x] **仓储 R16–R18** `engine.evaluate_warehouse` P/R=1.000
+- [x] **资金流 R19–R21** `engine.evaluate_finance` P/R=1.000（F1，2026-07-14 起新增发版门）
+
+### A+. 本体运行时化与 AI 通道（V5-V6 API 层，2026-07-14 起新增发版门）
+- [x] **权限/工具单一权威源**：`app/test_ontology_runtime.py` 迁移一致性全绿（本体解释生成==
+      人批基线；含 frozen∩exposed 变异防线三用例、traverse 四承载+判别式正反向）
+- [x] **MCP server 四门槛**：`agent/test_mcp_server.py` 全绿（角色过滤/声明脱敏/审计入库
+      llm_calls/冻结区协议层拦截+7 写工具走既有 dispatch 无第二写路径）
+- [x] **对抗安全**：`app/test_agent_security.py` 288 注入全拒（扩资金流工具后）
+- [x] **API 聚合层**：`pytest apps/api/` 全绿（五路由本体驱动+驾驶舱三端点手工 SQL 对照+
+      双世界+脱敏；36 用例）
+- [x] **驾驶舱构建**：`cd apps/cockpit && npx tsc --noEmit && npm run build` 零错
+
+### A++. 企业级交付收口（2026-07-14 全部回填）
+- [x] 透视镜 v3 四板块交付+既有 12 视图零回归（50fe2ef：搜索/影响分析/动作工具联动/等距归位）
+- [x] Task 动作词表对齐后双世界全对象 model_validate 零警告（201af80：sim 207+real 20 全过，
+      顺带治愈 seed 路径 6 条 finance 任务静默失败的预存 bug）
+- [x] 前端死样式清理后全交互回归（e960d09：净减 486 行、268 类零残留、译名归一）
+- [x] README/ONBOARDING 对齐 0.11.2 形态（六场景/R1-R21/三座桥/MCP/双 React 应用/双世界）
 
 ### B. 五场景闭环（风险→派单→提案→审批 maker-checker→审计）
 - [x] 延误 `test_closed_loop` · 费用 `test_cost_loop` · 准入 `test_admission_loop`

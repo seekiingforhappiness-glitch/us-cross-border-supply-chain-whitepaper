@@ -30,6 +30,8 @@ AS_OF = "2026-07-08"
 EXPECTED_ROLE_PERMS = {  # manual §6 + cost-manual §5——本次不得改动
     "AssignTask": {"ops", "system"},
     "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
+    "RecordPayment": {"finance", "system"},          # F1（finance-manual §3，A9 转正）
+    "ProposeCollection": {"cs", "finance"},          # F1（A26 催收提案）
     "ApproveMitigation": {"manager"},
     "CloseRiskEvent": {"ops"},
 }

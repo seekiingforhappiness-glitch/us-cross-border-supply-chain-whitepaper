@@ -1,0 +1,53 @@
+import { type Zone, type ZoneId } from "../api";
+import Icon from "../components/Icons";
+import WorkQueue from "./WorkQueue";
+import ZoneContext from "./ZoneContext";
+import { zoneQueue, ZONE_SHORT, type DrillTarget } from "./zoneModel";
+
+// 区工作队列（下钻第二段）——V10 方案 C。点指挥墙区卡进入：面包屑「指挥墙 > 区」+ 工作队列
+// （有队列的区）+ 聚合上下文（ZoneContext）。无队列的存量聚合区如实给出 emptyHint 并由上下文承接。
+// 履约区额外给「航线视图」入口（与卡上切换钮同去处），方便在区内也能切到航线地图。
+
+const EMPTY_HINT: Partial<Record<ZoneId, string>> = {
+  money: "钱区为存量聚合指标（敞口 / 在途 / 拦回 / 毛利），无逐条工作队列——见下方聚合。",
+  // 文案修复（P1，李珊）：原"逐条在途请走「航线视图」"不属实——航线视图是聚合航线地图，没有逐票
+  // 列表；如实改指向真能查到逐票明细的地方（Streamlit 操作台），不给指死路的导流。
+  fulfillment: "履约 headline 为准交率聚合，无逐条工作队列；航线视图看聚合航线与告警分布，逐票明细当前在 Streamlit 操作台查询——清关卡点 / 延误分布见下方。",
+  ai: "AI 运营账为累计聚合指标，无逐条队列——见下方今日 / 累计 / 记忆命中。",
+  suppliers: "当前世界缺采购收货域，无供应商交期队列——见下方对账差异 / 单一依赖。",
+  inventory: "当前无安全库存击穿条目——见下方盘点差异 / 现货可救性。",
+};
+
+interface Props {
+  zone: Zone;
+  onBack: () => void;
+  onMap?: () => void;
+  onDrill: (t: DrillTarget, key: string) => void;
+  activeKey: string | null;
+}
+
+export default function ZoneQueue({ zone, onBack, onMap, onDrill, activeKey }: Props) {
+  return (
+    <WorkQueue
+      crumbs={[{ label: "指挥墙", onClick: onBack }, { label: ZONE_SHORT[zone.zone] }]}
+      title={zone.headline_label}
+      alertCount={zone.alert_count}
+      alertLabel={zone.zone === "decisions" ? "超时/升级告警" : undefined}
+      alertTitle={zone.zone === "decisions"
+        ? "告警数=超期任务+升级件，不是待批提案数（待批数见卡片大数字与下方列表行数）"
+        : undefined}
+      headerActions={
+        zone.zone === "fulfillment" && onMap ? (
+          <button className="cp-switch-btn" onClick={onMap}>
+            <Icon name="ship" size={14} /> 航线视图 <Icon name="arrow-right" size={12} />
+          </button>
+        ) : undefined
+      }
+      spec={zoneQueue(zone)}
+      onDrill={onDrill}
+      activeKey={activeKey}
+      emptyHint={EMPTY_HINT[zone.zone] ?? "本区无逐条队列——见下方聚合指标。"}
+      context={<ZoneContext zone={zone} />}
+    />
+  );
+}

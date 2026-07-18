@@ -32,32 +32,38 @@
        本工具的派生规则是对那份硬编码映射的**重建**，故对每个派生名都再核验其在 DB 中
        确实存在，派生不出或表不存在则报为差异而非崩溃。
 
-  [M2] 动作 → 权限字典键：本体 action.name 直接等于代码权限字典的键
-       （AssignTask/ProposeMitigation/ApproveMitigation/CloseRiskEvent 即 ROLE_PERMS 的 4 键）。
-       任务点名的主对象是 app/actions.py 的 ROLE_PERMS；但运行时权限分散在 5 个字典
-       （actions.py ROLE_PERMS / admission_actions.py ADM_PERMS / procurement_actions.py
-       PROC_PERMS / warehouse_actions.py WH_PERMS / coordination_actions.py COORD_PERMS）。
-       本工具以 ROLE_PERMS 为主、其余 4 个为扩展交叉核对（每条差异标明来自哪个字典哪个文件）。
-       协调域 6 动作 A20-A25 共用一个组权限键 ManageCoordination（组权限，非每动作一键）。
-       executors 里的括号注解（如 "compliance (more_info)"）在比对时被剥离，只取角色名。
+  [M2] 动作 → 权限字典键（M1 规则3/4/9 起改为**读本体声明字段**，不再靠内置动作名清单）：
+       动作按其 `permission_key` 字段（缺省=name）在 5 个权限字典里查键——协调域 6 动作 A20-A25
+       声明 permission_key=ManageCoordination（组权限键）。动作的 `enforcement` 字段声明执行路径：
+       role_dict（默认，经权限字典执行，逐条核对 executors）/ engine_internal（引擎内部执行、无人类
+       RBAC 键，豁免键要求）/ proposal_flow（经 propose→approve 提案流执行，无独立键，豁免）。
+       运行时权限分散在 5 个字典（actions.py ROLE_PERMS / admission_actions.py ADM_PERMS /
+       procurement_actions.py PROC_PERMS / warehouse_actions.py WH_PERMS /
+       coordination_actions.py COORD_PERMS）；executors 括号注解（如 "compliance (more_info)"）剥离取角色名。
 
-  [M3] AI 工具 → 动作：写工具名 = snake_case(action.name)
-       （assign_task→AssignTask 等）。读工具（list_*/get_*/explain_*）是**对象查询工具**，
-       本体的 31 个 action 全是写/变更动作、无"读动作"，故读工具溯源到对象而非动作（预期，不算差异）。
-       冻结区动作（审批/关闭/拒接）判定：动作名以 Approve/Close/Reject 开头者视为冻结区，
-       它们**不得**出现在 TOOL_DEFS，且核心 4 个应在 FORBIDDEN_TOOLS 显式拉黑。
+  [M3] AI 工具 → 动作（M1 规则9 起改为**读本体声明字段** exposed_as_tool / ai_executable，
+       不再用动作名前缀 Approve/Close/Reject 猜冻结区）：
+       写工具集 == snake(exposed_as_tool=true 动作)（assign_task→AssignTask 等）；读工具
+       （list_*/get_*/explain_*）是对象查询工具，本体无"读动作"故溯源到对象而非动作（预期，不算差异）；
+       冻结区 = ai_executable=frozen 动作，**不得**出现在 TOOL_DEFS，且须在 FORBIDDEN_TOOLS 逐一拉黑
+       （FORBIDDEN_TOOLS == snake(ai_executable=frozen 动作)，不多不少）。
 
-  [M4] 关系 → 外键列：
-       N:1（source→target）外键落在 source 表，列名 = target 主键；
-       1:N（source→target）外键落在 target 表，列名 = source 主键；
-       N:M 存为 source 对象上的 json_list 列（命名多为 affected_<target>_ids）或联结表。
-       SQLite 未声明 FOREIGN KEY 约束（核对深度=**列名存在性**，非引用完整性）；
-       标准列名缺失时做二次尽力扫描（反向 json_list / 软命名列如 destination_warehouse），
+  [M4] 关系 → 外键列（M1 规则7 起：links[] 的 `storage` 声明把"重建猜测"变"显式声明"）：
+       有 `storage` 声明的关系直接核对声明列（kind=reverse_json/column 等）是否存在；
+       `status=declared_only` 的关系豁免"缺失"判定并登记为报告尾部的待裁决豁免（诚实：豁免≠消音）。
+       未声明 storage 的关系仍走派生：N:1 外键落在 source 表（列名=target 主键）、1:N 落在 target 表、
+       N:M 存 source 对象 json_list 列（命名多为 affected_<target>_ids）；SQLite 未声明 FOREIGN KEY
+       约束（核对深度=**列名存在性**，非引用完整性），标准列名缺失时二次尽力扫描反向 json_list / 软命名列，
        找到即报【漂移】、彻底找不到才报【缺失】。
 
-读写边界（红线）：数据库一律以 `mode=ro` 只读 URI 打开；app/agent 的 Python 常量一律用
-`ast.literal_eval` 静态解析源码提取，**从不 import/执行**任何 app 或 agent 模块——保证本工具
+读写边界（红线）：数据库一律以 `mode=ro` 只读 URI 打开；**从不 import/执行任何 app 或 agent 模块**，
 对运行时零副作用、绝不修改 ROLE_PERMS / FORBIDDEN_TOOLS / 任何现有代码。
+  · 桥2 M2 前：app/agent 的权限/工具常量用 `ast.literal_eval` 静态解析源码字面量提取。
+  · 桥2 M2 后：这些常量已从本体解释生成（app/*.py 权限字典、tools.py 的 TOOL_DEFS/FORBIDDEN_TOOLS
+    不再是可静态解析的字面量），B/C 断言的运行时侧改为消费同一个生成器 `pipeline.ontology_runtime`
+    （pipeline 模块、非 app/agent——红线不破）读『生成后的运行时』，与『生成前的声明』（本体
+    executors / exposed_as_tool / ai_executable）比对。两张皮焊死后，这条比对从「抓 drift」
+    转为「证单一源」；A/D 断言仍直接读只读库，与生成无关。
 ═══════════════════════════════════════════════════════════════════════════════
 """
 from __future__ import annotations
@@ -70,6 +76,12 @@ import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+# 桥2 M2：B/C 断言的运行时侧改为消费本体运行时生成器（app/agent 的权限/工具已从本体生成、
+# 不再有可 ast 静态解析的字面量）。ontology_runtime 是 pipeline 模块、非 app/agent——只读红线不破。
+from pipeline.ontology_runtime import (build_forbidden_tools as _rt_forbidden_tools,
+                                       build_role_perms as _rt_role_perms,
+                                       build_tool_defs as _rt_tool_defs)
 
 # ---------------------------------------------------------------------------
 # 路径（相对仓库根，脚本可从任意目录运行）
@@ -157,6 +169,13 @@ def strip_role_annotation(executor: str) -> str:
     return executor.split("(")[0].strip()
 
 
+# V14 接缝①②/V18 波2-2b：**系统列**（乐观锁 version + 租户预留 tenant_id）由桥3 生成器统一
+# 追加到全部对象表，不进业务本体 properties（本体保持业务纯净；基础设施列在生成层声明）。
+# 本常量是 lint A 类断言与 generate_ddl 影子对比共用的唯一豁免源——除此二列外，任何"表有列
+# 但本体未声明"仍照常报差异（豁免面最小化）。
+SYSTEM_COLUMNS = {"version", "tenant_id"}
+
+
 def extract_module_literal(path: Path, name: str):
     """静态（AST）解析源码文件，取出顶层赋值 `name = <字面量>` 的值。
     只用 ast.literal_eval，从不执行模块——这是本工具"只读、零副作用"的关键保证。"""
@@ -221,7 +240,7 @@ def assert_a_objects_tables(onto: dict, schema: dict) -> tuple[list[Diff], list[
             diffs.append(Diff("A", MISSING, otype,
                               f"本体属性 {otype}.{missing} 在表 `{table}` 无对应列"))
         # 多列：表有列但本体未声明为属性
-        for extra in sorted(col_names - prop_names):
+        for extra in sorted(col_names - prop_names - SYSTEM_COLUMNS):
             diffs.append(Diff("A", EXTRA, otype,
                               f"表 `{table}` 有列 `{extra}`，本体对象 {otype} 未声明该属性"))
         # 主键不符
@@ -258,60 +277,61 @@ PERM_DICTS_SPEC = [
     ("WH_PERMS", WAREHOUSE_PATH, "app/warehouse_actions.py"),
     ("COORD_PERMS", COORDINATION_PATH, "app/coordination_actions.py"),
 ]
-# 协调域组权限键 → 覆盖的动作名（A20-A25 共用 ManageCoordination）。
-COORD_GROUP_KEY = "ManageCoordination"
-COORD_ACTIONS = {"OpenCoordination", "RecordOutreach", "RecordResponse",
-                 "EscalateCoordination", "ResolveCoordination", "MarkDeadEnded"}
-# approve_mitigation 提案子类型动作：经 propose→approve maker-checker 流执行，无独立权限键（预期，不报缺失）。
-PROPOSAL_SUBTYPE_ACTIONS = {"SuggestSubstitution", "AdjustInventory", "InitiateSecondSource",
-                            "BlockNonPoPayment", "BackfillPo"}
+def load_perm_dicts(onto: dict) -> tuple[dict, dict]:
+    """返回 (perm_key→(role_set, source, file) 的映射, {source: 权限映射})。
+    perm_key = 权限键（含协调域组权限键 ManageCoordination）。
 
-
-def load_perm_dicts() -> tuple[dict, dict]:
-    """返回 (action_name→(role_set, dict_name, file) 的统一映射, {dict_name: 原始字典})。"""
-    raw = {}
-    unified = {}
-    for dict_name, path, rel in PERM_DICTS_SPEC:
-        d = extract_module_literal(path, dict_name)
-        raw[dict_name] = d
-        for key, roles in d.items():
-            role_set = {strip_role_annotation(r) for r in roles}
-            if key == COORD_GROUP_KEY:
-                for act in COORD_ACTIONS:  # 组权限展开到每个协调动作
-                    unified[act] = (role_set, dict_name, rel)
-            else:
-                unified[key] = (role_set, dict_name, rel)
-    return unified, raw
+    桥2 M2 前：AST 静态解析 5 个 app/*.py 权限字典的字面量（见 PERM_DICTS_SPEC 记录其provenance）。
+    桥2 M2 后：这 5 个字典已从本体解释生成、app/*.py 无字面量可静态解析，故改为消费同一个生成器
+    `pipeline.ontology_runtime.build_role_perms`（读 enforcement=role_dict 动作的 executors、按
+    permission_key 归组）——即 assert_b 比对的『生成后的运行时』侧。红线仍守（ontology_runtime 是
+    pipeline 模块、非 app/agent）。"""
+    generated = _rt_role_perms(onto)   # {perm_key: {role,...}}，与运行时 5 字典并集同构
+    src, rel = "生成 · ontology_runtime.build_role_perms", "pipeline/ontology_runtime.py"
+    by_key = {key: (set(roles), src, rel) for key, roles in generated.items()}
+    raw = {src: generated}
+    return by_key, raw
 
 
 def assert_b_actions_perms(onto: dict) -> tuple[list[Diff], list[str]]:
+    """M1 规则4/9 机制化：动作的 `enforcement` 字段（role_dict/engine_internal/proposal_flow）
+    显式声明执行路径——仅 enforcement=role_dict 的动作要求权限字典有键并逐条核对 executors；
+    engine_internal/proposal_flow 由声明豁免（旧的 3 处「登记盲区」从此消解，不再靠内置动作名清单）。"""
     diffs: list[Diff] = []
     notes: list[str] = []
-    unified, raw = load_perm_dicts()
+    by_key, raw = load_perm_dicts(onto)
 
-    governed, system_only, proposal, uncovered = [], [], [], []
+    role_dict_covered, engine_internal, proposal, missing_key = [], [], [], []
     for act in onto["actions"]:
         name = act["name"]
+        enforcement = act.get("enforcement", "role_dict")
         onto_execs = {strip_role_annotation(e) for e in act.get("executors", [])}
-        if name in unified:
-            code_roles, dict_name, rel = unified[name]
-            governed.append((name, dict_name))
-            # onto 声明但代码无 → 代码缺失该角色
-            for r in sorted(onto_execs - code_roles):
-                diffs.append(Diff("B", MISSING, name,
-                                  f"本体 action {name}.executors 含角色 `{r}`，但 {dict_name}『{name}』"
-                                  f"({rel}) 未授予"))
-            # 代码有但 onto 未声明 → 代码多授予
-            for r in sorted(code_roles - onto_execs):
-                diffs.append(Diff("B", EXTRA, name,
-                                  f"{dict_name}『{name}』({rel}) 授予角色 `{r}`，但本体 action "
-                                  f"{name}.executors 未声明"))
-        elif onto_execs <= {"system"}:
-            system_only.append(name)
-        elif name in PROPOSAL_SUBTYPE_ACTIONS:
+        if enforcement == "engine_internal":
+            engine_internal.append(name)
+            continue
+        if enforcement == "proposal_flow":
             proposal.append(name)
-        else:
-            uncovered.append((name, sorted(onto_execs)))
+            continue
+        # enforcement == "role_dict"（默认）：必须能按 permission_key 在权限字典找到键
+        perm_key = act.get("permission_key", name)
+        if perm_key not in by_key:
+            diffs.append(Diff("B", MISSING, name,
+                              f"动作 {name} 声明 enforcement=role_dict（permission_key=`{perm_key}`），"
+                              f"但 5 个权限字典均无此键"))
+            missing_key.append(name)
+            continue
+        code_roles, dict_name, rel = by_key[perm_key]
+        role_dict_covered.append((name, perm_key, dict_name))
+        # onto 声明但代码无 → 代码缺失该角色
+        for r in sorted(onto_execs - code_roles):
+            diffs.append(Diff("B", MISSING, name,
+                              f"本体 action {name}.executors 含角色 `{r}`，但 {dict_name}"
+                              f"『{perm_key}』({rel}) 未授予"))
+        # 代码有但 onto 未声明 → 代码多授予
+        for r in sorted(code_roles - onto_execs):
+            diffs.append(Diff("B", EXTRA, name,
+                              f"{dict_name}『{perm_key}』({rel}) 授予角色 `{r}`，但本体 action "
+                              f"{name}.executors 未声明"))
 
     # 角色枚举核对：运行时权限字典引用的角色 是否都在本体 roles[] 里声明
     onto_roles = set(onto.get("roles", []))
@@ -325,89 +345,103 @@ def assert_b_actions_perms(onto: dict) -> tuple[list[Diff], list[str]]:
                           f"（本体 roles={sorted(onto_roles)}）"))
 
     # 覆盖情况（信息，不计差异）
-    notes.append(f"ROLE_PERMS(主) 覆盖动作：{[n for n, dn in governed if dn == 'ROLE_PERMS']}")
-    notes.append(f"其余动作由兄弟权限字典管辖："
-                 f"{sorted(set(dn for n, dn in governed if dn != 'ROLE_PERMS'))} "
-                 f"（ADM/PROC/WH/COORD，逐条已交叉核对）")
-    notes.append(f"系统级动作（executors⊆{{system}}，引擎执行、无人类 RBAC 键，预期）：{system_only}")
-    notes.append(f"提案子类型动作（经 propose→approve maker-checker 执行，无独立权限键，预期）：{proposal}")
-    if uncovered:
-        notes.append(f"⚠ 未在任何权限字典找到对应键的动作（可能内联 gate 或尚未接 UI 权限）："
-                     f"{[n for n, _ in uncovered]}")
+    notes.append(f"role_dict 动作（enforcement=role_dict，经权限字典执行，逐条核对 executors）："
+                 f"{[n for n, _, _ in role_dict_covered]}")
+    notes.append(f"engine_internal 动作（引擎内部执行、无人类 RBAC 键，声明化后不再要求权限字典有键）："
+                 f"{engine_internal}")
+    notes.append(f"proposal_flow 动作（经 propose→approve maker-checker 提案流执行，无独立权限键）："
+                 f"{proposal}")
+    notes.append("B 类断言机制化（M1 规则4/9）：仅 enforcement=role_dict 要求权限字典有键；"
+                 "engine_internal / proposal_flow 由 enforcement 字段显式声明豁免——"
+                 "旧的 3 处登记盲区（CreateRiskEvent/RecordPurchasePayment/RecordSupplierQualification）从此消解。")
     return diffs, notes
 
 
 # ===========================================================================
 # 断言 C：动作 ↔ AI 工具
 # ===========================================================================
-FREEZE_PREFIXES = ("Approve", "Close", "Reject")  # 冻结区：审批/关闭/拒接类动作名前缀
-
-
 def assert_c_actions_tools(onto: dict) -> tuple[list[Diff], list[str]]:
+    """M1 规则9 机制化：不再用动作名前缀（Approve/Close/Reject）猜冻结区，改读本体声明字段——
+    「TOOL_DEFS 写工具集 ⊆ snake(exposed_as_tool=true 动作)」且「FORBIDDEN_TOOLS == snake(ai_executable=frozen 动作)」。
+    M1 时 tools.py 仍硬编码，断言两侧此刻皆成立即证声明↔运行时一致。"""
     diffs: list[Diff] = []
     notes: list[str] = []
-    tool_names = set(extract_tool_names(TOOLS_PATH))
-    forbidden = set(extract_module_literal(TOOLS_PATH, "FORBIDDEN_TOOLS"))
+    # 桥2 M2：tools.py 的 TOOL_DEFS/FORBIDDEN_TOOLS 已从本体解释生成（不再是可 ast 静态解析的
+    # 字面量），故读『生成后的运行时』改为消费同一生成器——与『生成前的声明』（exposed_as_tool /
+    # ai_executable 字段）比对。红线仍守（ontology_runtime 是 pipeline 模块、非 app/agent）。
+    tool_names = {t["name"] for t in _rt_tool_defs(onto)}
+    forbidden = _rt_forbidden_tools(onto)
 
-    # 动作名 → snake_case 工具名 的双向映射
     action_by_snake = {camel_to_snake(a["name"]): a["name"] for a in onto["actions"]}
-    freeze_actions = {a["name"] for a in onto["actions"]
-                      if a["name"].startswith(FREEZE_PREFIXES)}
-    freeze_snakes = {camel_to_snake(n) for n in freeze_actions}
+    exposed_snakes = {camel_to_snake(a["name"]) for a in onto["actions"]
+                      if a.get("exposed_as_tool") is True}
+    frozen_snakes = {camel_to_snake(a["name"]) for a in onto["actions"]
+                     if a.get("ai_executable") == "frozen"}
 
-    # C.1 暴露的工具能否溯源到本体动作？（读工具溯源到对象，是预期，不算差异）
-    read_tools, write_tools_traced, untraceable = [], [], []
-    for tool in sorted(tool_names):
-        if tool in action_by_snake:
-            write_tools_traced.append(f"{tool}→{action_by_snake[tool]}")
-        elif re.match(r"^(list_|get_|explain_)", tool):
-            read_tools.append(tool)
-        else:
-            untraceable.append(tool)
-    for tool in untraceable:
-        diffs.append(Diff("C", EXTRA, tool,
-                          f"TOOL_DEFS 暴露工具 `{tool}`，既非读工具(list_/get_/explain_)"
-                          f"也无法按 snake_case 溯源到任一本体 action"))
+    # 读工具（list_/get_/explain_ 前缀）是对象查询工具、不对应动作（本体无读动作），从写工具核对中排除
+    read_tools = sorted(t for t in tool_names if re.match(r"^(list_|get_|explain_)", t))
+    write_tools = sorted(t for t in tool_names if t not in read_tools)
 
-    # C.2 冻结区动作是否确实不在 TOOL_DEFS？
-    for snake in sorted(freeze_snakes):
+    # C.1 每个"写工具"必须是某个 exposed_as_tool=true 动作的 snake（TOOL_DEFS 写工具集 ⊆ exposed）
+    for tool in write_tools:
+        if tool not in exposed_snakes:
+            if tool in action_by_snake:
+                diffs.append(Diff("C", EXTRA, action_by_snake[tool],
+                                  f"TOOL_DEFS 暴露写工具 `{tool}`（→{action_by_snake[tool]}），"
+                                  f"但该动作 exposed_as_tool≠true"))
+            else:
+                diffs.append(Diff("C", EXTRA, tool,
+                                  f"TOOL_DEFS 暴露工具 `{tool}`，既非读工具(list_/get_/explain_)"
+                                  f"也无法溯源到任一 exposed_as_tool=true 动作"))
+    # C.1b 每个 exposed_as_tool=true 动作都应在 TOOL_DEFS 有对应写工具（声明暴露却缺工具=漏装）
+    for snake in sorted(exposed_snakes):
+        if snake not in tool_names:
+            diffs.append(Diff("C", MISSING, action_by_snake[snake],
+                              f"动作 {action_by_snake[snake]} 声明 exposed_as_tool=true，"
+                              f"但 TOOL_DEFS 无对应工具 `{snake}`"))
+
+    # C.2 冻结区动作（ai_executable=frozen）绝不出现在 TOOL_DEFS
+    for snake in sorted(frozen_snakes):
         if snake in tool_names:
             diffs.append(Diff("C", DRIFT, action_by_snake.get(snake, snake),
-                              f"冻结区动作对应工具名 `{snake}` 竟出现在 TOOL_DEFS——审批/关闭/拒接"
-                              f"类动作绝不应暴露给 AI（致命）"))
+                              f"冻结区动作(ai_executable=frozen) {action_by_snake.get(snake, snake)} "
+                              f"对应工具 `{snake}` 竟出现在 TOOL_DEFS——绝不应暴露给 AI（致命）"))
 
-    # C.3 FORBIDDEN_TOOLS 覆盖是否完整？
-    #   ① FORBIDDEN 里每条是否都能溯源到一个本体冻结区动作（防止拉黑了不存在的工具/拼写漂移）
-    for tool in sorted(forbidden):
-        if tool not in action_by_snake:
+    # C.3 FORBIDDEN_TOOLS == snake(frozen 动作)：既无死条目/拼写漂移，又逐一覆盖
+    for tool in sorted(forbidden - frozen_snakes):
+        if tool in action_by_snake:
+            diffs.append(Diff("C", EXTRA, action_by_snake[tool],
+                              f"FORBIDDEN_TOOLS 含 `{tool}`（→{action_by_snake[tool]}），"
+                              f"但该动作 ai_executable≠frozen"))
+        else:
             diffs.append(Diff("C", DRIFT, tool,
                               f"FORBIDDEN_TOOLS 含 `{tool}`，但按 snake_case 溯源不到任一本体 action"
                               f"（拼写漂移或指向已删动作？）"))
-        elif tool not in freeze_snakes:
-            notes.append(f"FORBIDDEN_TOOLS 的 `{tool}` 溯源到非冻结区动作 "
-                         f"{action_by_snake[tool]}（额外拉黑，偏保守，非差异）")
-    #   ② 每个冻结区动作是否都已被 FORBIDDEN_TOOLS 显式拉黑（缺一即覆盖不全）
-    for snake in sorted(freeze_snakes):
-        if snake not in forbidden:
-            diffs.append(Diff("C", MISSING, action_by_snake.get(snake, snake),
-                              f"冻结区动作 {action_by_snake.get(snake, snake)}（工具名 `{snake}`）"
-                              f"未在 FORBIDDEN_TOOLS 显式拉黑（虽未注册进 TOOL_DEFS，建议显式拉黑做纵深防御）"))
+    for snake in sorted(frozen_snakes - forbidden):
+        diffs.append(Diff("C", MISSING, action_by_snake.get(snake, snake),
+                          f"冻结区动作 {action_by_snake.get(snake, snake)}（工具名 `{snake}`）"
+                          f"未在 FORBIDDEN_TOOLS 显式拉黑（纵深防御缺口）"))
 
-    notes.append(f"写工具已溯源到本体动作：{write_tools_traced}")
-    notes.append(f"读工具（对象查询，本体无『读动作』故溯源到对象而非动作，预期）：{read_tools}")
-    notes.append(f"本体冻结区动作（名以 {FREEZE_PREFIXES} 起）：{sorted(freeze_actions)}；"
-                 f"FORBIDDEN_TOOLS={sorted(forbidden)}")
-    notes.append("说明：花钱/写库类动作（如 RecordPurchasePayment/BlockNonPoPayment）未注册进 TOOL_DEFS "
-                 "即 AI 不可达；FORBIDDEN_TOOLS 是对最易诱导的审批/关闭/拒接 4 动作的显式纵深拉黑。")
+    notes.append(f"exposed_as_tool=true 动作（snake）：{sorted(exposed_snakes)}")
+    notes.append(f"TOOL_DEFS 写工具：{write_tools}（应 == exposed 集，逐一相等即一致）")
+    notes.append(f"TOOL_DEFS 读工具（对象查询，本体无『读动作』故不溯源到动作，预期）：{read_tools}")
+    notes.append(f"ai_executable=frozen 动作（snake）：{sorted(frozen_snakes)}；"
+                 f"FORBIDDEN_TOOLS={sorted(forbidden)}（应逐一相等）")
+    notes.append("说明：花钱/写库类动作（如 RecordPurchasePayment/BlockNonPoPayment）exposed_as_tool=false "
+                 "即 AI 不可达；FORBIDDEN_TOOLS 是对 ai_executable=frozen 4 动作的显式纵深拉黑。")
     return diffs, notes
 
 
 # ===========================================================================
 # 断言 D：关系 ↔ 外键
 # ===========================================================================
-def assert_d_links_fks(onto: dict, schema: dict) -> tuple[list[Diff], list[str]]:
+def assert_d_links_fks(onto: dict, schema: dict) -> tuple[list[Diff], list[str], list[tuple]]:
+    """M1 规则7：links[] 的 `storage` 声明把 M4 映射契约从"重建猜测"变"显式声明"——有 storage 的
+    关系直接核对声明列是否存在；`status=declared_only` 的关系豁免"缺失"判定但登记为待裁决豁免
+    （在报告尾部输出，诚实：豁免≠消音，裁1）。返回 (diffs, notes, exemptions)。"""
     diffs: list[Diff] = []
     notes: list[str] = []
+    exemptions: list[tuple] = []
     pk = {o["type"]: o.get("primaryKey") for o in onto["objects"]}
     tbl = {o["type"]: object_table_name(o) for o in onto["objects"]}
     cols_of = {o["type"]: {c[0] for c in schema.get(tbl[o["type"]], [])} for o in onto["objects"]}
@@ -437,6 +471,35 @@ def assert_d_links_fks(onto: dict, schema: dict) -> tuple[list[Diff], list[str]]
         if s not in tbl or t not in tbl:
             diffs.append(Diff("D", MISSING, lt,
                               f"关系 {lt} 的端点类型 {s}/{t} 有一端不在本体对象列表"))
+            continue
+
+        # M1 规则7：declared_only 状态 → 豁免"缺失"判定，登记为待裁决豁免（裁1，报告尾部提示）
+        if link.get("status") == "declared_only":
+            carrier = link.get("via") or (link.get("storage") or {}).get("column") or "(无承载列)"
+            exemptions.append((lt, s, t, card, carrier))
+            continue
+
+        # M1 规则7：显式 storage 声明 → 核对声明列是否存在（不再靠派生"重建猜测"）。
+        # F1（V8-②）扩展：storage 可带 `discriminator` 判别式（ref_type+ref_id 单列承载多关系，
+        # 3 条 payment 结算/催收关系共用 payments.ref_id、由 ref_type 值区分）——此时 D 类除核对
+        # 值列(column=ref_id)存在，还须核对判别列(discriminator=ref_type)存在（"按 ref_type 分支"）。
+        # 无 discriminator 的既有 storage 声明行为不变（po_shipped_by/shipment_to_warehouse 全绿不动）。
+        storage = link.get("storage")
+        if storage:
+            kind, stbl, scol = storage.get("kind"), storage.get("table"), storage.get("column")
+            tbl_cols = {c[0] for c in schema.get(stbl, [])}
+            disc = storage.get("discriminator")   # 判别列名（如 ref_type），可选
+            disc_val = storage.get("discriminator_value")
+            missing_cols = [c for c in (scol, disc) if c and c not in tbl_cols]
+            if not missing_cols:
+                disc_note = (f"，判别式 `{disc}`={disc_val!r}（列存在）" if disc else "")
+                notes.append(f"[storage 显式声明] {lt} ({s}→{t} {card}) 由 `{stbl}`.`{scol}` 承载"
+                             f"（kind={kind}）{disc_note}，列存在，一致")
+            else:
+                diffs.append(Diff("D", MISSING, lt,
+                                  f"关系 {lt} 的 storage 声明指向 `{stbl}`（kind={kind}"
+                                  f"{f'，判别 {disc}' if disc else ''}），"
+                                  f"但列 {missing_cols} 在表 `{stbl}` 中不存在"))
             continue
 
         if card == "N:M":
@@ -482,7 +545,9 @@ def assert_d_links_fks(onto: dict, schema: dict) -> tuple[list[Diff], list[str]]
 
     notes.append("核对深度=列名存在性：SQLite 表未声明 FOREIGN KEY 约束，本断言只核对承载列是否存在，"
                  "不验证引用完整性（孤儿行/悬挂引用需另做数据级检查）。")
-    return diffs, notes
+    if exemptions:
+        notes.append(f"待裁决豁免 {len(exemptions)} 项（status=declared_only，不计入差异，明细见报告尾部）。")
+    return diffs, notes, exemptions
 
 
 # ===========================================================================
@@ -496,7 +561,8 @@ SECTION_TITLES = {
 }
 
 
-def render_report(sections: dict, strict: bool) -> tuple[str, int]:
+def render_report(sections: dict, strict: bool, exemptions: list[tuple] | None = None) -> tuple[str, int]:
+    exemptions = exemptions or []
     lines = []
     onto = load_ontology()
     lines.append("=" * 78)
@@ -543,6 +609,18 @@ def render_report(sections: dict, strict: bool) -> tuple[str, int]:
     lines.append(f"  合计：{total} 条差异")
     lines.append("=" * 78)
 
+    # 待裁决豁免（M1 规则7/裁1）：declared_only 关系不计入差异，但必须在报告尾部显式提示——
+    # 诚实原则：豁免≠消音。豁免不影响 exit_code（--strict 不因豁免阻断）。
+    if exemptions:
+        lines.append("")
+        lines.append("─" * 78)
+        lines.append(f"待裁决豁免（不计入差异、不阻断 --strict；共 {len(exemptions)} 项，等待创始人裁决）：")
+        for (lt, s, t, card, carrier) in exemptions:
+            lines.append(f"  【待裁决豁免】关系 {lt} ({s}→{t} {card}) status=declared_only："
+                         f"本体声明但运行时无承载列（预期 {carrier}）——闸门豁免『缺失』判定，"
+                         f"待裁决：补列 or 删关系（裁1）")
+        lines.append("─" * 78)
+
     exit_code = 1 if (strict and total > 0) else 0
     if strict:
         lines.append(f"strict 模式：{'发现差异，退出码 1（阻断发布）' if total else '零差异，退出码 0（放行）'}")
@@ -559,15 +637,16 @@ def run(strict: bool = False) -> int:
     con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)  # 红线：只读打开
     try:
         schema = load_db_schema(con)
+        d_diffs, d_notes, exemptions = assert_d_links_fks(onto, schema)
         sections = {
             "A": assert_a_objects_tables(onto, schema),
             "B": assert_b_actions_perms(onto),
             "C": assert_c_actions_tools(onto),
-            "D": assert_d_links_fks(onto, schema),
+            "D": (d_diffs, d_notes),
         }
     finally:
         con.close()
-    report, exit_code = render_report(sections, strict)
+    report, exit_code = render_report(sections, strict, exemptions)
     print(report)
     return exit_code
 

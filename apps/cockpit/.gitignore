@@ -1,0 +1,7 @@
+# 依赖与构建产物（不进版本库）
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 系统
+.DS_Store

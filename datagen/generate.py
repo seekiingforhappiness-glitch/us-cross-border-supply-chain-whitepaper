@@ -21,6 +21,7 @@ from . import cost as COST
 from . import procurement as PROC
 from . import warehouse as WH
 from . import sourcing as SRC
+from . import finance as FIN
 from .design_cases import apply_design_cases
 from .noise import apply_noise, apply_doc_refs
 from .oracle import sweep
@@ -54,6 +55,10 @@ def build(cfg):
     # （seed+sourcing.seed_offset），须在 procurement 之后（依赖其 po_lines + R7/R9 真值）。
     src_rng = random.Random(cfg["seed"] + cfg["sourcing"]["seed_offset"])
     SRC.build_sourcing_world(w, cfg, src_rng)
+    # F1 资金流域（V8-②）：独立随机流（seed+finance.seed_offset），build() 最后一个域——
+    # 消费 supplier_invoices(proc)/invoices(cost)/sos+lines(world) 生成 Payment；对既有数据零扰动。
+    fin_rng = random.Random(cfg["seed"] + cfg["finance"]["seed_offset"])
+    FIN.build_finance_world(w, cfg, fin_rng)
     # v0.6 专题二 H3：milestone 单证号（booking_no/container_no）填充 + doc_ref_typo。
     # 独立随机流（seed+3000），须在 cost 建柜之后（primary 柜号已就位）。
     doc_rng = random.Random(cfg["seed"] + 3000)
@@ -78,7 +83,7 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
     tables["srm_suppliers"] = ([dict(s) for s in sorted(w["suppliers"].values(), key=lambda x: x["supplier_id"])],
                                ["supplier_id", "supplier_name", "city", "lead_time_days",
                                 "factory_audit_status", "compliance_docs_status",
-                                "uflpa_risk_flag", "origin_evidence_status"])
+                                "uflpa_risk_flag", "origin_evidence_status", "payment_terms_days"])
     tables["catalog_skus"] = ([dict(s) for s in sorted(w["skus"].values(), key=lambda x: x["sku_id"])],
                               ["sku_id", "sku_name", "category", "unit_price_usd", "supplier_id",
                                "sku_status", "declared_value_usd", "package_weight_kg",
@@ -240,6 +245,13 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
                                               "evidence_status", "valid_from", "valid_to", "status",
                                               "as_of_date", "created_at"])
 
+    # F1 资金流域（V8-②）：Payment 收付一本子（ap_ = 应付账款/资金；in 向应收亦同表，direction 区分）
+    fin = w["finance"]
+    tables["ap_payments"] = (sorted(fin["payments"], key=lambda x: x["payment_id"]),
+                             ["payment_id", "direction", "counterparty_type", "counterparty_id",
+                              "ref_type", "ref_id", "amount_usd", "due_date", "paid_date",
+                              "status", "as_of_date", "created_at"])
+
     # W1 仓储库存主线四表（wms_ = 仓库管理系统）
     wh = w["warehouse"]
     tables["wms_warehouses"] = (sorted(wh["warehouses"], key=lambda x: x["warehouse_id"]),
@@ -280,6 +292,11 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
     _dump(truth / "expected_sourcing_risks.csv", src["anomalies"],
           ["expected_sourcing_risk_id", "rule_id", "type", "sku_id", "supplier_id", "po_id",
            "severity", "anomaly_value_usd", "note"])
+    # F1 资金流域 ground truth（R19-R21；独立文件——payment_id 锚点不入既有 schema，故既有 8 真值
+    # 文件逐字节不变，守 §5 铁律。仅 datagen/verify/evaluate_finance 可读，引擎检测禁读）
+    _dump(truth / "expected_finance_risks.csv", fin["anomalies"],
+          ["expected_finance_risk_id", "rule_id", "type", "payment_id", "ref_type", "ref_id",
+           "direction", "counterparty_id", "severity", "anomaly_value_usd", "note"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

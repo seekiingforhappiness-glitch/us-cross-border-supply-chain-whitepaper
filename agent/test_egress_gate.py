@@ -43,7 +43,8 @@ BIZ_TEXT = ("柜号 MSCU1234567 已到港 USLAX，航线 CNSHK→USLAX，订舱�
 
 EXPECTED_COLUMNS = ["call_id", "trace_id", "call_type", "provider", "model",
                     "input_chars", "output_chars", "est_input_tokens", "est_output_tokens",
-                    "duration_ms", "status", "error", "redactions", "created_at"]
+                    "duration_ms", "status", "error", "redactions", "created_at",
+                    "prompt_version"]  # 波1·B：prompt 版本机末列（改 SYSTEM_PROMPT 必换号）
 
 
 def rows(db, sql, *a):
@@ -125,6 +126,9 @@ def main():
         check("③ trace_id/created_at 已填、redactions 为合法 JSON",
               (row["trace_id"] or "").startswith("LLM-") and row["created_at"]
               and isinstance(json.loads(row["redactions"]), dict), str(row))
+        check("③ prompt_version 落库＝PROMPT_VERSION（波1·B：完成型调用记 SYSTEM_PROMPT 版本号）",
+              row["prompt_version"] == la.PROMPT_VERSION and la.PROMPT_VERSION == "p1",
+              f"prompt_version={row['prompt_version']} PROMPT_VERSION={la.PROMPT_VERSION}")
         cols = [r["name"] for r in rows(tmp_db, "PRAGMA table_info(llm_calls)")]
         check("③ schema 与 spec §9 列清单一致（含 call_id 主键与 error 最小加列）",
               cols == EXPECTED_COLUMNS, str(cols))
