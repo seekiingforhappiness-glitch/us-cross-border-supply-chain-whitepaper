@@ -72,7 +72,10 @@ const LINE_FETCH_CAP = 8; // 明细行按需拉取上限（用户点击触发，
 // 批准=approve_mitigation(decision='approved') 按方案回写并结单；驳回=decision='rejected' 退回专员改方案
 // （approve_mitigation 的 decision 枚举仅 approved/rejected）。点击走 POST /decisions/ApproveMitigation，
 // 成功→onActed（刷新队列与体征、收起详情）；失败→原样展示后端白话中文错误，不吞不美化。
-function DecisionButtons({ decision, role, onActed }: { decision: PendingDecision; role: Role; onActed?: () => void }) {
+// export（P0·审批闭环）：ObjectCard 打开 Task 对象卡时复用同一套批准/驳回按钮——同一条 postDecision
+// 人类决策通道、同一套 manager 门控与幂等键，零新写路（任务对象卡不再是审批死胡同）。
+// onSwitchRole（欠账修复）：灰态提示区里直接给「切到老板角色」内联钮，点了就地切换、不必回顶栏。
+export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { decision: PendingDecision; role: Role; onActed?: () => void; onSwitchRole?: (r: Role) => void }) {
   const [busy, setBusy] = useState<null | "approved" | "rejected">(null);
   const [err, setErr] = useState<string | null>(null);
   // ApproveMitigation 本体 executors=[manager]——仅经理可批/驳；ops 等角色置灰并提示。前端只做体验预判，
@@ -112,8 +115,13 @@ function DecisionButtons({ decision, role, onActed }: { decision: PendingDecisio
           kind="no-permission"
           compact
           title="需经理角色才能拍板"
-          roleHint="顶栏切到「老板 manager」才能批 / 驳；当前是运营 ops，只能看不能批。"
+          roleHint="切到「老板 manager」才能批 / 驳；当前是运营 ops，只能看不能批。"
         />
+        {onSwitchRole && (
+          <button className="cp-role-switch" onClick={() => onSwitchRole("manager")}>
+            切到老板角色 →
+          </button>
+        )}
       </div>
     );
   }
@@ -164,11 +172,13 @@ function CloseRiskButton({
   riskStatus,
   role,
   onActed,
+  onSwitchRole,
 }: {
   riskId: string;
   riskStatus: string | null;
   role: Role;
   onActed?: () => void;
+  onSwitchRole?: (r: Role) => void; // 灰态内联「切到运营角色」（欠账修复：CloseRiskEvent 是 ops 动作）
 }) {
   const [open, setOpen] = useState(false); // 展开态＝二次确认防误触
   const [outcome, setOutcome] = useState("mitigated");
@@ -190,8 +200,13 @@ function CloseRiskButton({
           kind="no-permission"
           compact
           title="需运营角色才能关闭"
-          roleHint="顶栏切到「运营 ops」才能关闭风险；当前是老板 manager，只能看不能关。"
+          roleHint="切到「运营 ops」才能关闭风险；当前是老板 manager，只能看不能关。"
         />
+        {onSwitchRole && (
+          <button className="cp-role-switch" onClick={() => onSwitchRole("ops")}>
+            切到运营角色 →
+          </button>
+        )}
       </div>
     );
   }
@@ -284,7 +299,7 @@ function CloseRiskButton({
   );
 }
 
-export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActed }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void; onActed?: () => void }) {
+export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActed, onSwitchRole }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void; onActed?: () => void; onSwitchRole?: (r: Role) => void }) {
   const alerts = [...focus.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
   const members = focus.members ?? [];
   const [riskIdx, setRiskIdx] = useState(0);
@@ -373,6 +388,17 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
         <div className="cp-impact__title">
           {focus.subtitle && <span className="cp-impact__layer">{focus.subtitle}</span>}
           <span className="cp-impact__name">{focus.title}</span>
+          {/* 提案头部补显风险编号（P2 防混淆）：待拍板提案标题同船多险时一样（"处置 delay_breach @
+              SHP-x"），靠这行风险号区分是哪一条；点它可开风险对象卡。 */}
+          {focus.decision && focusAlert && (
+            <span
+              className="cp-impact__riskno num"
+              onClick={() => onOpenObject({ type: "RiskEvent", id: focusAlert.risk_event_id })}
+              title={`打开风险 ${focusAlert.risk_event_id}`}
+            >
+              {focusAlert.risk_event_id}
+            </span>
+          )}
         </div>
         <button className="cp-drawer__close" onClick={onClose} aria-label="关闭影响分析">
           <Icon name="x" size={15} />
@@ -577,7 +603,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
               {/* 波E 证据链（V20）：批之前先看证据——影响量化/同类先例与结局/该域信任档/备选代价。
                   卡片自管加载与诚实空态；放在批准键之前=证据先于拍板的画面语序。 */}
               <EvidenceCard taskId={focus.decision.taskId} role={role} />
-              <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />
+              <DecisionButtons decision={focus.decision} role={role} onActed={onActed} onSwitchRole={onSwitchRole} />
             </>
           ) : (
             risk && (
@@ -594,6 +620,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
                   riskStatus={risk.status != null ? String(risk.status) : null}
                   role={role}
                   onActed={onActed}
+                  onSwitchRole={onSwitchRole}
                 />
               </>
             )

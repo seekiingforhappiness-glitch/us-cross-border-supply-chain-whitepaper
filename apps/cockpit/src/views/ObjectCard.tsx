@@ -13,6 +13,7 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import AdmissionDecisionBar from "./AdmissionDecisionBar";
+import { DecisionButtons } from "./ImpactPanel";
 import {
   fieldGroup,
   fieldLabel,
@@ -47,6 +48,7 @@ interface Props {
   onOpenObject: (r: ObjectRef) => void;
   onClose: () => void;
   onActed?: () => void; // B-1：准入案决策成功后通知父层刷新体征（语义同 ImpactPanel::onActed）
+  onSwitchRole?: (r: Role) => void; // 欠账修复：任务审批灰态里的内联「切到老板角色」（同 ImpactPanel）
 }
 
 type Expanded = { state: "loading" } | { state: "done"; ids: string[] } | { state: "error" };
@@ -62,7 +64,7 @@ function renderVal(type: string, field: string, v: unknown): { text: string; cls
   return { text: String(v), cls: "" };
 }
 
-export default function ObjectCard({ target, role, links, onOpenObject, onClose, onActed }: Props) {
+export default function ObjectCard({ target, role, links, onOpenObject, onClose, onActed, onSwitchRole }: Props) {
   const [fields, setFields] = useState<ObjectFields | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, Expanded>>({});
@@ -269,6 +271,36 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
                     onActed?.();
                   }}
                 />
+              )}
+
+              {/* P0·审批闭环：任务对象卡承接审批——当对象是「待审批」的处置任务时，卡内直接给批准/驳回
+                  （复用 ImpactPanel 同一套 DecisionButtons：manager 门控灰态白话 / X-Actor / Idempotency-Key /
+                  postDecision 人类决策通道，零新写路）。这让"AI 任务时间线→打开处置任务"不再是审批死胡同，
+                  队列被截断/从别处进来的任务也能就地拍板。成功后 refetchFields（approval_status 变→本区
+                  自动收起）+ onActed 刷新体征。DecisionButtons 只用 decision.taskId，proposedAction 仅作
+                  上下文透传（此处金额无需，置 null）。 */}
+              {target.type === "Task" && String(fields.approval_status) === "pending" && (
+                <div className="cp-action">
+                  <div className="cp-action__t">
+                    <Icon name="stamp" size={13} /> 动作区
+                  </div>
+                  <DecisionButtons
+                    decision={{
+                      taskId: target.id,
+                      proposedAction: fields.proposed_action != null ? String(fields.proposed_action) : null,
+                      amountUsd: null,
+                    }}
+                    role={role}
+                    onActed={() => {
+                      refetchFields();
+                      onActed?.();
+                    }}
+                    onSwitchRole={onSwitchRole}
+                  />
+                  <div className="cp-action__note">
+                    批准 / 驳回在此直接拍板（人类决策通道，实时回写并留痕）——与待拍板队列、影响面板走的是同一条通道。
+                  </div>
+                </div>
               )}
             </>
           )}

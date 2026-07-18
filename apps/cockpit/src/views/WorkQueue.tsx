@@ -51,6 +51,9 @@ export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alert
           ))}
         </nav>
         <span className="cp-panel-head__title">{title}</span>
+        {/* 头部"共 N 条"标注（防静默截断，P1/P2）：由 QueueSpec.countLabel 提供，展示行数与全量数
+            一致时=「共 N 条·按金额降序」，被截时=「共 N 条·显示前 M 条」如实注明。 */}
+        {spec?.countLabel && <span className="cp-panel-head__meta">{spec.countLabel}</span>}
         {alertCount != null && alertCount > 0 && (
           <span className="cp-chip red" title={alertTitle}>{alertCount} {alertLabel ?? "告警"}</span>
         )}

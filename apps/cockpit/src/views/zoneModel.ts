@@ -287,6 +287,9 @@ export interface QueueSpec {
   rows: QueueRow[];
   /** 排序/口径说明（画面底注），全部为 API 现成序，不在前端二次排序造数。 */
   basis: string;
+  /** 头部"共 N 条"标注（防静默截断）：全量数与展示行数一致时=「共 N 条」，被截时=「共 N 条·显示前 M
+   *  条」如实标注。缺省不显（多数区展示即全量、无截断风险，不占头部）。 */
+  countLabel?: string;
 }
 
 const money = (v: number | string | null | undefined): QueueCell => ({ text: formatUsd(v), num: true, tone: isMasked(v) ? undefined : "gold", masked: isMasked(v) });
@@ -301,13 +304,27 @@ function decisionsQueue(d: D): QueueSpec {
     assignee_role: string | null;
     amount_usd: number | string | null;
   }[]) ?? [];
+  // 全量待批数（=卡片大数字）：后端 pending_total 现取；缺则退为展示行数。展示行数 < 全量 = 被截断，
+  // 头部如实标"显示前 M 条"（P1/P2 防静默截断：不让"卡片 22 vs 列表 20 行"再对不上）。
+  const total = typeof d.pending_total === "number" ? (d.pending_total as number) : pend.length;
+  const countLabel =
+    pend.length < total ? `共 ${total} 条 · 显示前 ${pend.length} 条 · 按金额降序` : `共 ${total} 条 · 按金额降序`;
   return {
-    columns: [{ label: "提案" }, { label: "动作" }, { label: "指派" }, { label: "金额", num: true }],
+    // P2 防混淆：补"风险"列显 risk_event_id——同船多险时标题（"处置 delay_breach @ SHP-x"）一样、
+    // 靠风险编号区分是哪一条（数据非错，是原来没把已在载荷里的 risk_event_id 显出来）。
+    columns: [{ label: "提案" }, { label: "风险" }, { label: "动作" }, { label: "指派" }, { label: "金额", num: true }],
+    countLabel,
     basis: "按金额降序、等待时长（API 口径）——最贵/等最久的在前",
     rows: pend.map((p) => ({
       key: p.task_id,
       badge: p.priority ? { text: p.priority, tone: p.priority === "P1" ? "red" : "amber" } : undefined,
-      cells: [{ text: p.title }, { text: p.proposed_action ?? "—" }, { text: p.assignee_role ?? "—" }, money(p.amount_usd)],
+      cells: [
+        { text: p.title },
+        { text: p.risk_event_id ?? "—", num: true },
+        { text: p.proposed_action ?? "—" },
+        { text: p.assignee_role ?? "—" },
+        money(p.amount_usd),
+      ],
       // 待拍板提案下钻带 decision 上下文（taskId/动作/金额）→ 影响面板动作区渲染批准/驳回按钮（A-1）。
       drill: p.risk_event_id
         ? {

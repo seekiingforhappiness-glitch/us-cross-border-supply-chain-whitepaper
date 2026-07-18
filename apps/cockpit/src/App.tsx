@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   fetchGovernanceGating,
   fetchOntologySummary,
@@ -76,6 +76,17 @@ export default function App() {
     setAsOf(null);
   };
 
+  // 欠账修复（角色钮太远）：下钻里就地切角色——批准/关闭的灰态里点「切到老板/运营角色」，直接换身份
+  // 但**保留当前下钻上下文**（不回指挥墙、不收详情/对象卡），换完就能拍板。与顶栏 changeRole 的区别=
+  // 不重置导航、不回今天。靠 preserveNavOnRoleChange 让下方 [role] 的导航重置 effect 这一趟让路（数据
+  // effect 仍会因 role 变而重取脱敏，ImpactPanel/ObjectCard 也各自随 role 变刷新，故切完即生效）。
+  const preserveNavOnRoleChange = useRef(false);
+  const switchRole = (r: Role) => {
+    if (r === role) return;
+    preserveNavOnRoleChange.current = true;
+    setRole(r);
+  };
+
   // 当前生效世界：显式选过就用 world，否则从已加载体征带的 world 字段反推（首屏跟随服务端默认）。
   // 供顶栏切换钮高亮 + changeWorld 判别"点的是不是当前世界"（是则不折腾）。
   const activeWorld: World | null =
@@ -136,7 +147,12 @@ export default function App() {
   }, []);
 
   // 角色切换重置导航（asOf 已由 changeRole 同批置 null，此处只管导航，不碰数据取回）。
+  // 例外：内联 switchRole（下钻里就地切身份）要保留下钻上下文——这一趟让路，只让路一次即复位标志。
   useEffect(() => {
+    if (preserveNavOnRoleChange.current) {
+      preserveNavOnRoleChange.current = false;
+      return;
+    }
     setStage({ view: "wall" });
     setDetail(null);
     setActiveKey(null);
@@ -247,6 +263,7 @@ export default function App() {
                 refreshVitalsData();
                 closeDetail();
               }}
+              onSwitchRole={switchRole}
             />
           ) : (
             <AiWorkflow role={role} asOf={asOf} world={world} onOpenObject={setCard} />
@@ -262,6 +279,7 @@ export default function App() {
           onOpenObject={setCard}
           onClose={() => setCard(null)}
           onActed={refreshVitalsData} // B-1：准入案批准/驳回后刷新体征（准入漏斗/准入毛利率分布随之变化）
+          onSwitchRole={switchRole} // P0/欠账：任务审批灰态里就地切老板角色（保留对象卡不回墙）
         />
       )}
     </div>

@@ -73,8 +73,11 @@ function fmtTs(s: string | null | undefined): string {
 }
 
 // goal（"处置 RSK-0007"）里的对象号 → 可点对象引用（开风险卡）；无法映射 → null。
+// 修复（P1·正则截断404）：原 /[A-Z]{2,}-[A-Za-z0-9]+/ 只贪一段，遇多段号（模拟世界 RSK-SIM-00012）
+// 只吃到 "RSK-SIM" 丢末段编号，refToObjectRef 拿半截 id 打开风险卡必 404。改 (?:-…)+ 贪全部连字段，
+// 完整命中 RSK-SIM-00012（单段号 RSK-0007 仍照常匹配）。
 function goalRef(goal: string): ObjectRef | null {
-  const m = goal.match(/[A-Z]{2,}-[A-Za-z0-9]+/);
+  const m = goal.match(/[A-Z]{2,}(?:-[A-Za-z0-9]+)+/);
   return m ? refToObjectRef(m[0]) : null;
 }
 

@@ -48,8 +48,25 @@ function IsoBlock({
   const fRight = `${sx + fw},${y0}`, fBot = `${sx},${y0 + fh}`, fLeft = `${sx - fw},${y0}`;
   const tTop = `${sx},${yt - fh}`, tRight = `${sx + fw},${yt}`, tBot = `${sx},${yt + fh}`, tLeft = `${sx - fw},${yt}`;
   const cls = `om-blk om-blk--${block.tone} is-${state}${block.covered ? "" : " is-uncovered"}`;
+  const selected = state === "focus";
+  // P1 修复：节点点亮逻辑（corridorFrom BFS + onClick→setSelected）本就工作，代码复核确认（未做浏览器验证，
+  // 按执行者红线不可做）；缺的是可达性——<g onClick> 无 role/tabIndex/aria-label，无障碍树不可见，键盘无法触达。
+  // 补 role="button" + tabIndex + aria-label（中文名+域名+选中态）+ Enter/Space 键盘触发；
+  // aria-pressed 让选中态也能被读屏器感知，呼应下方 CSS 的「明显视觉态」增强。
   return (
-    <g className={cls} onClick={(e) => { e.stopPropagation(); onClick(); }}
+    <g className={cls}
+      role="button"
+      tabIndex={0}
+      aria-label={`${block.plainName}（${block.domainName}）${selected ? "，已选中，沿关系走廊点亮邻域" : "，点击或按 Enter 点亮邻域"}`}
+      aria-pressed={selected}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick();
+        }
+      }}
       onMouseEnter={() => onHover(block.type)} onMouseLeave={() => onHover(null)}
       style={{ cursor: "pointer" }}>
       <polygon className="om-blk__left" points={`${fLeft} ${fBot} ${tBot} ${tLeft}`} />

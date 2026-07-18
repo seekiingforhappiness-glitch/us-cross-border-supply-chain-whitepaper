@@ -281,9 +281,20 @@ export default function CommandWall({ zones, provenance, gating, onZone, onMap }
                       {trend.arrow} {trend.text}
                     </span>
                   ) : (
-                    <span className="cp-trend cp-trend--none">静态快照</span>
+                    // 黑话消除（P2）：原"静态快照"是行话、两世界都读不懂——改白话"当前值"+ title 讲清
+                    // 为什么没有涨跌箭头（该指标暂无逐日历史可对比，显示的就是此刻实时值，非造假趋势）。
+                    <span className="cp-trend cp-trend--none" title="该指标暂无趋势对比数据——显示的是当前实时值">
+                      当前值
+                    </span>
                   )}
                 </div>
+                {/* 待拍板卡消歧（P2）：大数字=待批提案数，右上角徽章另有"超时/升级"告警数，两个数字贴太近
+                    易被读成一个——大数字下补一行点明徽章口径（数据用已有 alert_count；为 0 不显=诚实空态）。 */}
+                {z.zone === "decisions" && z.alert_count > 0 && (
+                  <div className="cp-wall-card__subnote" title="超时/升级告警数=超期任务+升级件（右上角徽章即此数）；这是另一口径的计数，别把右上角徽章读成待批提案数">
+                    其中超时/升级 {z.alert_count}
+                  </div>
+                )}
                 <div className="cp-wall-card__hllabel">
                   {z.headline_label}
                   {/* 回放态诚实标注：headline_as_of 仅回放时下发。current=该指标无时点历史→显当前值（不造假），

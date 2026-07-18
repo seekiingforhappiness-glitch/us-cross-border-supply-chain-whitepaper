@@ -1008,6 +1008,16 @@
 /* =============================================================================
    v2 · 动作与权限矩阵
    ============================================================================= */
+/* P2 修复：05→15 导航提示卡（可发现性）。原生 <button>，天然可键盘聚焦/触发，无需补 role/tabIndex。 */
+.ac-nav-hint {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; width: 100%;
+  padding: 12px 16px; margin: 0 0 16px; border: 1px solid var(--cyan-line); border-radius: var(--radius-lg);
+  background: linear-gradient(90deg, var(--cyan-dim), rgba(87,186,217,0.02));
+  font-family: inherit; text-align: left; cursor: pointer; transition: background 0.14s;
+}
+.ac-nav-hint:hover { background: rgba(87,186,217,0.16); }
+.ac-nav-hint-text { flex: 1; min-width: 240px; font-size: 12.5px; line-height: 1.6; color: var(--ink-2); }
+.ac-nav-hint-cta { flex: none; font-size: 12.5px; color: var(--cyan-2); font-weight: 600; white-space: nowrap; }
 .ac-legend { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; }
 .ac-leg { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--ink-2); }
 .ac-leg-dot { width: 9px; height: 9px; border-radius: 2px; }
@@ -1366,10 +1376,21 @@ button.im-tool { cursor: pointer; } button.im-tool:hover { border-color: rgba(92
 .om-blk--green .om-blk__top { fill: rgba(92,191,143,0.5); stroke: var(--green); }
 .om-blk--green .om-blk__left { fill: rgba(92,191,143,0.2); } .om-blk--green .om-blk__right { fill: rgba(92,191,143,0.34); }
 .om-blk.is-uncovered { opacity: 0.4; }
-.om-blk.is-focus .om-blk__top { stroke-width: 2.2; filter: drop-shadow(0 0 7px currentColor); }
+/* P1 修复：点击/选中反馈不明显——is-focus 原用 currentColor 做描边光晕，
+   但 .om-blk__top 及祖先都未设 color，实际继承页面正文色，光晕颜色与色调块不匹配、发白发弱。
+   改为按色调显式取对应 --cyan/--amber/--violet/--green，描边加粗 + 顶面提亮，选中态更明显。 */
+.om-blk.is-focus .om-blk__top { stroke-width: 2.6; }
+.om-blk--cyan.is-focus .om-blk__top { filter: drop-shadow(0 0 8px var(--cyan)); fill: rgba(87,186,217,0.8); }
+.om-blk--amber.is-focus .om-blk__top { filter: drop-shadow(0 0 8px var(--amber)); fill: rgba(233,172,82,0.8); }
+.om-blk--violet.is-focus .om-blk__top { filter: drop-shadow(0 0 8px var(--violet)); fill: rgba(146,148,222,0.8); }
+.om-blk--green.is-focus .om-blk__top { filter: drop-shadow(0 0 8px var(--green)); fill: rgba(92,191,143,0.8); }
 .om-blk.is-dim { opacity: 0.16; }
 .om-blk.is-lit .om-blk__top { stroke-width: 1.7; }
 .om-blk:hover .om-blk__top { stroke-width: 2; }
+/* 键盘可达性：role="button" + tabIndex 节点获焦时给可见环（outline 加在可聚焦的 <g> 本身，
+   不加在子 polygon——SVG 子元素上的 outline 各浏览器渲染不一致），区分鼠标 hover 与键盘 focus。 */
+.om-blk:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.om-blk:focus-visible .om-blk__top { stroke-width: 2.6; }
 /* 边 */
 .om-edge { stroke: var(--line-strong); stroke-width: 0.7; opacity: 0.32; }
 .om-edge.is-faint { opacity: 0.08; }

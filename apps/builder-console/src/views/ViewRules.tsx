@@ -38,6 +38,15 @@ export default function ViewRules() {
         </div>
       </div>
 
+      {/* P1 修复：R1"活世界触发93"vs 15页"25次detect"两数字对不上（陌生人建造者实测困惑）——
+          根因：两处统计的是不同世界（本页=sim活世界14个月累计；15页=验证世界单批detect检出），页面此前零解释。
+          静态口径提示，不读取任何数据字段，与下方两世界卡片/逐条数字互不影响。 */}
+      <p className="source-note mono" style={{ marginBottom: 16 }}>
+        口径对照：下方每条规则的「活世界触发」＝ sim 活世界连续运转以来的累计触发次数（如 R1）；
+        「治理控制室 › ⑤规则台账」显示的是验证世界（ontology.sqlite）单批 detect 检出数——
+        两个世界统计口径不同，数字不可直接比较，谁大谁小不说明规则准不准。
+      </p>
+
       <div className="rl-grid">
         {rules.cards.map((c) => {
           const sevs = SEV_ORDER.filter((s) => c.living.bySeverity[s]);

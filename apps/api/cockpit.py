@@ -950,7 +950,10 @@ def _zone_decisions(con, tables: set[str], clock: str | None) -> dict:
       金额 = proposal_params JSON 的 est_cost_usd，缺则回退父风险 affected_value_usd
       （两来源都标注在 amount_source）；等待起点 = action_log 中该 task 的
       ProposeMitigation result='ok' 最新 timestamp（无记录 → null，不编时长）；
-      排序 = 金额降序（null 殿后）、再按等待起点升序（等得久的在前）。cap 20。
+      排序 = 金额降序（null 殿后）、再按等待起点升序（等得久的在前）。cap 50
+      （P1/P2 修复：原 cap 20 静默截断——headline 计全量 22、列表只回 20，画面"卡片 22 vs
+      列表 20 行"对不上；改 50 让常见量级全显，并加 pending_total=全量数供前端头部注明"共 N
+      条"、>50 时如实标"显示前 50 条"防静默截断）。
     · 超期任务：SELECT count(*) FROM tasks WHERE status NOT IN ('done','cancelled')
       AND date(due_at) < clock；simworld tasks 无 due_at 列 → null+reason。
     · 升级件：SELECT count(*) FROM tasks WHERE escalation_level>0 AND status NOT IN
@@ -1010,7 +1013,9 @@ def _zone_decisions(con, tables: set[str], clock: str | None) -> dict:
         "zone": "decisions", "headline_label": "待批提案",
         "headline_value": len(items), "trend": None,
         "alert_count": (overdue.get("value") or 0) + (escalated.get("value") or 0),
-        "detail": {"pending_proposals": items[:20],
+        # pending_total=全量待批数（=headline_value），列表切到 50（P1/P2：cap 20→50 消除
+        # "卡片数 vs 列表行数"不一致；前端据 pending_total 头部注"共 N 条"并在 >50 时诚实标截断）。
+        "detail": {"pending_proposals": items[:50], "pending_total": len(items),
                    "overdue_tasks": overdue, "escalated_tasks": escalated},
     }
 

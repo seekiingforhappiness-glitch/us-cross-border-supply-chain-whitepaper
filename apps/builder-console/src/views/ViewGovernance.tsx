@@ -373,6 +373,13 @@ export default function ViewGovernance() {
           <SourceTag src={ledger.source} />
         </div>
         <div className="gov-card-body">
+          {/* P1 修复：本卡"检测"数（如 R1=25）vs「04 规则档案」页"活世界触发"数（如 R1=93）两数字对不上
+              （陌生人建造者实测困惑）——根因：本卡是验证世界单批 detect，04 页是 sim 活世界累计。静态提示，不读数据字段。 */}
+          <p className="gov-note">
+            口径对照：下方「检测」数来自验证世界（ontology.sqlite）单批 detect 运行；
+            「04 规则档案」页显示的「活世界触发」是 sim 活世界连续运转以来的累计触发次数——
+            两个世界统计口径不同，数字不可直接比较。
+          </p>
           {ledger.available ? (
             <div className="gov-ledger">
               <div className="gov-ledger-runs">

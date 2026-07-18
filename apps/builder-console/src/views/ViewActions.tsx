@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import { actions } from "../data";
 import ViewHead from "../components/ViewHead";
+import { useNav } from "../components/Nav";
 import type { ActionRow, ToolInputSchema } from "../types";
 
 const TIER_TONE: Record<string, string> = { machine: "cyan", human: "amber", frozen: "red" };
@@ -90,6 +91,7 @@ function ToolPanel({ a }: { a: ActionRow }) {
 }
 
 export default function ViewActions() {
+  const { navigate } = useNav();
   const [open, setOpen] = useState<string | null>(null);
   const [roleFilter, setRoleFilter] = useState<string | null>(null);
   const roles = actions.roles;
@@ -101,6 +103,17 @@ export default function ViewActions() {
   return (
     <div>
       <ViewHead idx="05" question={actions.question} subtitle={actions.subtitle} />
+
+      {/* P2 修复：陌生人建造者在本页找"AI 信任程度"未果，兜两跳才到 15 页放权阶梯（实测困惑）——
+          本页的权限矩阵是静态设定（谁被允许下手），"信任到什么程度"是动态实测（15 页放权阶梯按域算），
+          两者不同不能合并展示，加一张可点跳转的导航提示卡，复用既有 navigate() 切视图机制。 */}
+      <button className="ac-nav-hint" onClick={() => navigate("governance")}>
+        <span className="ac-nav-hint-text">
+          想看 <b>AI 被信任到什么程度</b>（量化档位，不是感觉）？这页是谁被允许下手的静态设定——
+          动态实测的信任档位在 <b>治理控制室 · 放权阶梯</b>。
+        </span>
+        <span className="ac-nav-hint-cta">治理控制室 · 放权阶梯 →</span>
+      </button>
 
       <div className="ac-legend">
         {actions.tiers.map((t) => (

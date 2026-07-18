@@ -1100,6 +1100,17 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 提案头部风险编号（P2 防混淆）：同船多险靠它区分；可点开风险对象卡。 */
+.cp-impact__riskno {
+  font-size: 10.5px;
+  color: var(--ink-2);
+  cursor: pointer;
+  margin-top: 1px;
+}
+.cp-impact__riskno:hover {
+  color: var(--ink-0);
+  text-decoration: underline;
+}
 .cp-impact__body {
   flex: 1;
   min-height: 0;
@@ -1430,6 +1441,13 @@ body {
   margin-top: 2px;
   letter-spacing: 0.02em;
 }
+/* 待拍板卡"其中超时/升级 N"消歧行（P2）：大数字下一行小灰字，语义色沿用琥珀（告警但非红警）。 */
+.cp-wall-card__subnote {
+  font-size: 10.5px;
+  color: var(--sev-amber);
+  margin-top: 3px;
+  letter-spacing: 0.02em;
+}
 .cp-wall-card__sum {
   margin-top: 11px;
   padding-top: 9px;
@@ -1719,6 +1737,29 @@ body {
   font-size: 10.5px;
   color: var(--ink-2);
   line-height: 1.5;
+}
+/* 灰态里的内联「切到老板/运营角色」小钮（欠账修复：角色钮太远——不必回顶栏，就地切、保留下钻上下文）。
+   低调 link 态，避免与真正的批准/驳回按钮抢视觉；hover 才提亮。 */
+.cp-role-switch {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-1);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cp-role-switch:hover {
+  background: var(--bg-3);
+  border-color: var(--accent, var(--line-strong));
+  color: var(--ink-0);
 }
 
 /* B-1（V18）关闭风险 / 准入决策的表单元件（结果选择/处理小结/审批理由等）——复用 .cp-decide
