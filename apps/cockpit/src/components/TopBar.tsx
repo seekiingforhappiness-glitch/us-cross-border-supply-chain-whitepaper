@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import type { Role, DataWindow, World } from "../api";
 import Icon from "./Icons";
 
@@ -32,6 +32,22 @@ const WORLDS: { id: World; label: string; cls: string; hint: string }[] = [
   { id: "sim", label: "模拟世界", cls: "cp-world-seg--simulation",
     hint: "模拟世界：14 个月连续活世界，时间回放完整威力" },
 ];
+
+// 轮2·P2-14：双世界切换显著性小改（王总"差点全用空样本做判断"）。
+// ① 当前世界高亮加强——在既有 .is-active 底色上叠加更强的同色内环 + 加粗 + ✓ 前缀（用组件内 style 常量，
+//    不碰 styles.css）；② 切换钮下补一行小字，如实点明两世界性质（用词对齐既有文案体系）。不改默认世界。
+const ACTIVE_SEG_STYLE: CSSProperties = {
+  background: "color-mix(in srgb, currentColor 22%, transparent)",
+  boxShadow: "inset 0 0 0 1px color-mix(in srgb, currentColor 55%, transparent)",
+  fontWeight: 800,
+};
+const WORLDS_WRAP_STYLE: CSSProperties = {
+  display: "inline-flex", flexDirection: "column", alignItems: "flex-start", gap: "2px",
+};
+const WORLD_CAPTION_STYLE: CSSProperties = {
+  fontSize: "9.5px", lineHeight: 1, letterSpacing: "0.01em", whiteSpace: "nowrap",
+  color: "var(--ink-2)", paddingLeft: "2px",
+};
 
 // —— 纯日期工具（UTC，避开时区漂移；窗口为日粒度）——
 const DAY = 86_400_000;
@@ -134,18 +150,28 @@ export default function TopBar({ activeWorld, onWorld, clock, windowRange, asOf,
   return (
     <header className="cp-topbar">
       <span className="cp-topbar__brand">控制塔驾驶舱</span>
-      <div className={`cp-worlds cp-worlds--${activeWorld ?? "pending"}`} role="group" aria-label="世界切换">
-        {WORLDS.map((wd) => (
-          <button
-            key={wd.id}
-            className={`cp-world-seg ${wd.cls} ${activeWorld === wd.id ? "is-active" : ""}`}
-            onClick={() => onWorld(wd.id)}
-            aria-pressed={activeWorld === wd.id}
-            title={wd.hint}
-          >
-            {wd.label}
-          </button>
-        ))}
+      <div style={WORLDS_WRAP_STYLE}>
+        <div className={`cp-worlds cp-worlds--${activeWorld ?? "pending"}`} role="group" aria-label="世界切换">
+          {WORLDS.map((wd) => {
+            const active = activeWorld === wd.id;
+            return (
+              <button
+                key={wd.id}
+                className={`cp-world-seg ${wd.cls} ${active ? "is-active" : ""}`}
+                style={active ? ACTIVE_SEG_STYLE : undefined}
+                onClick={() => onWorld(wd.id)}
+                aria-pressed={active}
+                title={wd.hint}
+              >
+                {active && <span aria-hidden="true" style={{ fontWeight: 800 }}>✓</span>}
+                {wd.label}
+              </button>
+            );
+          })}
+        </div>
+        <span style={WORLD_CAPTION_STYLE}>
+          验证世界=固定小快照 · 模拟世界=14 个月连续活世界
+        </span>
       </div>
       {scrubbable ? (
         <span title={replayNote ?? "拖动或播放回放世界时钟；能真回放的重算，存量类显当前值"}>

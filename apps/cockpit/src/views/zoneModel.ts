@@ -102,7 +102,28 @@ function moneySummary(d: D): SummaryLine[] {
   }
   // 应收/应付水位（G2/V8-② payments 表）：在外未收的钱、其中已逾期的 + 要付的钱——一行两问
   lines.push(moneyFlowLine(d));
+  // 现金水位预警上浮（P2，陈会计"最要命的信号藏最深"）：原先 net_cash_14d 只在钱区下钻底部
+  // （ZoneContext.tsx NetCash14dCard）才看得到，卡片摘要看不出来——补一行同源数据，击穿阈值时告警色。
+  const cashLine = cashWatchLine(d);
+  if (cashLine) lines.push(cashLine);
   return lines;
+}
+
+/** 14 天净流出预警摘要行：字段缺失（非本次改动范围的世界/版本）→ 如实跳过，不硬造。breach 是
+ *  状态位，镜像 ZoneContext.tsx::NetCash14dCard 的口径——即便金额被掩码，告警灯本身仍如实显示。 */
+function cashWatchLine(d: D): SummaryLine | null {
+  const c = d.net_cash_14d;
+  if (c === undefined) return null; // 字段本身不存在——不臆造，直接不显示这行
+  if (isMissing(c)) return { label: "现金水位预警", value: "无数据", state: "missing" };
+  const v = c as { value_usd: number | string; window_days: number; threshold_usd: number | string; breach: boolean };
+  const vc = cell(v.value_usd, formatUsd);
+  const breachTag = v.breach ? " · 击穿阈值" : "";
+  return {
+    label: "现金水位预警",
+    value: vc.state === "real" ? `未来${v.window_days}天净流出 ${vc.text}${breachTag}` : `${vc.text}${breachTag}`,
+    state: vc.state,
+    tone: v.breach ? "neg" : undefined,
+  };
 }
 
 function moneyFlowLine(d: D): SummaryLine {
@@ -223,10 +244,12 @@ function decisionsSummary(d: D): SummaryLine[] {
   const escalated = d.escalated_tasks;
   const out: SummaryLine[] = [];
   if (pend.length === 0) {
-    out.push({ label: "最高金额提案", value: "当前无待批", state: "real" });
+    out.push({ label: "最高处置成本", value: "当前无待批", state: "real" });
   } else {
     const c = cell(pend[0].amount_usd, formatUsd);
-    out.push({ label: "最高金额提案", value: c.state === "real" ? `${c.text} · ${trunc(pend[0].title, 10)}` : c.text, state: c.state, tone: c.state === "real" ? "gold" : undefined });
+    // 口径修复（P1，王总"差8倍会拍错优先级"）：这里的金额是提案的处置成本（执行该方案的花费），
+    // 不是受影响订单行货值——两者曾无区分地都叫"金额"，与影响面板的货值合计相差可达数倍。
+    out.push({ label: "最高处置成本", value: c.state === "real" ? `${c.text} · ${trunc(pend[0].title, 10)}` : c.text, state: c.state, tone: c.state === "real" ? "gold" : undefined });
   }
   if (isMissing(overdue) || isMissing(escalated)) {
     out.push({ label: "超期 / 升级", value: "SLA 无数据（模拟世界）", state: "missing" });
@@ -308,13 +331,15 @@ function decisionsQueue(d: D): QueueSpec {
   // 头部如实标"显示前 M 条"（P1/P2 防静默截断：不让"卡片 22 vs 列表 20 行"再对不上）。
   const total = typeof d.pending_total === "number" ? (d.pending_total as number) : pend.length;
   const countLabel =
-    pend.length < total ? `共 ${total} 条 · 显示前 ${pend.length} 条 · 按金额降序` : `共 ${total} 条 · 按金额降序`;
+    pend.length < total ? `共 ${total} 条 · 显示前 ${pend.length} 条 · 按处置成本降序` : `共 ${total} 条 · 按处置成本降序`;
   return {
     // P2 防混淆：补"风险"列显 risk_event_id——同船多险时标题（"处置 delay_breach @ SHP-x"）一样、
     // 靠风险编号区分是哪一条（数据非错，是原来没把已在载荷里的 risk_event_id 显出来）。
-    columns: [{ label: "提案" }, { label: "风险" }, { label: "动作" }, { label: "指派" }, { label: "金额", num: true }],
+    // P1 口径修复（王总"差8倍会拍错优先级"）：这一列原叫"金额"，实为提案的处置成本（执行该方案的
+    // 花费）而非受影响订单行货值——影响面板另有一个货值合计，两口径并存无标注会被读成自相矛盾/数据错。
+    columns: [{ label: "提案" }, { label: "风险" }, { label: "动作" }, { label: "指派" }, { label: "处置成本", num: true }],
     countLabel,
-    basis: "按金额降序、等待时长（API 口径）——最贵/等最久的在前",
+    basis: "按处置成本（执行该方案的花费，非受影响订单行货值）降序、等待时长（API 口径）——最贵/等最久的在前",
     rows: pend.map((p) => ({
       key: p.task_id,
       badge: p.priority ? { text: p.priority, tone: p.priority === "P1" ? "red" : "amber" } : undefined,

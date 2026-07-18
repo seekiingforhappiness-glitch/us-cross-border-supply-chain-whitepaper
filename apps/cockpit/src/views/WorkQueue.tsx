@@ -77,22 +77,41 @@ export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alert
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr
-                    key={r.key}
-                    className={`${r.drill ? "is-click" : ""} ${activeKey === r.key ? "is-active" : ""}`}
-                    onClick={() => r.drill && onDrill(r.drill, r.key)}
-                  >
-                    <td className="cp-queue__badge">{r.badge ? <span className={badgeClass(r.badge.tone)}>{r.badge.text}</span> : null}</td>
-                    {r.cells.map((cell, ci) => (
-                      <td key={ci} className={`${cell.num ? "num" : ""} ${ci === 0 ? "name" : ""} ${cell.tone ?? ""}`}>
-                        {cell.masked && <Icon name="lock" size={11} />}
-                        {cell.text}
-                      </td>
-                    ))}
-                    <td className="cp-queue__go">{r.drill && <Icon name="chevron-right" size={13} />}</td>
-                  </tr>
-                ))}
+                {rows.map((r) => {
+                  // a11y（P1，L-UX 轮2）：可点行原先 tabIndex=-1/无 role/无键盘事件——键盘/读屏用户无法
+                  // 进入详情。不可点行（无 drill）保持不可聚焦、不加 role，与可点行视觉/语义都区分开。
+                  const clickable = !!r.drill;
+                  const rowLabel = [r.badge?.text, ...r.cells.map((c) => c.text)].filter(Boolean).join(" · ");
+                  return (
+                    <tr
+                      key={r.key}
+                      className={`${clickable ? "is-click" : ""} ${activeKey === r.key ? "is-active" : ""}`}
+                      onClick={() => r.drill && onDrill(r.drill, r.key)}
+                      tabIndex={clickable ? 0 : undefined}
+                      role={clickable ? "button" : undefined}
+                      aria-label={clickable ? `打开详情：${rowLabel}` : undefined}
+                      onKeyDown={
+                        clickable
+                          ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                if (r.drill) onDrill(r.drill, r.key);
+                              }
+                            }
+                          : undefined
+                      }
+                    >
+                      <td className="cp-queue__badge">{r.badge ? <span className={badgeClass(r.badge.tone)}>{r.badge.text}</span> : null}</td>
+                      {r.cells.map((cell, ci) => (
+                        <td key={ci} className={`${cell.num ? "num" : ""} ${ci === 0 ? "name" : ""} ${cell.tone ?? ""}`}>
+                          {cell.masked && <Icon name="lock" size={11} />}
+                          {cell.text}
+                        </td>
+                      ))}
+                      <td className="cp-queue__go">{r.drill && <Icon name="chevron-right" size={13} />}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             <div className="cp-basis">{spec.basis}</div>

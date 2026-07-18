@@ -302,8 +302,11 @@ function CustomersCtx({ d }: { d: D }) {
             </tr>
           </thead>
           <tbody>
-            {health.map((h) => (
-              <tr key={h.tier}>
+            {/* key 修复（P1）：tier 是本体敏感字段，ops 等无权角色下每一行的 tier 都被掩码成同一个
+                占位串"🔒无权查看"——原先直接拿 h.tier 当 key，掩码时全表行共享同一 key，触发 React
+                重复 key 告警（控制台 8 次）。改用行号兜底，掩码/非掩码都保证 key 稳定唯一。 */}
+            {health.map((h, i) => (
+              <tr key={isMasked(h.tier) ? `masked-${i}` : h.tier}>
                 <td>{isMasked(h.tier) ? <Icon name="lock" size={12} /> : `Tier ${h.tier}`}</td>
                 <td className="num">{h.customers}</td>
                 <td className="num">{h.customers_at_risk}</td>

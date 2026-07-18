@@ -104,6 +104,11 @@ def _parse_risk_id(goal: str):
     return m.group(0) if m else None
 
 
+# 轮2·P1-4：派单失败里"单风险单任务"冲突（actions.py 原样回执含内部代号 D9/C4）→ 面向用户的 summary
+# 人话化。内部代号只留在**步结果 result_json**（审计/日志可查），不进用户可见 summary。
+_EXISTING_TASK_ERR_RE = re.compile(r"^已存在非终态任务 (\S+)（单风险单任务，D9/C4）$")
+
+
 def kill_run(db_path: str, run_id: str) -> dict:
     """kill switch（急停留痕）：置 killed=1；若 run 未终态则迁移到 killed 并落白话 summary。
     已终态的 run 也置 killed=1 留痕（"有人下过杀令"这个事实本身要可查），状态保持原终态如实返回。"""
@@ -450,7 +455,7 @@ class Runtime:
         if not (isinstance(assign["result"], dict) and assign["result"].get("ok")):
             err = (assign["result"] or {}).get("error") or (assign["result"] or {}).get("reason")
             return {"kind": "finish", "status": "failed",
-                    "summary": f"派单失败，run 停止：{err}"}
+                    "summary": self._humanize_assign_failure(err)}
         task_id = assign["result"]["object_id"]
         prop = latest("command", "propose_mitigation")
         if prop is None:
@@ -498,6 +503,36 @@ class Runtime:
         if risk.get("type") in ("rate_overbilling", "duplicate_charge", "unplanned_charge"):
             return "accept_charge", {"reason": reason}
         return "accept_delay", {"reason": reason}
+
+    # ---------- 失败回执人话化（轮2·P1-4） ----------
+    def _humanize_assign_failure(self, err) -> str:
+        """派单失败 summary 人话化：内部"单风险单任务"冲突（actions.py 原样回执含代号 D9/C4）→ 业务语言，
+        负责人/截止**现查现算**（tasks 表），查不到就省略该子句、绝不编造；内部代号只留在步结果 result_json
+        供审计，不进这条用户可见 summary。其余失败原因（风险状态非 open 等）保持原样透传。"""
+        if not err:
+            return "派单失败，run 停止。"
+        m = _EXISTING_TASK_ERR_RE.match(err)
+        if not m:
+            return f"派单失败，run 停止：{err}"
+        tid = m.group(1)
+        return (f"这个风险已有处置任务 {tid} 在办{self._task_owner_due_clause(tid)}，"
+                f"一个风险同时只开一个任务，避免重复处置。可打开该任务查看进度。")
+
+    def _task_owner_due_clause(self, task_id: str) -> str:
+        """现查现算任务负责人/截止（tasks 表）→ "（负责人 X，截止 Y）"；两者都缺则返回空串（不编造）。
+        负责人优先具体人（assignee_user_id），退化到角色（assignee_role）。任务行查无 → 空串。"""
+        row = self.con.execute(
+            "SELECT assignee_user_id, assignee_role, due_at FROM tasks WHERE task_id=?",
+            (task_id,)).fetchone()
+        if row is None:
+            return ""
+        parts = []
+        owner = row["assignee_user_id"] or row["assignee_role"]
+        if owner:
+            parts.append(f"负责人 {owner}")
+        if row["due_at"]:
+            parts.append(f"截止 {row['due_at']}")
+        return f"（{'，'.join(parts)}）" if parts else ""
 
     # ---------- wait 处理 ----------
     def _enter_wait(self, run_id: str, run: dict, history: list[dict], plan: dict) -> dict:

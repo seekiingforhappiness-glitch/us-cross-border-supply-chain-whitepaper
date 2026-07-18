@@ -166,6 +166,10 @@ function AlternativesRow({ alt }: { alt: EvidenceAlternatives }) {
   const opts = alt.options ?? {};
   const keys = [...ALT_ORDER.filter((k) => opts[k]), ...Object.keys(opts).filter((k) => !ALT_ORDER.includes(k))];
   const val = alt.affected_value_usd;
+  // 空态修复（P2，王总"两格全空仍摆表"）：全部备选方案都没有可比的历史有效率（effective_rate 全 null，
+  // 含"无案例"与"有案例未回填"两种情况）时，不摆一张两格都写"无历史案例"的空表，改一句话空态；
+  // 只要有任一方案有真实有效率，就保留表格、无数据的格子照实标注（不隐藏，只是不单独摆一张全空表）。
+  const anyRate = keys.some((k) => opts[k].historical.effective_rate != null);
   return (
     <>
       <div className="cp-ev__alt-ctx">
@@ -179,7 +183,11 @@ function AlternativesRow({ alt }: { alt: EvidenceAlternatives }) {
         {" · 受影响货值 "}
         <span className={`num ${isMasked(val) ? "is-masked" : "gold"}`}>{formatUsd((val ?? null) as number | string | null)}</span>
       </div>
-      {keys.length > 0 && (
+      {keys.length === 0 ? (
+        <div className="cp-ev__empty">{alt.note ?? "无可比较的备选方案。"}</div>
+      ) : !anyRate ? (
+        <div className="cp-ev__empty">各方案都还没有可比的历史有效率数据——先例结果回填后这里会给出量化对比。</div>
+      ) : (
         <table className="cp-ev__alt">
           <thead>
             <tr>

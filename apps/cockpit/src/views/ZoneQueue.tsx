@@ -10,7 +10,9 @@ import { zoneQueue, ZONE_SHORT, type DrillTarget } from "./zoneModel";
 
 const EMPTY_HINT: Partial<Record<ZoneId, string>> = {
   money: "钱区为存量聚合指标（敞口 / 在途 / 拦回 / 毛利），无逐条工作队列——见下方聚合。",
-  fulfillment: "履约 headline 为准交率聚合，逐条在途请走「航线视图」；清关卡点 / 延误分布见下方。",
+  // 文案修复（P1，李珊）：原"逐条在途请走「航线视图」"不属实——航线视图是聚合航线地图，没有逐票
+  // 列表；如实改指向真能查到逐票明细的地方（Streamlit 操作台），不给指死路的导流。
+  fulfillment: "履约 headline 为准交率聚合，无逐条工作队列；航线视图看聚合航线与告警分布，逐票明细当前在 Streamlit 操作台查询——清关卡点 / 延误分布见下方。",
   ai: "AI 运营账为累计聚合指标，无逐条队列——见下方今日 / 累计 / 记忆命中。",
   suppliers: "当前世界缺采购收货域，无供应商交期队列——见下方对账差异 / 单一依赖。",
   inventory: "当前无安全库存击穿条目——见下方盘点差异 / 现货可救性。",

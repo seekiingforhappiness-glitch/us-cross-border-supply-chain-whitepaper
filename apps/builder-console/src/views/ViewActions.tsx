@@ -107,7 +107,9 @@ export default function ViewActions() {
       {/* P2 修复：陌生人建造者在本页找"AI 信任程度"未果，兜两跳才到 15 页放权阶梯（实测困惑）——
           本页的权限矩阵是静态设定（谁被允许下手），"信任到什么程度"是动态实测（15 页放权阶梯按域算），
           两者不同不能合并展示，加一张可点跳转的导航提示卡，复用既有 navigate() 切视图机制。 */}
-      <button className="ac-nav-hint" onClick={() => navigate("governance")}>
+      {/* P2 修复：跳转只切视图不锚定，落地治理控制室顶部还要再手动找放权阶梯（在第 6 张卡）——带 focus
+          锚点，镜像 04 规则档案页现成的 route.focus → scrollIntoView 模式（见 ViewGovernance.tsx）。 */}
+      <button className="ac-nav-hint" onClick={() => navigate("governance", "gating-ladder")}>
         <span className="ac-nav-hint-text">
           想看 <b>AI 被信任到什么程度</b>（量化档位，不是感觉）？这页是谁被允许下手的静态设定——
           动态实测的信任档位在 <b>治理控制室 · 放权阶梯</b>。

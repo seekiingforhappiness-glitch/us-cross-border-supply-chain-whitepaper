@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   fetchObject,
   isMasked,
@@ -55,6 +55,59 @@ type Expanded = { state: "loading" } | { state: "done"; ids: string[] } | { stat
 
 const DQ_WARNINGS_KEY = "_validation_warnings";
 
+// 轮2·P1-6：对象卡抽屉（fixed 覆盖层）此前 top:0 铺满全高，其头部 + scrim 会盖住顶栏的角色/世界切换钮
+// （实测 elementFromPoint 落在 cp-drawer__type 上）——用户点顶栏"老板 manager"其实点在抽屉头上，角色没切、
+// 锁定提示自然不刷新（"须关闭重开"的真因是点击被吞，不是 role 传播失效）。把 scrim 与抽屉整体下移到顶栏
+// 之下即让顶栏切换钮恢复可点。用组件内常量而非改 styles.css（本单不可碰 styles.css），46=.cp-topbar 高度。
+const TOPBAR_H = 46;
+const DRAWER_INSET: CSSProperties = { top: TOPBAR_H };
+
+// 轮2·P1-3：RiskEvent 处置状态自相矛盾修复用——风险仍显"未处置/已受理/处置中"（非终态）却已有推进中的
+// 关联处置任务时，在处置状态字段下补一句派生解释（任务完成≠风险自动关闭，关闭需运营在影响面板确认）。
+const RISK_NONTERMINAL = new Set(["open", "acknowledged", "mitigating"]);
+
+type DispoTask = { id: string; status: string; approval: string };
+type DispoHint =
+  | { state: "none" }
+  | { state: "loading" }
+  | { state: "static" } // 有关联任务但逐个状态取不到 → 静态降级解释（不编造具体任务号/阶段）
+  | { state: "tasks"; rep: DispoTask }; // 取到最推进的关联任务
+
+// 选出最"推进"的关联任务（已完成 > 已批准 > 处理中/已派单）。仅待审批/已作废的任务不构成
+// "任务已推进却仍未处置"的矛盾 → 返回 null（不提示，避免把正常态说成矛盾）。
+function pickAdvancedTask(tasks: DispoTask[]): DispoTask | null {
+  const rank = (t: DispoTask) =>
+    t.status === "done" ? 3 : t.approval === "approved" ? 2 : t.status === "in_progress" || t.status === "assigned" ? 1 : 0;
+  let best: DispoTask | null = null;
+  let bestR = 0;
+  for (const t of tasks) {
+    const r = rank(t);
+    if (r > bestR) {
+      bestR = r;
+      best = t;
+    }
+  }
+  return bestR > 0 ? best : null;
+}
+
+function dispoPhase(t: DispoTask): string {
+  if (t.status === "done") return "已完成";
+  if (t.approval === "approved") return "已批准，执行中";
+  return "处理中";
+}
+
+// 派生提示样式：沿用既有琥珀语义色变量（--sev-amber/--ink-2），不新增 styles.css（本单不可碰）。
+const DISPO_HINT_STYLE: CSSProperties = {
+  margin: "6px 2px 2px",
+  padding: "6px 9px",
+  fontSize: "11px",
+  lineHeight: 1.5,
+  color: "var(--ink-2)",
+  background: "color-mix(in srgb, var(--sev-amber) 8%, transparent)",
+  border: "1px solid var(--sev-amber-dim)",
+  borderRadius: "6px",
+};
+
 function renderVal(type: string, field: string, v: unknown): { text: string; cls: string; masked?: boolean } {
   if (v === null || v === undefined) return { text: "—", cls: "null" };
   if (isMasked(v)) return { text: MASK_TEXT, cls: "masked", masked: true };
@@ -69,6 +122,7 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, Expanded>>({});
   const [dqOpen, setDqOpen] = useState(false); // 数据质量提示徽标：默认折叠
+  const [dispo, setDispo] = useState<DispoHint>({ state: "none" }); // P1-3 处置状态派生提示
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +153,48 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
+
+  // P1-3：RiskEvent 处置状态派生提示。仅当风险自身仍非终态（处置状态显"未处置/已受理/处置中"）才查——
+  // 已解决/已升级的风险不存在"状态矛盾"。有关联处置任务且其已推进（批准/完成/在办）→ 取最推进的一条作提示；
+  // 无关联任务 → 不提示（"未处置"此时不矛盾）；traverse 成功但逐个任务状态取不到 → 静态降级（如实说有任务
+  // 在办但不编造具体状态）；traverse 本身失败 → 不提示（无法确认有任务，绝不凭空造矛盾）。数据全走既有
+  // links/traverse 端点（同 ImpactPanel 用法），不新增后端端点。
+  const riskStatusForDispo =
+    target.type === "RiskEvent" && fields && typeof fields.status === "string" ? fields.status : null;
+  useEffect(() => {
+    if (target.type !== "RiskEvent" || riskStatusForDispo === null || !RISK_NONTERMINAL.has(riskStatusForDispo)) {
+      setDispo({ state: "none" });
+      return;
+    }
+    let cancelled = false;
+    setDispo({ state: "loading" });
+    traverse("RiskEvent", target.id, "task_handles_risk", role)
+      .then(async (t) => {
+        if (cancelled) return;
+        const ids = t.neighbor_ids.slice(0, 8);
+        if (ids.length === 0) {
+          setDispo({ state: "none" });
+          return;
+        }
+        const tasks = await Promise.all(
+          ids.map((id) =>
+            fetchObject("Task", id, role)
+              .then((f) => ({ id, status: String(f.status ?? ""), approval: String(f.approval_status ?? "") }))
+              .catch(() => null),
+          ),
+        );
+        if (cancelled) return;
+        const ok = tasks.filter((x): x is DispoTask => x !== null);
+        const rep = pickAdvancedTask(ok);
+        if (rep) setDispo({ state: "tasks", rep });
+        else if (ok.length === 0) setDispo({ state: "static" }); // 有关系但任务状态全取不到
+        else setDispo({ state: "none" }); // 关联任务都仅待审批/已作废 → 不构成矛盾
+      })
+      .catch(() => !cancelled && setDispo({ state: "none" })); // 关系遍历失败：不确认有任务，不提示
+    return () => {
+      cancelled = true;
+    };
+  }, [target, role, riskStatusForDispo]);
 
   const usable: UsableLink[] = linksForType(links, target.type);
 
@@ -133,8 +229,8 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
 
   return (
     <>
-      <div className="cp-drawer-scrim" onClick={onClose} />
-      <aside className="cp-drawer" role="dialog" aria-label={`${OBJECT_TYPE_CN[target.type] ?? target.type} ${target.id}`}>
+      <div className="cp-drawer-scrim" style={DRAWER_INSET} onClick={onClose} />
+      <aside className="cp-drawer" style={DRAWER_INSET} role="dialog" aria-label={`${OBJECT_TYPE_CN[target.type] ?? target.type} ${target.id}`}>
         <div className="cp-drawer__head" style={{ alignItems: "flex-start" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="cp-drawer__type" title={target.type}>
@@ -209,6 +305,33 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
                       );
                     })}
                   </div>
+                  {/* P1-3 处置状态派生提示：紧跟含"处置状态(status)"的字段组之下，解释"任务已推进却仍显未处置"
+                      的业务语义（任务完成≠风险自动关闭），并把在办任务号做成可点链接。 */}
+                  {target.type === "RiskEvent" &&
+                    dispo.state !== "none" &&
+                    groupedFields[g].some(([k]) => k === "status") && (
+                      <div style={DISPO_HINT_STYLE}>
+                        {dispo.state === "loading" ? (
+                          <span style={{ color: "var(--ink-3)" }}>查关联处置任务…</span>
+                        ) : dispo.state === "tasks" ? (
+                          <>
+                            处置任务{" "}
+                            <span
+                              className="cp-neighbor"
+                              onClick={() => onOpenObject({ type: "Task", id: dispo.rep.id })}
+                              title={`打开任务 ${dispo.rep.id}`}
+                            >
+                              {dispo.rep.id}
+                            </span>{" "}
+                            {dispoPhase(dispo.rep)}——任务完成不等于风险自动关闭，风险关闭需运营在影响面板动作区确认。
+                          </>
+                        ) : (
+                          <>
+                            该风险已有关联处置任务在办——“未处置”指风险尚未由运营在影响面板动作区确认关闭（任务完成不等于风险自动关闭）。
+                          </>
+                        )}
+                      </div>
+                    )}
                 </div>
               ))}
 

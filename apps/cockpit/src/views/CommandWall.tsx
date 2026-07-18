@@ -119,7 +119,9 @@ function ProvBody({ zone, prov }: { zone: ZoneId; prov: ZoneProvenance }) {
         )}
       </div>
       <div className="cp-pop__foot">
-        <Icon name="arrow-right" size={11} /> 完整血缘见透视镜（perspective lens）
+        {/* 悬空引用修复（P2，陈会计）：驾驶舱与透视镜是两个独立应用（不同端口），这里点不出去、
+            原文案又像能跳转——改成不承诺跳转的如实表述，说清"去哪找"而非"点这里去"。 */}
+        <Icon name="link" size={11} /> 完整血缘可在建造者透视镜（开发者工具）查看
       </div>
     </>
   );
@@ -173,7 +175,8 @@ function GatingBody({ gating }: { gating: GovernanceGating | null | undefined })
         ))}
       </div>
       <div className="cp-pop__foot">
-        <Icon name="arrow-right" size={11} /> 档位阶梯 / 升档门槛完整白话见透视镜治理控制室
+        {/* 悬空引用修复（P2，陈会计）：同上——点不出去，改为如实指路而非承诺跳转。 */}
+        <Icon name="link" size={11} /> 档位阶梯 / 升档门槛完整白话可在建造者透视镜（开发者工具）的治理控制室查看
       </div>
     </>
   );

@@ -1274,6 +1274,19 @@ body {
   background: var(--bg-2);
   color: var(--ink-0);
 }
+/* a11y（P1，L-UX 轮2）：可点行 hover 加左侧强调条，让可点/不可点行视觉可区分（原先只变背景色，
+   不可点行悬停时容易被误读成也能点）；键盘 focus 走独立 :focus-visible 规则，比全局 outline 更贴合表格行。 */
+.cp-table tr.is-click:hover td:first-child {
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--beacon) 55%, transparent);
+}
+.cp-table tr.is-click:focus-visible {
+  outline: 2px solid var(--beacon);
+  outline-offset: -2px;
+}
+.cp-table tr.is-click:focus-visible td {
+  background: var(--bg-2);
+  color: var(--ink-0);
+}
 /* 工具类 */
 .gold {
   color: var(--gold);
@@ -2745,6 +2758,24 @@ body {
 }
 
 /* —— U6 协作流真身（右栏协作流标签的真数据列表）—— */
+/* 协作流 tab 外层（诚实导流条 + 面板本体）：note 固定高度，面板占满剩余空间自行滚动。 */
+.cp-collab-tab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cp-collab-note {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--bg-2);
+}
 .cp-collab-live {
   flex: 1;
   min-height: 0;
@@ -2809,6 +2840,18 @@ body {
 }
 .cp-thread.is-esc {
   border-left-color: var(--sev-amber);
+}
+/* a11y + 可点化（P1，李珊任务3）：线程卡有关联任务/风险时可点开对象卡，键盘可达同 WorkQueue 行标准。 */
+.cp-thread.is-click {
+  cursor: pointer;
+}
+.cp-thread.is-click:hover {
+  background: var(--bg-3);
+  border-left-color: var(--beacon);
+}
+.cp-thread.is-click:focus-visible {
+  outline: 2px solid var(--beacon);
+  outline-offset: -2px;
 }
 .cp-thread__top {
   display: flex;

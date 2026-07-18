@@ -468,8 +468,11 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
               <div className="cp-impact__sect-t">
                 受影响订单行
                 {risk && (
-                  <span className="cp-impact__agg">
-                    {affectedLineCount} 条 · 合计 <b className={isMasked(totalUsd) ? "" : "gold"}>{formatUsd(totalUsd as number | string)}</b>
+                  <span
+                    className="cp-impact__agg"
+                    title="影响货值＝受影响订单行 Σqty×单价，是这笔风险牵连了多少货；不是处置这笔风险要花多少钱（那是「处置成本」，两个口径不同、并存不冲突）"
+                  >
+                    {affectedLineCount} 条 · 影响货值 <b className={isMasked(totalUsd) ? "" : "gold"}>{formatUsd(totalUsd as number | string)}</b>
                   </span>
                 )}
               </div>
@@ -596,6 +599,20 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
             <div className="cp-action__hint">
               <span className="cp-action__hint-k">AI 建议</span>
               <span className="cp-action__hint-v">{focus.actionHint}</span>
+            </div>
+          )}
+          {/* 口径修复（P1，王总"差8倍会拍错优先级"）：这里的金额是执行该方案的处置成本，与上方"受影响
+              订单行"的影响货值是两个不同口径的数字——原先详情面板只显影响货值、处置成本只在队列列表里，
+              两处分开看像是同一个数字对不上；并排显示 + 各自标口径，让差异不再像自相矛盾。 */}
+          {focus.decision && (
+            <div className="cp-action__hint">
+              <span className="cp-action__hint-k">处置成本</span>
+              <span
+                className={`cp-action__hint-v num ${isMasked(focus.decision.amountUsd) ? "" : "gold"}`}
+                title="处置成本＝执行该方案预计花费，非受影响订单行的影响货值"
+              >
+                {formatUsd(focus.decision.amountUsd as number | string)}
+              </span>
             </div>
           )}
           {focus.decision ? (

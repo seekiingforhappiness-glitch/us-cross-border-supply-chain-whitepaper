@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   fetchAiFlow,
   fetchCollaborationThreads,
+  refToObjectRef,
   type AiFlow,
   type CollabThread,
   type CollaborationThreads,
@@ -156,13 +157,35 @@ function sevChip(sev: string | null | undefined): { cls: string; text: string } 
   return { cls, text: SEV_CN[sev] ?? sev };
 }
 
-function ThreadRow({ t }: { t: CollabThread }) {
+// a11y + 可点化（P1，李珊任务3 完全失败——协作流 tab 纯只读、卡片不可点）：优先开该线程自己的
+// 任务（task_id 更具体），没有任务再退到该线程挂的风险（risk_event_id，分组头已显示同一 id）；
+// 两者都没有则不可点（不给假交互）。键盘可达同 WorkQueue 行标准：tabIndex/role/Enter·Space。
+function ThreadRow({ t, onOpenObject }: { t: CollabThread; onOpenObject: (r: ObjectRef) => void }) {
   const owner = t.owner || "我方";
   const counterparty = t.counterparty || t.counterparty_type || "对方";
   const esc = (t.escalation_level ?? 0) > 0;
   const taskTitle = t.task && typeof t.task.title === "string" ? (t.task.title as string) : null;
+  const ref = refToObjectRef(t.task_id) ?? refToObjectRef(t.risk_event_id);
+  const clickable = !!ref;
+  const open = () => ref && onOpenObject(ref);
   return (
-    <div className={`cp-thread ${esc ? "is-esc" : ""}`}>
+    <div
+      className={`cp-thread ${esc ? "is-esc" : ""} ${clickable ? "is-click" : ""}`}
+      onClick={clickable ? open : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      role={clickable ? "button" : undefined}
+      aria-label={clickable ? `打开关联${ref!.type === "Task" ? "任务" : "风险"} ${ref!.id}` : undefined}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                open();
+              }
+            }
+          : undefined
+      }
+    >
       <div className="cp-thread__top">
         <span className="cp-thread__parties">
           <Icon name="users" size={11} /> <span className="num">{owner}</span>
@@ -182,7 +205,7 @@ function ThreadRow({ t }: { t: CollabThread }) {
   );
 }
 
-function CollabPanel({ role, world }: { role: Role; world?: World | null }) {
+function CollabPanel({ role, world, onOpenObject }: { role: Role; world?: World | null; onOpenObject: (r: ObjectRef) => void }) {
   const [data, setData] = useState<CollaborationThreads | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -253,7 +276,7 @@ function CollabPanel({ role, world }: { role: Role; world?: World | null }) {
                 <span className="cp-thread-group__count">{g.thread_count} 条</span>
               </div>
               {items.map((t) => (
-                <ThreadRow key={t.coordination_id} t={t} />
+                <ThreadRow key={t.coordination_id} t={t} onOpenObject={onOpenObject} />
               ))}
             </div>
           );
@@ -317,7 +340,14 @@ export default function AiWorkflow({
       {tab === "runs" ? (
         <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
       ) : tab === "collab" ? (
-        <CollabPanel role={role} world={world} />
+        <div className="cp-collab-tab">
+          {/* 诚实导流（P1，李珊任务3 完全失败）：协作流当前纯只读、无法在驾驶舱内催办/记回应——
+              明说去处，别让人以为按钮丢了；不承诺接入时间点（"正在接入路上"不给期限）。 */}
+          <div className="cp-collab-note">
+            <Icon name="chat" size={12} /> 催办、记录对方回应等协调操作，目前仍在 Streamlit 操作台完成；驾驶舱正在接入这部分能力。
+          </div>
+          <CollabPanel role={role} world={world} onOpenObject={onOpenObject} />
+        </div>
       ) : err ? (
         <StateHint
           kind="error"

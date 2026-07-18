@@ -1,5 +1,7 @@
+import { useEffect, useRef } from "react";
 import { governance } from "../data";
 import ViewHead from "../components/ViewHead";
+import { useNav } from "../components/Nav";
 import type { GovSlice } from "../types";
 
 /* 治理控制室（第15视图 · G-Dashboard）——治理证据包收官件。
@@ -37,9 +39,25 @@ const TIER_NAME: Record<string, string> = {
   shadow: "影子", suggest: "建议", approve: "审核", auto: "自动",
 };
 
+// P2 修复：05 权限矩阵页的「放权阶梯 →」导流卡跳转过来后原先落地本页顶部，还要再手动滚到第 6 张
+// 卡才找到放权阶梯——镜像 ViewRules.tsx 现成的 route.focus → scrollIntoView + 短暂高亮闪烁模式。
+const FOCUS_ANCHORS: Record<string, true> = { "gating-ladder": true };
+
 export default function ViewGovernance() {
   const g = governance;
   const { telemetry: t, security: sec, goldset, shadow: sh, gating, ledger, coverage, lineage, cost } = g;
+  const { route } = useNav();
+  const refs = useRef<Record<string, HTMLElement | null>>({});
+
+  useEffect(() => {
+    if (route.view === "governance" && route.focus && FOCUS_ANCHORS[route.focus] && refs.current[route.focus]) {
+      const el = refs.current[route.focus];
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      el?.classList.add("gov-flash");
+      const t2 = setTimeout(() => el?.classList.remove("gov-flash"), 1600);
+      return () => clearTimeout(t2);
+    }
+  }, [route.view, route.focus]);
 
   return (
     <div className="gov">
@@ -284,7 +302,7 @@ export default function ViewGovernance() {
       </section>
 
       {/* 卡④½：放权阶梯（波1·C · display-only）——各域当前该在放权阶梯哪一档 */}
-      <section className="panel gov-card">
+      <section className="panel gov-card" ref={(el) => { refs.current["gating-ladder"] = el; }}>
         <div className="panel-head">
           <span className="panel-title">④½ 放权阶梯 · 各域当前档位（display-only）</span>
           <SourceTag src={gating.source} />

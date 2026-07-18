@@ -1585,8 +1585,10 @@ button.im-tool { cursor: pointer; } button.im-tool:hover { border-color: rgba(92
 .gov-q-detail { font-size: 11.5px; color: var(--ink-2); line-height: 1.5; margin-top: 5px; }
 
 /* ---- 通用证据卡 ---- */
-.gov-card { margin-bottom: 16px; }
+.gov-card { margin-bottom: 16px; transition: border-color 0.3s, box-shadow 0.3s; }
 .gov-card-body { padding: 18px; }
+/* 导流锚定落点短暂高亮（P2）：镜像 .rl-card.rl-flash，让「放权阶梯 →」跳转过来后一眼看到落在哪张卡。 */
+.gov-card.gov-flash { border-color: var(--cyan-line); box-shadow: 0 0 0 2px var(--cyan-dim); }
 
 /* ---- 卡①遥测 ---- */
 .gov-tele-kpis {

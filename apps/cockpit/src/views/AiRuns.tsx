@@ -81,6 +81,22 @@ function goalRef(goal: string): ObjectRef | null {
   return m ? refToObjectRef(m[0]) : null;
 }
 
+// 轮2·P1-4（动线）：从 run summary 里提取处置任务号 → 可点对象引用，让"派单失败：这个风险已有处置任务
+// TSK-xxx 在办"里的任务号可一键打开（此前只给了编号点不了）。用 (?:-…)+ 贪全部连字段，兼容两段式号
+// （TSK-2026-0099，别退化成轮1 修过的"只吃一段"）；单段号（TSK-FF98F24AD9）照常命中。
+function taskRefFromText(text: string | null | undefined): ObjectRef | null {
+  if (!text) return null;
+  const m = text.match(/TSK(?:-[A-Za-z0-9]+)+/);
+  return m ? refToObjectRef(m[0]) : null;
+}
+
+// 轮2·P1-4（时间线不漏内部码）：派单命令步的原样错误若命中"单风险单任务（D9/C4）"整句 → 业务短语；
+// 内部代号只留在步 result_json（审计可查），不进用户可见时间线文案。其余错误原样保留（不过度改写）。
+function humanizeStepErr(err: string): string {
+  const m = err.match(/^已存在非终态任务 (\S+)（单风险单任务，D9\/C4）$/);
+  return m ? `该风险已有处置任务 ${m[1]} 在办，不能重复派单` : err;
+}
+
 // ── 状态徽章 ──
 function StatusBadge({ status, label, killed }: { status: string; label: string; killed?: number }) {
   const tone = STATUS_TONE[status] ?? "neutral";
@@ -132,7 +148,7 @@ function stepText(s: RuntimeStep): string {
       const tool = typeof p.tool === "string" ? p.tool : "写入";
       const ok = r.ok === true;
       const oid = typeof r.object_id === "string" ? r.object_id : null;
-      const err = typeof r.error === "string" ? r.error : null;
+      const err = typeof r.error === "string" ? humanizeStepErr(r.error) : null;
       const verb = tool === "assign_task" ? "派单" : tool === "propose_mitigation" ? "提交处置提案" : tool;
       return `经命令总线${verb}${ok ? `：成功${oid ? ` → ${oid}` : ""}` : `：未成功${err ? ` · ${err}` : ""}`}`;
     }
@@ -317,6 +333,8 @@ function RunRow({ run, role, onOpenObject, onReload }: { run: RuntimeRunListItem
   const isTerminal = TERMINAL.has(run.status);
   const ref = goalRef(run.goal);
   const plain = run.summary; // 最后一步白话（终态/等审批时后端写入 summary；未有则下方回退状态标签）
+  // P1-4 动线：summary 里点名的处置任务号（派单失败"已有任务 TSK-xxx 在办"/等审批/已完成都可能带）→ 可点打开
+  const openTaskRef = taskRefFromText(plain);
 
   // 展开即拉详情（时间线全量 + think 步 mode）。只在打开且尚无数据/被要求刷新时拉。
   useEffect(() => {
@@ -391,6 +409,11 @@ function RunRow({ run, role, onOpenObject, onReload }: { run: RuntimeRunListItem
           <button className={`cp-story__toggle ${open ? "is-open" : ""}`} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
             {open ? "收起" : "展开"}时间线 · {run.steps} 步
             <Icon name="chevron-right" size={12} />
+          </button>
+        )}
+        {openTaskRef && (
+          <button className="cp-run__goal-link num" onClick={() => onOpenObject(openTaskRef)} title={`打开任务 ${openTaskRef.id}`}>
+            打开任务 {openTaskRef.id} →
           </button>
         )}
         {isWaiting && (
