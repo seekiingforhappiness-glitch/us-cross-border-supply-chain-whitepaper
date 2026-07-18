@@ -1,8 +1,26 @@
 # STATUS.md — 项目状态（唯一状态源）
 
-更新时间：2026-07-18（波E 证据链智能收官：AI 建议自带证据链上画面；V13-V20 八连决议全量落地）
+更新时间：2026-07-18 深夜（L-UX 轮1 修复批补登记 + 升级会话接管快进；波E 证据链智能收官）
 
 ## 当前位置
+
+> **L-UX 轮1 修复批（1a7b964，2026-07-18 晚，补登记——原会话交付代码后未更新本文件，DoD 欠账
+> 由升级接管会话清偿）**：陌生人实测 9 项修复（Opus 驾驶舱域 6 + Sonnet 透视镜域 3）——
+> P0 审批闭环入任务卡（DecisionButtons 复用零新写路）/ P1 正则截断 404（两段式编号只吃一段）/
+> P1 队列静默截断（20→50+共 N 条标注）/ P1 透视镜 93vs25 口径标注 / P1 本体地图 a11y+
+> currentColor 光晕 bug / 风险号列防同船多险混淆 / 墙卡"静态快照"→"当前值"+超时副行 /
+> 放权阶梯导流卡 / 角色切换内联钮（清简报挂账第 4 条）。原会话独立回归：pytest 125+security+
+> runtime+lint+digest+双 build 全绿；浏览器亲验 P0/404/墙卡文案。误报澄清：提案标题"张冠李戴"
+> 系一船多险正常态，病根为展示缺风险号已补列。**L-UX 循环状态：轮1 完成（发现→修复→亲验），
+> 轮2（独立复测+新一轮陌生人发现）接续进行。**
+>
+> **升级会话接管（2026-07-18 深夜，分支 claude/supply-chain-control-tower-upgrade-b27c95 已
+> 纯快进至 1a7b964 与 handoff 线同点）**：接管自检全绿——全链重建（datagen→pipeline→engine→
+> seed→apply_seam_columns）+ sim.backfill + agent.gating（shadow.sqlite 旁路账本自 handoff
+> worktree 拷贝，一手长跑数据不可重建）；pytest apps/api 125 passed / runtime 60 项 /
+> security 288 注入全拒 / lint --strict 0 / db_digest=9582dcb0 与基线逐字一致；
+> 检测 168 事件、R1-R21 全 P/R=1.000。服务栈仍挂 handoff worktree（API :8100 / 驾驶舱 :5174 /
+> 透视镜 :4174，代码同版本）。
 
 > **波E 证据链智能收官（2026-07-17/18，V20：Opus 交付①②+主会话接手前端断针与验收——workflow
 > 验证段第 5 次停滞按惯例主会话收尾）**：**GET /proposals/{task_id}/evidence 证据包端点**
