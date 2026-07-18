@@ -16,6 +16,7 @@ import { actorForRole } from "../roleActors";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
 import { AiDispatchButton } from "./AiRuns";
+import EvidenceCard from "./EvidenceCard";
 import { RULE_CN, RULE_TYPE_CN, SEV_CN } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
 import type { PendingDecision } from "./zoneModel";
@@ -572,7 +573,12 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
             </div>
           )}
           {focus.decision ? (
-            <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />
+            <>
+              {/* 波E 证据链（V20）：批之前先看证据——影响量化/同类先例与结局/该域信任档/备选代价。
+                  卡片自管加载与诚实空态；放在批准键之前=证据先于拍板的画面语序。 */}
+              <EvidenceCard taskId={focus.decision.taskId} role={role} />
+              <DecisionButtons decision={focus.decision} role={role} onActed={onActed} />
+            </>
           ) : (
             risk && (
               <>

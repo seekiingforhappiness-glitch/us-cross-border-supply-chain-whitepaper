@@ -567,7 +567,7 @@ def test_simworld_panorama_and_ai_flow(sim_world):
         if i["sim"]:
             assert i["kind"] in ("detect", "propose", "approve", "reject", "close")
         else:
-            assert i["kind"] in ("ai_action", "flow", "llm"), f"真实运营条目 kind 异常：{i['kind']}"
+            assert i["kind"] in ("ai_action", "task_flow", "llm_call"), f"真实运营条目 kind 异常：{i['kind']}"
     ts_list = [i["ts"] for i in d["items"]]
     assert ts_list == sorted(ts_list, reverse=True)
 

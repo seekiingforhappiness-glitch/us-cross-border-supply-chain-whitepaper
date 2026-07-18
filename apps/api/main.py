@@ -507,3 +507,15 @@ app.include_router(build_collaboration_router(get_db_path, get_ro_connection, _i
 from apps.api.runtime import build_runtime_router                        # noqa: E402
 
 app.include_router(build_runtime_router(get_db_path, _infer_world, AS_OF))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 波E 证据链智能（spec 2026-07-17-waveE-evidence-chain §①）：
+#   GET /proposals/{task_id}/evidence —— 提案证据包（impact/precedents/trust/alternatives 四块现算）。
+# 同 cockpit/governance/runtime 注入式挂载（evidence 不反向 import main → 零循环导入）；复用本模块
+# get_db_path（X-World 双世界）/get_ro_connection（GET mode=ro 物理只读）/_infer_world（world 信封）。
+# 红线：纯读聚合、零新写路；trust 只读 data/gating_report.json 不 import gating（同 governance）。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.evidence import build_evidence_router                      # noqa: E402
+
+app.include_router(build_evidence_router(get_db_path, get_ro_connection, _infer_world))

@@ -715,9 +715,36 @@ async function runtimePost<T>(
   return (await resp.json()) as T;
 }
 
-/** 启动一趟 AI 处置差事（POST /runtime/runs {goal_risk_id}）：同步推进到首个稳态（等审批/终态）。 */
-export const startRuntimeRun = (role: Role, actor: string, goalRiskId: string) =>
-  runtimePost<RuntimeRunEnvelope>("/runtime/runs", role, actor, { goal_risk_id: goalRiskId });
+/** 启动一趟 AI 处置差事（POST /runtime/runs {goal_risk_id, llm?}）：同步推进到首个稳态（等审批/终态）。
+ *  llm（波E② 真模型开关，可选）：true→该趟 think 走真模型（覆盖 env 默认，慢约 2-3 分钟、走订阅通道）；
+ *  false→确定性脚本（快速）；undefined→不带 llm 键，随后端 env 默认（既有调用方 byte-identical，默认 off）。
+ *  仅"透传"用户选择，真正的 probe/降级/如实回传 llm_mode 都在后端 apps/api/runtime.py（本层不代判）。 */
+export const startRuntimeRun = (role: Role, actor: string, goalRiskId: string, llm?: boolean) => {
+  const body: Record<string, unknown> = { goal_risk_id: goalRiskId };
+  if (llm !== undefined) body.llm = llm; // 不勾/未指定时不注入 llm 键→保持既有请求体形状
+  return runtimePost<RuntimeRunEnvelope>("/runtime/runs", role, actor, body);
+};
+
+// AI 账卡聚合（规格③：CommandWall AI 运营账卡补「AI 任务：进行中 N · 等拍板 M」）。/runtime/runs 现查、
+// 按 status 归类：进行中 = created + running（非终态、且未停在待拍板）；等拍板 = waiting_approval。
+// 该列表端点服务端不接 X-Role 参数（apps/api/runtime.py::list_runs_endpoint 只声明 cursor/limit/db_path）
+// → 计数与角色无关，此处传 "manager" 仅为满足 reqHeaders 的 X-Role 恒带约定，不影响结果；X-World 随模块
+// 单例。失败向上抛，调用方（CommandWall）诚实降级、不占位（不画假 0/—）。
+export interface RuntimeRunsAgg {
+  inProgress: number;
+  waiting: number;
+  total: number;
+}
+export async function fetchRuntimeRunsAgg(): Promise<RuntimeRunsAgg> {
+  const d = await fetchRuntimeRuns("manager");
+  let inProgress = 0;
+  let waiting = 0;
+  for (const r of d.items) {
+    if (r.status === "waiting_approval") waiting += 1;
+    else if (r.status === "created" || r.status === "running") inProgress += 1;
+  }
+  return { inProgress, waiting, total: d.items.length };
+}
 
 /** 断点续跑（POST …/resume）：等审批三分支语义透传（pending 不推进 / approved 写后复读→done / rejected→failed）。 */
 export const resumeRuntimeRun = (role: Role, actor: string, runId: string) =>
@@ -726,3 +753,125 @@ export const resumeRuntimeRun = (role: Role, actor: string, runId: string) =>
 /** 急停（POST …/kill）：manager 专属（后端 X-Role 独立鉴权 403）+ X-Actor 必填；幂等留痕。 */
 export const killRuntimeRun = (role: Role, actor: string, runId: string) =>
   runtimePost<RuntimeKillResult>(`/runtime/runs/${encodeURIComponent(runId)}/kill`, role, actor);
+
+// ═══════════════════════════ /proposals/{task_id}/evidence（波E 证据链，规格③）═══════════════════════════
+// 提案证据包：impact / precedents / trust / alternatives 四块现算（apps/api/evidence.py 纯读聚合，本前端
+// 不改一行后端）。设计要点（渲染层必须照实呈现，不得把"无"画成 0/编数）：
+//   · 每块都可能诚实空态：available:false + reason（缺 rule_id / 风险查无 / 治理域缺失）、empty:true（先例
+//     首例 n=0 但检索成功）、字段 null + reason（算不出的延误天数/有效率）。
+//   · 金额键 _usd 对无成本可见角色（ops）掩码为 MASK 串（"🔒无权查看"）——用 formatUsd/isMasked 识别，
+//     不当数字画（同 objects 脱敏）。计数/比率/天数/档位不掩。
+//   · effective_rate=null 意为"无已回填质量标签的例"（诚实空态），绝非 0%。
+
+export interface EvidenceImpact {
+  available?: boolean; // false=风险查无 → reason
+  reason?: string;
+  affected_order_lines?: number;
+  amount_usd?: number | string; // number | MASK（ops 掩码）
+  affected_customers?: number;
+  requested_line_ids?: number;
+  resolved_line_ids?: number;
+  note?: string; // 无订单行 / 悬空 id 的白话说明（诚实非缺数）
+}
+
+export interface EvidenceEffectiveness {
+  labeled: number;
+  effective: number;
+  partial: number;
+  ineffective: number;
+  unlabeled: number;
+  effective_rate: number | null; // null=无已回填标签例（诚实空态，非 0）
+  note: string;
+}
+
+export interface EvidenceExample {
+  memory_id: string | null;
+  risk_event_id: string | null;
+  decision: string | null; // adopted / modified / rejected
+  proposed_action: string | null;
+  quality_label: string | null;
+  outcome_resolved: string | null;
+  outcome_days: number | null;
+  decided_at: string | null;
+  impact_usd: number | string | null; // number | MASK | null
+  plain: string; // 白话结局（后端拼好，直接展示，不再前端拼译）
+}
+
+export interface EvidencePrecedents {
+  available: boolean;
+  reason?: string; // available:false（缺 rule_id）
+  empty?: boolean; // true=首例（检索成功但 n=0）
+  n: number;
+  rule_id?: string;
+  lane?: string;
+  match_scope?: "rule_and_lane" | "rule_only" | string;
+  widened?: boolean;
+  by_decision?: Record<string, number>; // {adopted:N, modified:N, rejected:N}（仅在场决定）
+  effectiveness?: EvidenceEffectiveness;
+  recent_examples?: EvidenceExample[];
+  widen_reason?: string; // 放宽到全航线取样的白话原因
+  sample_note?: string; // n<5 样本不足白话（仅供参考）
+  note?: string; // 首例白话
+}
+
+export interface EvidenceTrust {
+  available: boolean;
+  reason?: string; // available:false（缺 rule_id / 报告未生成 / 该域缺失）
+  display_only?: boolean | null; // true=只算档不放权（档位≠已授权）
+  rule_id?: string;
+  domain?: string;
+  name?: string | null; // 老板语言域名（如"延误击穿承诺"）
+  group?: string | null;
+  tier?: string | null; // 当前档位（shadow / suggest / ...）
+  next_tier?: string | null;
+  n?: number | null;
+  hits?: number | null;
+  rate?: number | null; // 历史一致率
+  ci?: number[] | null; // [下界, 上界]
+  low_sample?: boolean | null;
+  gaps?: string[]; // 白话差距清单（"缺一致率：38.2% < 85.0%"）
+  generated_at?: string | null;
+  config_version?: string | null;
+  note?: string;
+}
+
+export interface EvidenceActionHistorical {
+  n: number;
+  effective_rate: number | null; // null=无例 或 有例未回填（见 reason/note）
+  reason?: string; // n=0 无历史案例
+  labeled?: number;
+  effective?: number;
+  note?: string;
+}
+
+export interface EvidenceAlternativeOption {
+  label: string; // 中文动作名（后端已译："加急" / "接受延误"）
+  historical: EvidenceActionHistorical;
+}
+
+export interface EvidenceAlternatives {
+  available: boolean;
+  reason?: string; // available:false（风险查无）
+  affected_value_usd?: number | string | null; // number | MASK | null
+  delay_days?: number | null; // null=无货件 / 无列 → delay_reason
+  options?: Record<string, EvidenceAlternativeOption>; // expedite / accept_delay
+  note?: string;
+  delay_reason?: string;
+}
+
+export interface ProposalEvidence {
+  world: string;
+  task_id: string;
+  risk_event_id: string | null;
+  proposed_action: string | null;
+  approval_status: string | null;
+  role: string;
+  impact: EvidenceImpact;
+  precedents: EvidencePrecedents;
+  trust: EvidenceTrust;
+  alternatives: EvidenceAlternatives;
+}
+
+/** 提案证据包（纯读；非 2xx 抛错，调用方降级为"证据暂不可用"，绝不阻断审批按钮）。 */
+export const fetchProposalEvidence = (taskId: string, role: Role) =>
+  apiGet<ProposalEvidence>(`/proposals/${encodeURIComponent(taskId)}/evidence`, role);

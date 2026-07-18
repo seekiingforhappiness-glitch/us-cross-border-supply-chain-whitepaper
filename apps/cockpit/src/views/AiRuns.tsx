@@ -456,6 +456,7 @@ function DispatchLauncher({ role, onStarted }: { role: Role; onStarted: () => vo
   const [riskId, setRiskId] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [useRealModel, setUseRealModel] = useState(false);   // 波E②：真模型按趟 opt-in，默认省钱剧本
   const canStart = role === "ops";
   const start = async () => {
     const rid = riskId.trim().toUpperCase();
@@ -463,7 +464,7 @@ function DispatchLauncher({ role, onStarted }: { role: Role; onStarted: () => vo
     setBusy(true);
     setMsg(null);
     try {
-      const env = await startRuntimeRun(role, actorForRole(role), rid);
+      const env = await startRuntimeRun(role, actorForRole(role), rid, useRealModel);
       setMsg(`已发起：${env.run_id}（${env.status === "waiting_approval" ? "提案已出，待拍板" : env.status}）`);
       setRiskId("");
       onStarted();
@@ -491,6 +492,10 @@ function DispatchLauncher({ role, onStarted }: { role: Role; onStarted: () => vo
               {busy ? "发起中…" : "让 AI 处置"}
             </button>
           </div>
+          <label className="cp-dispatch-launcher__llm">
+            <input type="checkbox" checked={useRealModel} onChange={(e) => setUseRealModel(e.target.checked)} />
+            用真模型思考（慢约 2-3 分钟、走订阅通道；不勾=快速确定性剧本，时间线如实标注两种档）
+          </label>
           <div className="cp-dispatch-launcher__hint">
             也可以在任何风险详情的动作区一键发起（仅对还没有待批提案的风险）。AI 只会查详情→派单→
             提交提案，然后停在「待拍板」等人批——提案-only，绝不自行批准。

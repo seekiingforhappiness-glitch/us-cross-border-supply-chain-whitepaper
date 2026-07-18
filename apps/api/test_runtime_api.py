@@ -283,6 +283,97 @@ def test_detail_nonexistent_404_with_error_envelope(rt_env):
     assert b["error"]["message"] == b["detail"], "error.message 即原白话 detail（契约硬化一致）"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 波E② 真模型开关：body {"llm": true} 覆盖 env；响应 llm_mode 如实（不真调 LLM——mock/env 层面验证透传）
+# ═══════════════════════════════════════════════════════════════════════════
+def test_resolve_llm_mode_unit(monkeypatch):
+    """_resolve_llm_mode：body {llm:true}→auto、{llm:false}→off、缺键/非布尔→env 默认；body 覆盖 env。"""
+    from apps.api.runtime import _resolve_llm_mode
+    monkeypatch.delenv("RUNTIME_API_LLM", raising=False)
+    assert _resolve_llm_mode({"llm": True}) == "auto"
+    assert _resolve_llm_mode({"llm": False}) == "off"
+    assert _resolve_llm_mode({}) == "off"                 # env 默认 off
+    assert _resolve_llm_mode(None) == "off"
+    assert _resolve_llm_mode({"llm": "true"}) == "off"    # 非布尔字符串 → 回落 env 默认（不误当真）
+    monkeypatch.setenv("RUNTIME_API_LLM", "auto")
+    assert _resolve_llm_mode({}) == "auto"                # env 默认 auto
+    assert _resolve_llm_mode({"llm": False}) == "off"     # body 显式覆盖 env
+
+
+class _FakeRuntime:
+    """替身 Runtime（不真起状态机/不真调 LLM）：只记构造时收到的 llm 档，供透传断言。"""
+    captured: dict = {}
+
+    def __init__(self, db_path, role, llm):
+        _FakeRuntime.captured = {"llm": llm, "role": role}
+        self.con = sqlite3.connect(":memory:")
+
+    def start(self, goal):
+        return {"run_id": "RUN-FAKELLM01", "status": "waiting_approval", "task_id": "TSK-FAKE"}
+
+
+def test_start_body_llm_true_passthrough(rt_env, monkeypatch):
+    """body {"llm": true} → 构造 Runtime(llm='auto')（覆盖 env 默认）+ 响应 llm_mode='auto'（不真调 LLM）。"""
+    client, db = rt_env
+    import apps.api.runtime as rtmod
+    monkeypatch.setattr(rtmod, "Runtime", _FakeRuntime)
+    rid = _assignable_risks(db)[0]
+    r = client.post("/runtime/runs", json={"goal_risk_id": rid, "llm": True},
+                    headers={"X-Role": "ops", "X-Actor": "u-ops-us"})
+    assert r.status_code == 200, r.text
+    assert _FakeRuntime.captured["llm"] == "auto", "body llm=true 应透传 llm=auto 给 Runtime"
+    assert r.json()["llm_mode"] == "auto", "响应 llm_mode 如实=auto"
+
+
+def test_start_body_llm_false_overrides_env_auto(rt_env, monkeypatch):
+    """env=auto 时 body {"llm": false} 仍强制 off（body 覆盖 env）+ 响应 llm_mode='off'（不静默烧钱）。"""
+    client, db = rt_env
+    import apps.api.runtime as rtmod
+    monkeypatch.setenv("RUNTIME_API_LLM", "auto")
+    monkeypatch.setattr(rtmod, "Runtime", _FakeRuntime)
+    rid = _assignable_risks(db)[0]
+    r = client.post("/runtime/runs", json={"goal_risk_id": rid, "llm": False},
+                    headers={"X-Role": "ops", "X-Actor": "u-ops-us"})
+    assert r.status_code == 200, r.text
+    assert _FakeRuntime.captured["llm"] == "off", "body llm=false 应覆盖 env=auto 为 off"
+    assert r.json()["llm_mode"] == "off"
+
+
+def test_start_default_llm_off_no_body_flag(rt_env):
+    """不带 llm 键（env 默认 off）→ 真驱动一趟确定性剧本，响应 llm_mode='off'（默认不出境、不烧订阅通道）。"""
+    client, db = rt_env
+    rid = _assignable_risks(db)[0]
+    out = _start(client, rid).json()          # body 只有 goal_risk_id，无 llm
+    assert out["llm_mode"] == "off"
+    # think 步 mode 也应如实=deterministic（未出境）
+    detail = client.get(f"/runtime/runs/{out['run_id']}").json()
+    think = [s for s in detail["steps"] if s["kind"] == "think"]
+    assert think and think[0]["result"]["mode"] == "deterministic"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 波E② propose 步证据摘要：note 进步 payload（不进 dispatch 参数 → 提案本体 byte-identical）
+# ═══════════════════════════════════════════════════════════════════════════
+def test_propose_step_carries_evidence_note(rt_env):
+    """确定性剧本驱动出的 propose_mitigation 步：payload 带证据摘要 note（本世界 0 先例→'首例'串），
+    且 note **不在** args 里（提案 dispatch 参数/幂等键 byte-identical，不改提案本体）。"""
+    import json
+    client, db = rt_env
+    rid = _assignable_risks(db)[0]
+    out = _start(client, rid).json()
+    assert out["status"] == "waiting_approval", out
+    con = sqlite3.connect(db)
+    rows = con.execute("SELECT payload_json FROM agent_run_steps WHERE run_id=? ORDER BY step_no",
+                       (out["run_id"],)).fetchall()
+    con.close()
+    proposes = [json.loads(r[0]) for r in rows
+                if json.loads(r[0]).get("tool") == "propose_mitigation"]
+    assert proposes, "剧本应产出 propose_mitigation 步"
+    p = proposes[0]
+    assert p.get("note"), "propose 步 payload 应带证据摘要 note（增强）"
+    assert "note" not in p["args"], "note 绝不进 dispatch args（提案本体/幂等键 byte-identical）"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))

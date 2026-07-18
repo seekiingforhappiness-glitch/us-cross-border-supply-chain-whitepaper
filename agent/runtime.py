@@ -363,6 +363,8 @@ class Runtime:
             key = f"run:{run['run_id']}:{step_no}"
             payload = {"tool": tool, "args": plan["args"], "idempotency_key": key,
                        "params_fp": fingerprint_params({"tool": tool, "args": plan["args"]})}
+            if plan.get("note"):    # 波E②：证据摘要一句留痕在步 payload——不入 dispatch 参数、不进
+                payload["note"] = plan["note"]   # 指纹（fingerprint 只算 args）→ 提案本体/幂等键 byte-identical
             return payload, self.session.dispatch(tool, plan["args"], idempotency_key=key)
         if kind == "verify":
             return self._verify(plan["task_id"])
@@ -455,7 +457,8 @@ class Runtime:
             act, params = self._choose_disposal(risk_id, grisk["result"])
             return {"kind": "command", "tool": "propose_mitigation",
                     "args": {"task_id": task_id, "proposed_action": act,
-                             "proposal_params": params}}
+                             "proposal_params": params},
+                    "note": self._evidence_note(risk_id)}   # 波E②：证据摘要一句（增强，失败不阻断提案）
         if not (isinstance(prop["result"], dict) and prop["result"].get("ok")):
             err = (prop["result"] or {}).get("error") or (prop["result"] or {}).get("reason")
             return {"kind": "finish", "status": "failed",
@@ -474,6 +477,18 @@ class Runtime:
         reason = (verify["result"] or {}).get("reason", "复读未通过")
         return {"kind": "finish", "status": "failed",
                 "summary": f"审批后置校验未通过：{reason}"}
+
+    def _evidence_note(self, risk_id: str) -> str:
+        """波E② propose 步证据增强：调 apps.api.evidence 纯函数拿一句白话先例摘要
+        （"同类 N 例…X% 事后有效"），供 propose 步 payload 的 note 引用（_execute 只把它写进步 payload，
+        **不进 dispatch 参数、不改提案本体**——提案 args/幂等键/指纹 byte-identical）。证据是增强不是门槛：
+        检索/导入任何失败都不阻断提案，窄捕获（命名异常集，非裸 except——不吞未知 bug）降级为诚实留痕串。
+        惰性 import：runtime 冷路径不预拉证据/证据依赖的证据栈（apps.api.evidence），仅 propose 步触发。"""
+        try:
+            from apps.api.evidence import precedent_summary_line
+            return precedent_summary_line(self.con, risk_id)
+        except (ImportError, sqlite3.Error, ValueError, TypeError, KeyError, AttributeError) as exc:
+            return f"（证据摘要暂不可用：{type(exc).__name__}，检索降级，不影响提案。）"
 
     @staticmethod
     def _choose_disposal(risk_id: str, risk: dict):

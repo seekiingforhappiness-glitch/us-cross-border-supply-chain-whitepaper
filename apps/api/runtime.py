@@ -101,9 +101,20 @@ def _budget_summary(budget_json: str | None, steps_used: int, tool_calls_used: i
 
 
 def _api_llm_mode() -> str:
-    """API 语境的 think 步 LLM 档：默认 `off`（不烧订阅通道、零出境、确定性剧本），env
+    """API 语境的 think 步 LLM 档（env 默认）：默认 `off`（不烧订阅通道、零出境、确定性剧本），env
     `RUNTIME_API_LLM=auto` 才显式开启（探测可用才出境，不可用优雅降级并如实标 mode）。"""
     return "auto" if os.environ.get("RUNTIME_API_LLM", "off").strip().lower() == "auto" else "off"
+
+
+def _resolve_llm_mode(body: dict | None) -> str:
+    """think 步 LLM 档解析（波E②真模型开关）：请求体 {"llm": true} → `auto`（该趟走真模型，**覆盖 env
+    默认**）；{"llm": false} → `off`（确定性剧本）；未带 llm 键（或非布尔）→ 回落 env 默认 _api_llm_mode()。
+    `auto` 仍 probe 先行（探测 claude CLI 可用才出境，不可用优雅降级并如实标 mode）——开真模型是**显式
+    opt-in**、非静默烧订阅通道（生产级硬门：真模型开关不静默烧钱；响应 llm_mode 字段如实回传实际档）。"""
+    llm = (body or {}).get("llm")
+    if isinstance(llm, bool):
+        return "auto" if llm else "off"
+    return _api_llm_mode()
 
 
 def _require_actor(x_actor: str | None) -> str:
@@ -224,8 +235,10 @@ def build_runtime_router(get_db_path: Callable, infer_world: Callable, as_of: st
             x_actor: str | None = Header(default=None, alias="X-Actor"),
             db_path: str = Depends(get_db_path)) -> dict:
         """启动一趟 AI 处置差事：创建 run 并同步推进到首个稳态（waiting_approval / 终态）。
-        body={goal_risk_id}（要处置的风险事件号，形如 RSK-0007）；X-Actor 必填（留痕）。
-        LLM 默认 off（不烧订阅通道），实际 mode 见 llm_mode 字段与 steps 里 think 步的 mode。
+        body={goal_risk_id, llm?}（goal_risk_id=要处置的风险事件号 形如 RSK-0007；可选 llm 布尔）；
+        X-Actor 必填（留痕）。llm 档（波E②）：body {"llm": true} → 该趟 think 走真模型（覆盖 env 默认、
+        显式 opt-in、probe 先行不静默烧钱），{"llm": false} → off，不带 → env 默认（默认 off、不烧订阅通道）；
+        实际 mode 见响应 llm_mode 字段与 steps 里 think 步的 mode，如实回传。
         提案-only 语义原样：run 只会推进到"提交提案、等人审批"，绝不自行批准（冻结区不可达）。"""
         actor = _require_actor(x_actor)
         goal_risk_id = (body or {}).get("goal_risk_id")
@@ -233,7 +246,7 @@ def build_runtime_router(get_db_path: Callable, infer_world: Callable, as_of: st
             raise HTTPException(
                 422, detail="缺少 goal_risk_id：请指定要让 AI 处置的风险事件号（形如 RSK-0007）。")
         goal = f"处置 {str(goal_risk_id).strip()}"
-        llm_mode = _api_llm_mode()
+        llm_mode = _resolve_llm_mode(body)
         rt = Runtime(db_path=db_path, role=x_role, llm=llm_mode)
         out = None
         try:

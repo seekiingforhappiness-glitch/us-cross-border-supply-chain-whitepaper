@@ -3219,3 +3219,8 @@ body {
   padding: 6px 10px; font: inherit; font-size: 13px; }
 .cp-dispatch-launcher__hint { margin-top: 8px; font-size: 11px; line-height: 1.6; color: var(--ink-2); }
 .cp-dispatch-launcher__msg { margin-top: 8px; font-size: 12px; color: var(--beacon); }
+
+/* 波E：发起块真模型复选框 */
+.cp-dispatch-launcher__llm { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px;
+  font-size: 11px; line-height: 1.6; color: var(--ink-1); cursor: pointer; }
+.cp-dispatch-launcher__llm input { margin-top: 2px; }
