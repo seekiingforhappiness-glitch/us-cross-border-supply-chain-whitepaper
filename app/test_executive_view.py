@@ -120,10 +120,18 @@ def main():
     cr = summary["cross"]
     total = _scalar(con, f"SELECT count(*) FROM risk_events WHERE {OPEN_RISK}")
     check("总未结风险 == 直查", cr["total_open_risk"] == total, f"{cr['total_open_risk']} != {total}")
-    # 全域自洽：5 场景 open 之和（R1-R18 全覆盖）== 总未结风险
+    # 全域自洽：6 场景 open 之和（R1-R21 全覆盖）== 总未结风险
+    # （2026-07-19 修锈蚀+补真缺口：F1 资金流上线后本断言"五场景 R1-R18"必失败——
+    #   经 executive_view 补 finance 场景块后恢复全覆盖恒等式，断言升级为六场景。）
+    fin = summary["finance"]
+    check("资金流 open_risk == 直查", fin["open_risk"] == _scalar(
+        con, f"SELECT count(*) FROM risk_events WHERE {OPEN_RISK} AND rule_id IN ('R19','R20','R21')"),
+        str(fin))
+    check("资金流细分之和 == 场景 open", fin["overdue_receivable"] + fin["cash_breach"]
+          + fin["payment_anomaly"] == fin["open_risk"], str(fin))
     scenario_sum = (summary["delay"]["open_risk"] + summary["cost"]["open_risk"]
-                    + p["open_risk"] + w["open_risk"])
-    check("五场景 open 之和 == 总未结风险（R1-R18 全覆盖）",
+                    + p["open_risk"] + w["open_risk"] + fin["open_risk"])
+    check("六场景 open 之和 == 总未结风险（R1-R21 全覆盖）",
           scenario_sum == total, f"{scenario_sum} != {total}")
     for s in ("open", "due_today", "overdue"):
         e = _scalar(con, "SELECT count(*) FROM tasks WHERE sla_state=?", (s,))

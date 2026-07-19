@@ -92,8 +92,12 @@ def main():
     check("MODE_LABELS 覆盖三 mode", set(MODE_LABELS) == {"mine", "team", "all"})
 
     print("== ⑤ 动作层权限（ROLE_PERMS）未被改动 ==")
-    check("ROLE_PERMS 与基线完全一致（硬 gate 未削弱）",
-          ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+    # 快照锈蚀修复（同 test_coordination_loop 检查⑥先例）：检查意图是"四基线键未被削弱"，
+    # 旧断言整字典相等——F1 财务回路合法新增 RecordPayment/ProposeCollection 键后必假失败。
+    # 改为逐键精确核对基线四键（仍逐值精确，未放松任何一键），新增键不再误伤本检查。
+    check("ROLE_PERMS 基线四键未被削弱（硬 gate：逐键精确）",
+          all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
 
     print("== region 辅助（风险按目的地 region 过滤）==")
     check("region_of_locode USLAX → US", region_of_locode("USLAX") == "US")

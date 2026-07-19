@@ -767,7 +767,16 @@ def render_kpi_tab():
     wc[2].metric("不可履约", wh["unfulfillable"], help="R17")
     wc[3].metric("盘点差异", wh["shrinkage"], help="R18")
 
-    # ---- 场景 5 · 准入合规 ----
+    # ---- 场景 5 · 资金流（R19-R21，F1；2026-07-19 补卡——此前 R19-R21 不入任何场景卡 ----
+    st.markdown("#### 资金流　·　R19-R21")
+    fin = summary["finance"]
+    fc = st.columns(4)
+    fc[0].metric("开放风险", fin["open_risk"])
+    fc[1].metric("逾期应收", fin["overdue_receivable"], help="R19")
+    fc[2].metric("现金水位击穿", fin["cash_breach"], help="R20")
+    fc[3].metric("付款异常", fin["payment_anomaly"], help="R21 重复/不符付款")
+
+    # ---- 场景 6 · 准入合规 ----
     st.markdown("#### 准入合规")
     ac_left, ac_right = st.columns([2, 1])
     with ac_left:

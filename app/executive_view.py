@@ -19,6 +19,9 @@ COST_RULES = ("R4", "R5", "R6")             # 费用稽核：rate_overbilling / 
 PROCUREMENT_RULES = ("R7", "R8", "R9", "R10", "R11",  # 采购：三方对账 + 预付款 + 资质 + 采购治理
                      "R12", "R13", "R14", "R15")
 WAREHOUSE_RULES = ("R16", "R17", "R18")     # 仓储库存：stockout / unfulfillable / shrinkage
+FINANCE_RULES = ("R19", "R20", "R21")       # 资金流：overdue_receivable / cash_breach / payment_anomaly
+# （F1 2026-07-14 上线资金流后本模块一直缺该场景块——R19-R21 的 open 风险不入任何场景卡，
+#   经理看到的总未结数与分场景之和对不上；L-UX 轮3 发版门全跑时暴露，2026-07-19 补齐。）
 
 
 def _scalar(conn, sql, params=()):
@@ -83,6 +86,14 @@ def build_executive_summary(conn):
         "unfulfillable": _open_risk_in(conn, ("R17",)),     # 不可履约
         "shrinkage": _open_risk_in(conn, ("R18",)),         # 盘点差异
     }
+    # ---- 资金流（R19-R21）----
+    finance = {
+        "open_risk": _open_risk_in(conn, FINANCE_RULES),
+        "by_severity": _open_risk_by_severity(conn, FINANCE_RULES),
+        "overdue_receivable": _open_risk_in(conn, ("R19",)),   # 逾期应收
+        "cash_breach": _open_risk_in(conn, ("R20",)),          # 现金水位击穿
+        "payment_anomaly": _open_risk_in(conn, ("R21",)),      # 付款异常（重复/不符）
+    }
     # ---- 准入合规 ----
     admission = {
         "by_status": {r[0]: r[1] for r in conn.execute(
@@ -107,6 +118,7 @@ def build_executive_summary(conn):
         "cost": cost,
         "procurement": procurement,
         "warehouse": warehouse,
+        "finance": finance,
         "admission": admission,
         "cross": cross,
     }

@@ -188,8 +188,11 @@ def main():
               for r in ("cs", "finance", "procurement", "sales")))
 
     print("== ⑤ 动作层权限（ROLE_PERMS）未被改动 ==")
-    check("ROLE_PERMS 与基线完全一致（硬 gate 未削弱）",
-          ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+    # 快照锈蚀修复（同 test_coordination_loop⑥/test_data_scope⑤先例）：整字典相等在 F1 合法
+    # 新增键后必假失败；改为基线键逐值精确核对（未放松任何一键），下三行具名断言原样保留。
+    check("ROLE_PERMS 基线键未被削弱（硬 gate：逐键精确）",
+          all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
     check("AssignTask 仍限 ops/system", ROLE_PERMS["AssignTask"] == {"ops", "system"})
     check("ApproveMitigation 仍仅 manager", ROLE_PERMS["ApproveMitigation"] == {"manager"})
     check("CloseRiskEvent 仍仅 ops", ROLE_PERMS["CloseRiskEvent"] == {"ops"})
