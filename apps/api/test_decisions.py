@@ -197,6 +197,63 @@ def test_missing_x_actor_422(client, anchors):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ⑥ V22③ 审批理由必填：ApproveMitigation 批准/驳回都要非空理由，缺失/空白 → 422 白话，且未绕过
+# ═══════════════════════════════════════════════════════════════════════════
+def test_approve_missing_reason_422_both_paths(client, con, anchors):
+    tid = _clone_pending_task(con, anchors["template"], "TSK-TEST-DEC-NOREASON")
+
+    # (a) 批准但完全不带 comment 键 → 422（业务白话，含"为什么"）
+    r1 = client.post(
+        "/decisions/ApproveMitigation",
+        json={"task_id": tid, "decision": "approved"},
+        headers={"X-Role": "manager", "X-Actor": MANAGER_ACTOR})
+    assert r1.status_code == 422, r1.text
+    assert "为什么" in r1.json()["detail"], r1.text
+
+    # (b) 驳回但 comment 为空白串（trim 后空）→ 同样 422（"批准与驳回均必填"）
+    r2 = client.post(
+        "/decisions/ApproveMitigation",
+        json={"task_id": tid, "decision": "rejected", "comment": "   "},
+        headers={"X-Role": "manager", "X-Actor": MANAGER_ACTOR})
+    assert r2.status_code == 422, r2.text
+    assert "为什么" in r2.json()["detail"], r2.text
+
+    # 未绕过 app 层：理由缺失在任何状态迁移前被拦下，任务仍为待批
+    row = con.execute("SELECT approval_status FROM tasks WHERE task_id=?", (tid,)).fetchone()
+    assert row["approval_status"] == "pending"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑦ V22③ 带理由批准 → 200，且理由文本可在 action_log（审计）与 resolution_memory（处置记忆）查到
+# ═══════════════════════════════════════════════════════════════════════════
+def test_approve_with_reason_lands_in_audit_and_memory(client, con, anchors):
+    tid = _clone_pending_task(con, anchors["template"], "TSK-TEST-DEC-REASON")
+    reason = "V22理由落库校验-9F3A：航线同类先例7/8改期获批，货值可控，批准"
+
+    resp = client.post(
+        "/decisions/ApproveMitigation",
+        json={"task_id": tid, "decision": "approved", "comment": reason},
+        headers={"X-Role": "manager", "X-Actor": MANAGER_ACTOR})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+
+    # 落审计：action_log 该任务的成功行 params_json 内含理由原文（_log 记 comment）
+    log = con.execute(
+        "SELECT params_json FROM action_log WHERE action='ApproveMitigation' "
+        "AND target_object_id=? AND result='ok' ORDER BY log_id DESC LIMIT 1", (tid,)).fetchone()
+    assert log is not None, "带理由的成功审批必须留痕于 action_log"
+    assert reason in log["params_json"], f"审计 params_json 应含审批理由原文：{log['params_json']}"
+
+    # 落处置记忆：resolution_memory 的批注字段（decision_note）内含理由原文（comment→decision_note）
+    mem = con.execute(
+        "SELECT memory_id, decision_note, decided_by FROM resolution_memory "
+        "WHERE decision_note LIKE ? ORDER BY memory_id DESC LIMIT 1", (f"%{reason}%",)).fetchone()
+    assert mem is not None, "带理由的审批必须把理由归档进处置记忆 decision_note（C1 决策血缘）"
+    assert reason in mem["decision_note"]
+    assert mem["decided_by"] == MANAGER_ACTOR, "处置记忆决策人应为真实决策人 id（X-Actor 透传）"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ⑤ 安全红线不变量：冻结区永不进 AI 工具面 + 双通道分工（/actions 维持 404、/decisions 命中白名单）
 # ═══════════════════════════════════════════════════════════════════════════
 def test_frozen_channel_security_invariants(client):

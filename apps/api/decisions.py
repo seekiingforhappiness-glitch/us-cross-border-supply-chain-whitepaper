@@ -96,6 +96,20 @@ def build_decisions_router(get_db_path: Callable, resolve_action_func: Callable,
                             "所以这个身份必须由你带上，系统不替你代填。")
         actor = x_actor.strip()
 
+        # V22③ 审批理由必填（Daniel 批，缘起 L-UX 轮2 王总"万把刀的处置点一下就落地，连为什么都不用写"）：
+        # ApproveMitigation 的审批理由（comment）在批准/驳回两条路径都必须非空（trim 后）——理由随 comment
+        # 透传到 app 层原函数，落 action_log 审计（_log 记 comment）与处置记忆 decision_note（批注），
+        # maker-checker/门禁/审批绑指纹一行不动。只补 ApproveMitigation 这一处：其余三个冻结动作的理由
+        # 已由各自 app 层函数强制非空（ApproveQuoteDecision.decision_reason / RejectOrRequestMoreInfo.
+        # rejection_reason / CloseRiskEvent.resolution_summary，缺失即 _fail→下方映射 422），在边界重复设卡
+        # 只会与 app 层双拦造成口径分叉，故不做。放在 X-Actor 校验之后：无身份仍先 422 报身份（既有语义不变）。
+        if action["name"] == "ApproveMitigation":
+            reason = body.get("comment")
+            if not isinstance(reason, str) or not reason.strip():
+                raise HTTPException(
+                    422, detail="请写一句为什么批准 / 驳回——这条理由会记入审计与处置记忆（谁批的、"
+                                "为什么批），是这笔处置日后复盘与 AI 放权评估的依据，系统不替你留空放行。")
+
         fn = resolve_action_func(action["name"])
         if fn is None:  # pragma: no cover —— 启动期 fail-fast 已保证不会到这，此处仅防御性兜底
             raise HTTPException(

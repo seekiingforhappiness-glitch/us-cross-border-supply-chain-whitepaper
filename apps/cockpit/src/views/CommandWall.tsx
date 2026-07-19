@@ -8,7 +8,7 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
-import { headlineOf, summaryLines, ZONE_ICON, ZONE_SHORT, type SummaryLine } from "./zoneModel";
+import { headlineOf, summaryLines, todaysFocus, ZONE_ICON, ZONE_SHORT, type FocusItem, type SummaryLine } from "./zoneModel";
 
 // 七区指挥墙（V10 方案 C 默认首屏中央）——体征带的"放大态"（顶部体征带已移除，避免同信息两处）。
 // 每卡：区图标+区名 + headline 大数字 + 趋势（有数据才显示）+ 告警计数徽标 + 该区最要紧 2-3 行摘要
@@ -198,6 +198,35 @@ function trustSummary(gating: GovernanceGating | null | undefined): { text: stri
   return { text: entries.length === 1 ? `${total} 域·${name}` : `${name} ${topCount}/${total}`, muted: false };
 }
 
+// ═══════════════════════════ 今日焦点条（V22⑤）═══════════════════════════
+// 指挥墙顶部横条，回答"30 秒说出今天最要紧的三件事"（陌生人测试李珊"七张卡全喊急"）。规则写死可解释
+// （zoneModel.todaysFocus 现算，非 AI 排序）：一行紧凑排布，克制——无渐变无动画，纯既有 token 复用；
+// 全部无数据时不渲染（不摆空架子，见 todaysFocus 注释）。button 语义保证键盘可达（全局 :focus-visible）。
+function FocusBar({ items, onZone }: { items: FocusItem[]; onZone: (z: ZoneId) => void }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="cp-focus">
+      <span className="cp-focus__label">
+        <Icon name="spark" size={13} /> 今日焦点
+      </span>
+      <div className="cp-focus__items" role="list" aria-label="今日焦点 · 按优先级">
+        {items.map((it) => (
+          <button
+            key={it.key}
+            type="button"
+            role="listitem"
+            className="cp-focus__item"
+            title={it.source}
+            onClick={() => onZone(it.zone)}
+          >
+            {it.text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 interface Props {
   zones: Zone[];
   provenance?: Record<ZoneId, ZoneProvenance>; // U2 溯源信封（App 恒带 provenance=1 拉取）
@@ -210,6 +239,7 @@ type Pop = { kind: "prov"; zone: ZoneId; rect: DOMRect } | { kind: "gating"; rec
 
 export default function CommandWall({ zones, provenance, gating, onZone, onMap }: Props) {
   const ordered = sortZones(zones);
+  const focus = todaysFocus(zones);
   const [pop, setPop] = useState<Pop | null>(null);
   const openPop = (p: Pop) => setPop(p);
 
@@ -219,6 +249,7 @@ export default function CommandWall({ zones, provenance, gating, onZone, onMap }
         <span className="cp-panel-head__title">七区指挥墙</span>
         <span className="cp-panel-head__meta">告警区自动排前 · 点卡下钻工作队列 · 指标可溯源</span>
       </div>
+      <FocusBar items={focus} onZone={onZone} />
       {ordered.length === 0 ? (
         <StateHint
           kind="empty"

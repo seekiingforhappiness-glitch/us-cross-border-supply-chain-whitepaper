@@ -78,18 +78,23 @@ const LINE_FETCH_CAP = 8; // 明细行按需拉取上限（用户点击触发，
 export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { decision: PendingDecision; role: Role; onActed?: () => void; onSwitchRole?: (r: Role) => void }) {
   const [busy, setBusy] = useState<null | "approved" | "rejected">(null);
   const [err, setErr] = useState<string | null>(null);
+  // V22③ 审批理由必填：批准/驳回都必须先写一句为什么（王总"万把刀的处置点一下就落地，连为什么都不用写"）。
+  // 单个理由框同时给两个按钮用——空值时两按钮都置灰。理由随请求走 comment，后端落 action_log 审计 +
+  // 处置记忆批注（decision_note）；前端置灰只是体验预判，真正必填闸门在后端 /decisions（空→422 白话）。
+  const [reason, setReason] = useState("");
   // ApproveMitigation 本体 executors=[manager]——仅经理可批/驳；ops 等角色置灰并提示。前端只做体验预判，
   // 真正闸门在后端（无权也会 403 + 审计留痕），前端置灰不等于放松后端校验。
   const canDecide = role === "manager";
+  const reasonOk = reason.trim().length > 0;
 
   const act = async (d: "approved" | "rejected") => {
-    if (!canDecide || busy) return;
+    if (!canDecide || busy || !reasonOk) return;
     setBusy(d);
     setErr(null);
     try {
       await postDecision(
         "ApproveMitigation",
-        { task_id: decision.taskId, decision: d, comment: d === "approved" ? "驾驶舱批准" : "驾驶舱驳回" },
+        { task_id: decision.taskId, decision: d, comment: reason.trim() },
         role,
         actorForRole(role),
       );
@@ -127,12 +132,23 @@ export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { dec
   }
 
   return (
-    <div className="cp-decide">
+    <div className="cp-decide cp-decide--form">
+      {/* V22③ 审批理由（必填）：批准/驳回共用，空值时下方两按钮置灰。复用既有表单类，不新增样式。 */}
+      <label className="cp-form-row">
+        <span className="cp-form-row__k">审批理由*</span>
+        <textarea
+          className="cp-form-textarea"
+          value={reason}
+          disabled={busy !== null}
+          placeholder="必填：为什么批准或驳回——会记入审计与处置记忆"
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </label>
       <div className="cp-decide__row">
-        <button className="cp-decide-btn cp-decide-btn--approve" disabled={busy !== null} onClick={() => act("approved")}>
+        <button className="cp-decide-btn cp-decide-btn--approve" disabled={busy !== null || !reasonOk} onClick={() => act("approved")}>
           {busy === "approved" ? "批准中…" : "批准"}
         </button>
-        <button className="cp-decide-btn cp-decide-btn--reject" disabled={busy !== null} onClick={() => act("rejected")}>
+        <button className="cp-decide-btn cp-decide-btn--reject" disabled={busy !== null || !reasonOk} onClick={() => act("rejected")}>
           {busy === "rejected" ? "驳回中…" : "驳回"}
         </button>
       </div>
@@ -141,7 +157,7 @@ export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { dec
           <b>没提交成功</b> · {err}
         </div>
       )}
-      <div className="cp-decide__basis">批准=按方案回写并结单；驳回=退回专员改方案。经手身份 {actorForRole(role)}（原型级，真实系统换 SSO）</div>
+      <div className="cp-decide__basis">批准=按方案回写并结单；驳回=退回专员改方案。理由随决定记入审计与处置记忆。经手身份 {actorForRole(role)}（原型级，真实系统换 SSO）</div>
     </div>
   );
 }

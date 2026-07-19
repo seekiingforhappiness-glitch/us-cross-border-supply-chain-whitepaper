@@ -39,9 +39,12 @@ type Stage = { view: "wall" } | { view: "zone"; zoneId: ZoneId } | { view: "map"
 
 export default function App() {
   const [role, setRole] = useState<Role>("manager");
-  // 世界切换（U1）：null=未显式选择（首屏跟随 apps/api 启动环境变量，byte-identical）；一旦切过就固定
-  // verify/sim。world 状态经 setApiWorld 同步到 api 模块级单例 → 全舱所有 fetch 自动带 X-World 头。
-  const [world, setWorld] = useState<World | null>(null);
+  // 世界切换（U1；V22④ 2026-07-19 Daniel 批准"演示默认世界改模拟世界"）：初始值直接给 "sim"
+  // （不再是 null 跟随 apps/api 启动环境变量）——首屏即带 X-World: sim 头，指挥墙首屏直接落模拟
+  // 世界数据。验证世界仍是评估基线世界，未被动摇，只是不再是默认落点；点顶栏「验证世界」钮随时切回
+  // （TopBar 常驻渲染，不依赖 vitals 是否取到，体征带报错时也能点，见下方 vitalsErr 分支）。
+  // world 状态经 setApiWorld 同步到 api 模块级单例 → 全舱所有 fetch 自动带 X-World 头。
+  const [world, setWorld] = useState<World>("sim");
   const [vitals, setVitals] = useState<Vitals | null>(null);
   const [vitalsErr, setVitalsErr] = useState(false);
   const [vitalsReload, setVitalsReload] = useState(0); // 体征带重试计数（StateHint 重试按钮驱动）
@@ -87,10 +90,10 @@ export default function App() {
     setRole(r);
   };
 
-  // 当前生效世界：显式选过就用 world，否则从已加载体征带的 world 字段反推（首屏跟随服务端默认）。
+  // 当前生效世界：V22④后 world 状态本身即当前生效世界（默认 "sim"，永不为 null）——不再需要从
+  // vitals 反推兜底；旧注释"首屏跟随服务端默认"已随本次改动作废，这里一并订正，避免自相矛盾。
   // 供顶栏切换钮高亮 + changeWorld 判别"点的是不是当前世界"（是则不折腾）。
-  const activeWorld: World | null =
-    world ?? (vitals ? (vitals.world === "simulation" ? "sim" : "verify") : null);
+  const activeWorld: World = world;
 
   // 世界切换（U1）：切世界=回今天（asOf=null）+ 清全部下钻状态（回指挥墙、收详情与对象卡）——
   // 跨世界的下钻目标 id 不通用，留着会指向错库对象。RouteMap/ObjectCard 因回到指挥墙+清 card 而
@@ -216,8 +219,12 @@ export default function App() {
     <div className="cockpit">
       {vitalsErr && (
         <div className="cp-degrade">
-          API 未连接——数据降级。启动：<span className="num">ONTOLOGY_DB=data/simworld.sqlite uvicorn apps.api.main:app --port 8100</span>
-          （详见 apps/cockpit/README.md）
+          API 未连接或当前世界数据不可用——数据降级。确认 apps/api 服务已在 8100 端口启动：
+          <span className="num">uvicorn apps.api.main:app --port 8100</span>；
+          {/* V22④ 降级引导：默认世界改模拟世界后，服务已启动但模拟世界库缺失（data/simworld.sqlite
+              不存在）也会走到这条错误分支——不是"重启进程"能解的，指路右上角一键切回验证世界脱困。 */}
+          若服务已启动但仍报错（如模拟世界库 data/simworld.sqlite 尚未生成），点击右上角「验证世界」
+          可切回已确定有数据的世界（详见 apps/cockpit/README.md）。
         </div>
       )}
       <TopBar
@@ -243,7 +250,13 @@ export default function App() {
               <StateHint
                 kind="error"
                 title="体征带不可用"
-                message="没能连上驾驶舱数据接口。确认 apps/api 服务已在 8100 端口启动，再重试。"
+                // V22④：默认世界=模拟世界，若模拟世界库未生成会走到这条错误分支——原文案只提示
+                // "确认服务启动"会误导（服务其实在跑，缺的是库文件），补上"切验证世界"这条真实脱困路径。
+                message={
+                  activeWorld === "sim"
+                    ? "没能连上驾驶舱数据接口，或当前「模拟世界」数据库文件缺失。确认 apps/api 服务已在 8100 端口启动；若是模拟世界库未生成，点击右上角「验证世界」切换即可恢复。"
+                    : "没能连上驾驶舱数据接口。确认 apps/api 服务已在 8100 端口启动，再重试。"
+                }
                 onRetry={() => setVitalsReload((n) => n + 1)}
               />
             ) : (

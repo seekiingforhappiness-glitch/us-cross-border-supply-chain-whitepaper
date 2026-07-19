@@ -427,3 +427,79 @@ export function zoneQueue(z: Zone): QueueSpec | null {
       return null; // money / fulfillment / ai
   }
 }
+
+// ═══════════════════════════ 今日焦点条（V22⑤，指挥墙顶部横条）═══════════════════════════
+// 回答"30 秒说出今天最要紧的三件事"（陌生人测试李珊"七张卡全喊急" / 王总"默认世界差点全用空样本
+// 做判断"，docs/research/2026-07-19-ux-stranger-round2.md §三-14 与"候 Daniel"段）。三条固定优先级
+// 现算，规则写死可解释（不做 AI 排序），全部取自本次 vitals 载荷已解析的 zones/detail——零新端点
+// 零新请求：
+//   优先级 1：待拍板区 pending>0 →「N 条提案等你拍板，最高处置成本 $X」
+//   优先级 2：钱区 net_cash_14d.breach=true →「未来 N 天净流出 $X 击穿阈值」
+//   优先级 3：告警数最高的其余区（不含钱/待拍板——两区各自已有专属优先级，无论是否触发都不重复计入
+//             "其余区"池，避免同一区被数两次）→「〈区名〉N 条告警：〈该区 headline 一句话〉」
+// 某优先级无数据即跳过顺延（数组 filter 天然靠前补位，不留空位）；三条全部无数据 → 返回空数组，
+// 调用方须整条不渲染（不摆空架子）。金额一律走 cell()（与卡片摘要行同一套掩码/缺数处理，不开新洞）。
+export interface FocusItem {
+  key: string;
+  zone: ZoneId; // 点击跳转目标区（复用 onZone 下钻）
+  text: string;
+  source: string; // title 属性：数据出处白话，供追溯口径
+}
+
+function decisionsFocus(zones: Zone[]): FocusItem | null {
+  const z = zones.find((zz) => zz.zone === "decisions");
+  if (!z) return null;
+  const d = z.detail as D;
+  const pend = (d.pending_proposals as { amount_usd: number | string | null }[]) ?? [];
+  const total = typeof d.pending_total === "number" ? (d.pending_total as number) : pend.length;
+  if (total <= 0 || pend.length === 0) return null; // 无待批提案，本优先级无数据
+  // pending_proposals 已按处置成本降序（API 口径，同 decisionsQueue basis），首条即最高处置成本。
+  const c = cell(pend[0].amount_usd, formatUsd);
+  return {
+    key: "focus-decisions",
+    zone: "decisions",
+    text: `${formatInt(total)} 条提案等你拍板，最高处置成本 ${c.text}`,
+    source: "来自：待我拍板区当前值",
+  };
+}
+
+function cashFocus(zones: Zone[]): FocusItem | null {
+  const z = zones.find((zz) => zz.zone === "money");
+  if (!z) return null;
+  const c = (z.detail as D).net_cash_14d;
+  if (c === undefined || isMissing(c)) return null; // 字段不存在/该世界无此域，本优先级无数据
+  const v = c as { value_usd: number | string; window_days: number; breach: boolean };
+  if (!v.breach) return null; // 未击穿阈值，本优先级无数据
+  const vc = cell(v.value_usd, formatUsd);
+  return {
+    key: "focus-cash",
+    zone: "money",
+    text: `未来${v.window_days}天净流出 ${vc.text} 击穿阈值`,
+    source: "来自：钱区现金水位预警当前值",
+  };
+}
+
+function alertFocus(zones: Zone[]): FocusItem | null {
+  const pool = zones.filter((z) => z.zone !== "money" && z.zone !== "decisions" && z.alert_count > 0);
+  if (pool.length === 0) return null;
+  const top = [...pool].sort((a, b) => b.alert_count - a.alert_count)[0];
+  // 一句话取该区摘要首行（各区已按"最要紧"排首位，如供应商=最差交期、库存=盘点差异）——headline
+  // 大数字与告警计数字段可能不同源（库存 headline=0 但告警 34），拼一起像自相矛盾，摘要首行没有此坑。
+  const s0 = summaryLines(top)[0];
+  const hl = headlineOf(top);
+  const oneLiner = s0 ? `${s0.label} ${s0.value}` : `${top.headline_label} ${hl.text}`;
+  return {
+    key: `focus-alert-${top.zone}`,
+    zone: top.zone,
+    text: `${ZONE_SHORT[top.zone]} ${formatInt(top.alert_count)} 条告警：${oneLiner}`,
+    source: `来自：${ZONE_SHORT[top.zone]}当前告警计数与摘要首行`,
+  };
+}
+
+/** 今日焦点条数据：固定三优先级依次现算，取满 3 条为止（三优先级至多各出 1 条，天然封顶，
+ *  slice(0,3) 仅作显式兜底）；某优先级无数据跳过顺延；全部无数据 → 空数组（调用方须整条不渲染）。 */
+export function todaysFocus(zones: Zone[]): FocusItem[] {
+  return [decisionsFocus(zones), cashFocus(zones), alertFocus(zones)]
+    .filter((x): x is FocusItem => x !== null)
+    .slice(0, 3);
+}
