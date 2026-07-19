@@ -285,6 +285,35 @@ body {
 .cp-panel-head__spacer {
   flex: 1;
 }
+/* 队列头部筛选 chip 组（V22 任务1，待批提案"我组的"）：分段式两钮切换，圆角/配色复用既有 token
+   （beacon 家族，同 cp-switch-btn），不新增色板；选中态 beacon 微染，未选中态低对比可读。 */
+.cp-qfilter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.cp-qfilter__chip {
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.cp-qfilter__chip:hover {
+  color: var(--ink-0);
+}
+.cp-qfilter__chip.is-on {
+  background: color-mix(in srgb, var(--beacon) 18%, transparent);
+  color: var(--beacon);
+}
 
 /* ═══════════════════════════ 中央区详情（点体征块切入） ═══════════════════════════ */
 .cp-zone {

@@ -14,6 +14,7 @@ import {
   MASK_TEXT,
   type Missing,
   type ObjectRef,
+  type Role,
   type Zone,
   type ZoneId,
 } from "../api";
@@ -446,19 +447,28 @@ export interface FocusItem {
   source: string; // title 属性：数据出处白话，供追溯口径
 }
 
-function decisionsFocus(zones: Zone[]): FocusItem | null {
+function decisionsFocus(zones: Zone[], role?: Role): FocusItem | null {
   const z = zones.find((zz) => zz.zone === "decisions");
   if (!z) return null;
   const d = z.detail as D;
-  const pend = (d.pending_proposals as { amount_usd: number | string | null }[]) ?? [];
+  const pend = (d.pending_proposals as { amount_usd: number | string | null; assignee_role: string | null }[]) ?? [];
   const total = typeof d.pending_total === "number" ? (d.pending_total as number) : pend.length;
   if (total <= 0 || pend.length === 0) return null; // 无待批提案，本优先级无数据
   // pending_proposals 已按处置成本降序（API 口径，同 decisionsQueue basis），首条即最高处置成本。
   const c = cell(pend[0].amount_usd, formatUsd);
+  // 自队待批联动（V22 任务1；缘起：财务陌生人"自己的活要靠运气才能翻到"）：非 manager 角色（老板是
+  // 收件人全集，不点）在首屏焦点条直接点出"你组 M 条"，M 由 pending_proposals 现算（每行带 assignee_role）。
+  // 诚实门：仅当列表未被后端 cap(50) 截断（pend.length===total）时才可信全量，截断则不显自队数（不拿被截
+  // 样本反推）；M=0 也不显（无自队待批，不添噪音）。点击仍跳待拍板区——去那里可用"我组的" chip 精确过滤。
+  let mineNote = "";
+  if (role && role !== "manager" && pend.length === total) {
+    const mine = pend.filter((p) => p.assignee_role === role).length;
+    if (mine > 0) mineNote = `（你组 ${formatInt(mine)} 条）`;
+  }
   return {
     key: "focus-decisions",
     zone: "decisions",
-    text: `${formatInt(total)} 条提案等你拍板，最高处置成本 ${c.text}`,
+    text: `${formatInt(total)} 条提案等你拍板${mineNote}，最高处置成本 ${c.text}`,
     source: "来自：待我拍板区当前值",
   };
 }
@@ -498,8 +508,8 @@ function alertFocus(zones: Zone[]): FocusItem | null {
 
 /** 今日焦点条数据：固定三优先级依次现算，取满 3 条为止（三优先级至多各出 1 条，天然封顶，
  *  slice(0,3) 仅作显式兜底）；某优先级无数据跳过顺延；全部无数据 → 空数组（调用方须整条不渲染）。 */
-export function todaysFocus(zones: Zone[]): FocusItem[] {
-  return [decisionsFocus(zones), cashFocus(zones), alertFocus(zones)]
+export function todaysFocus(zones: Zone[], role?: Role): FocusItem[] {
+  return [decisionsFocus(zones, role), cashFocus(zones), alertFocus(zones)]
     .filter((x): x is FocusItem => x !== null)
     .slice(0, 3);
 }

@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   formatPct,
   type GovernanceGating,
+  type Role,
   type Zone,
   type ZoneId,
   type ZoneProvenance,
@@ -229,6 +230,7 @@ function FocusBar({ items, onZone }: { items: FocusItem[]; onZone: (z: ZoneId) =
 
 interface Props {
   zones: Zone[];
+  role: Role; // V22 任务1：今日焦点条"你组 M 条"自队待批联动需当前角色（manager 不显）
   provenance?: Record<ZoneId, ZoneProvenance>; // U2 溯源信封（App 恒带 provenance=1 拉取）
   gating?: GovernanceGating | null; // U3 AI 信任档（App 取一次；null=加载中/失败）
   onZone: (z: ZoneId) => void;
@@ -237,9 +239,9 @@ interface Props {
 
 type Pop = { kind: "prov"; zone: ZoneId; rect: DOMRect } | { kind: "gating"; rect: DOMRect };
 
-export default function CommandWall({ zones, provenance, gating, onZone, onMap }: Props) {
+export default function CommandWall({ zones, role, provenance, gating, onZone, onMap }: Props) {
   const ordered = sortZones(zones);
-  const focus = todaysFocus(zones);
+  const focus = todaysFocus(zones, role);
   const [pop, setPop] = useState<Pop | null>(null);
   const openPop = (p: Pop) => setPop(p);
 

@@ -1,18 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  API_BASE_URL,
   fetchAiFlow,
   fetchCollaborationThreads,
-  getApiWorld,
+  postCoordinationAction,
   refToObjectRef,
   type AiFlow,
   type CollabThread,
   type CollaborationThreads,
+  type CoordActionId,
   type ObjectRef,
   type Role,
   type World,
 } from "../api";
-import { actorForRole } from "../roleActors";
 import Icon, { type IconName } from "../components/Icons";
 import StateHint from "../components/StateHint";
 import AiRuns from "./AiRuns";
@@ -173,13 +172,7 @@ function sevChip(sev: string | null | undefined): { cls: string; text: string } 
 // 按线程当前状态只渲染**状态机合法**的动作（app/coordination_actions.py COORD_TRANSITIONS 的镜像；
 // 后端仍是权威——即使镜像漂移，后端会以 422 白话拒绝，绝不静默）。非法动作不渲染而非置灰报错；
 // resolved / dead_ended 终态不在表中 = 零动作渲染（只读）。
-type CoordActionId =
-  | "record_outreach"
-  | "record_response"
-  | "escalate_coordination"
-  | "resolve_coordination"
-  | "mark_dead_ended";
-
+// CoordActionId 类型 + postCoordinationAction 写通道已下沉 api.ts（V22 余量，见其定义处），此处引用。
 const COORD_LEGAL: Record<string, CoordActionId[]> = {
   awaiting: ["record_outreach", "record_response", "escalate_coordination", "resolve_coordination", "mark_dead_ended"],
   responded: ["escalate_coordination", "resolve_coordination", "mark_dead_ended"],
@@ -199,53 +192,10 @@ const COORD_META: Record<CoordActionId, { label: string; hint: string }> = {
   mark_dead_ended: { label: "谈崩", hint: "协调无解 / 放弃——写下原因并归档" },
 };
 
-interface CoordResult {
-  ok: boolean;
-  object_id: string | null;
-  side_effects: string[];
-  error: string | null;
-}
+// CoordResult 类型 + postCoordinationAction 写通道已下沉 api.ts（V22 余量重构：与 postDecision/
+// openCoordination 同风格集中在薄 API 客户端；行为零变化，仅位置迁移+import）。此处直接引用。
 
-// 本地写请求 helper：api.ts 本批不可改（另一代理并行在改），其 reqHeaders 未导出——此处与
-// postDecision 同构地带齐三头（X-Role / X-World 经导出的 getApiWorld() 取模块级世界单例，语义
-// 一致：未显式选世界则不发头；X-Actor 经 roleActors.actorForRole 同机制）+ Idempotency-Key
-// （每次点击一个新键；busy 态已挡双击连发）。错误处理同 postDecision：后端 detail 是白话中文
-// 原文，原样抛出不吞不美化。⚠ 建议后续下沉 api.ts（postCoordinationAction），消除这份同构复制。
-async function postCoordinationAction(
-  coordinationId: string,
-  action: CoordActionId,
-  body: Record<string, unknown>,
-  role: Role,
-): Promise<CoordResult> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Role": role,
-    "X-Actor": actorForRole(role),
-    "Idempotency-Key":
-      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  };
-  const w = getApiWorld();
-  if (w) headers["X-World"] = w;
-  const resp = await fetch(
-    `${API_BASE_URL}/collaboration/threads/${encodeURIComponent(coordinationId)}/actions/${action}`,
-    { method: "POST", headers, body: JSON.stringify(body) },
-  );
-  if (!resp.ok) {
-    let detail = `提交失败：HTTP ${resp.status}`;
-    try {
-      const j = (await resp.json()) as { detail?: unknown };
-      if (typeof j.detail === "string" && j.detail) detail = j.detail;
-    } catch {
-      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
-    }
-    throw new Error(detail);
-  }
-  return (await resp.json()) as CoordResult;
-}
-
-// 表单控件统一内联样式（styles.css 本批不可改——另一代理并行在改；全部取既有 CSS 变量，与主题一致）。
+// 表单控件统一内联样式（全部取既有 CSS 变量，与主题一致）。
 const coordInput: React.CSSProperties = {
   background: "var(--bg-1)",
   border: "1px solid var(--line-strong)",

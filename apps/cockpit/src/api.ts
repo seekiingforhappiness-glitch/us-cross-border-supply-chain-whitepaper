@@ -5,6 +5,8 @@
 // apps/api 的真实地址 http://localhost:8100（走同源代理，不触发 CORS，不碰 apps/api 一行）。
 // 双世界切换（验证世界 ⇄ 模拟世界）U1：由驾驶舱顶栏切换钮控制，经 X-World 头传导到 apps/api 的
 // get_db_path 依赖（verify→data/ontology.sqlite、sim→data/simworld.sqlite），不重启进程即切库。
+import { actorForRole } from "./roleActors";
+
 export const API_BASE_URL = "/api";
 
 // 角色缩放：X-Role 头全局生效（体征带脱敏 + 全景粒度）。七档：老板/运营/客服/采购/合规/销售/财务
@@ -210,6 +212,56 @@ export async function openCoordination(
   return (await resp.json()) as DecisionResult;
 }
 
+// ── 协调转移动作写通道（CL1 六动作的人类 HTTP 门；V22 余量：从 AiWorkflow.tsx 内联下沉，消除同构复制）──
+// POST /collaboration/threads/{id}/actions/{action}（独立于发起协调的 POST /collaboration/threads）。
+// 与 postDecision/openCoordination 同风格：reqHeaders 带 X-Role/X-World + X-Actor（审计留痕，经
+// roleActors.actorForRole 由 role 现算）+ 每次点击一枚新 Idempotency-Key（busy 态已挡双击连发，用
+// 一次性键即可，不接意图去重）。错误处理同上：后端 detail 是白话中文原文，原样抛出不吞不美化。
+export type CoordActionId =
+  | "record_outreach"
+  | "record_response"
+  | "escalate_coordination"
+  | "resolve_coordination"
+  | "mark_dead_ended";
+
+export interface CoordResult {
+  ok: boolean;
+  object_id: string | null;
+  side_effects: string[];
+  error: string | null;
+}
+
+export async function postCoordinationAction(
+  coordinationId: string,
+  action: CoordActionId,
+  body: Record<string, unknown>,
+  role: Role,
+): Promise<CoordResult> {
+  const resp = await fetch(
+    `${API_BASE_URL}/collaboration/threads/${encodeURIComponent(coordinationId)}/actions/${action}`,
+    {
+      method: "POST",
+      headers: reqHeaders(role, {
+        "Content-Type": "application/json",
+        "X-Actor": actorForRole(role),
+        "Idempotency-Key": genIdempotencyKey(),
+      }),
+      body: JSON.stringify(body),
+    },
+  );
+  if (!resp.ok) {
+    let detail = `提交失败：HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string" && j.detail) detail = j.detail;
+    } catch {
+      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as CoordResult;
+}
+
 // ═══════════════════════════════ /cockpit/vitals ═══════════════════════════════
 export type ZoneId =
   | "money"
@@ -284,10 +336,13 @@ export interface Vitals {
 
 // asOf 缺省（null/undefined）=世界时钟今天=现状不变（不带 as_of 查询参数）。
 // provenance（U2）：驾驶舱恒开（七区卡溯源浮层要用），后端为纯附加键（不影响既有字段）。
-export const fetchVitals = (role: Role, asOf?: string | null, provenance = true) => {
+// assigneeRole（V22 任务1"我组的"）：可选——仅筛 decisions 区待批提案列表为"指派给该角色"的行，
+// 其余区不变；缺省不传该参数 → 全响应 byte-identical（老板收件箱=全部 pending）。非法值后端 422。
+export const fetchVitals = (role: Role, asOf?: string | null, provenance = true, assigneeRole?: Role | null) => {
   const qs = new URLSearchParams();
   if (asOf) qs.set("as_of", asOf);
   if (provenance) qs.set("provenance", "1");
+  if (assigneeRole) qs.set("assignee_role", assigneeRole);
   const q = qs.toString();
   return apiGet<Vitals>(`/cockpit/vitals${q ? `?${q}` : ""}`, role);
 };

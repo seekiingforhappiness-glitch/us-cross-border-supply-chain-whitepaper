@@ -142,13 +142,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from agent.mcp_server import SensitiveFieldMasker
 from agent.tools import MASK, _can_see_cost, own_team_amount_visible
-from pipeline.ontology_runtime import load_ontology
+from pipeline.ontology_runtime import build_role_perms, load_ontology
 
 ZONES = ("money", "fulfillment", "customers", "suppliers", "inventory", "ai", "decisions")
+
+# 待批队列"我组的"筛选合法角色集（V22 任务1）：= 本体 role_dict 动作 executors 出现的全部业务角色
+# （build_role_perms 值域并集，本体单一权威源）去掉非用户角色 'system'——即 7 个可切换业务角色，
+# 与前端 roleActors.ROLES 天然同集。用途：GET /cockpit/vitals 的可选 assignee_role 参数做白话 422
+# 守卫（挡 curl 手打的乱角色/拼写错），不硬编码角色字面量、不随世界变。缺省不传 = 不筛（byte-identical）。
+_ROSTER_ROLES = frozenset(
+    r for perm in build_role_perms(load_ontology()).values() for r in perm
+) - {"system"}
 _RECON_RULES = ("R7", "R8", "R9", "R10", "R11", "R12", "R13")   # 采购对账差异规则族
 _COST_RULES = ("R4", "R5", "R6")                                  # 费用稽核规则族
 _DELAY_RULES = ("R1", "R2", "R3")                                 # 延误规则族
@@ -952,7 +960,8 @@ def _zone_ai(con, tables: set[str], clock: str | None, world_is_sim: bool) -> di
     }
 
 
-def _zone_decisions(con, tables: set[str], clock: str | None) -> dict:
+def _zone_decisions(con, tables: set[str], clock: str | None,
+                    assignee_role: str | None = None) -> dict:
     """待拍板区（老板收件箱）。三指标口径：
     · 待批提案(headline=件数)：SELECT * FROM tasks WHERE approval_status='pending'；
       金额 = proposal_params JSON 的 est_cost_usd，缺则回退父风险 affected_value_usd
@@ -966,11 +975,19 @@ def _zone_decisions(con, tables: set[str], clock: str | None) -> dict:
       AND date(due_at) < clock；simworld tasks 无 due_at 列 → null+reason。
     · 升级件：SELECT count(*) FROM tasks WHERE escalation_level>0 AND status NOT IN
       ('done','cancelled')；列缺 → null+reason。
-    alert_count = 超期数 + 升级数（缺数按 0 计入 alert，detail 如实标 null）。"""
+    alert_count = 超期数 + 升级数（缺数按 0 计入 alert，detail 如实标 null）。
+
+    可选 assignee_role（V22 任务1"我组的"）：缺省 None → 逐字节不变（老板收件箱=全部 pending）；
+    传入 → 只对**待批提案列表**按 assignee_role 过滤（headline_value/pending_total 随之为过滤后件数，
+    卡片数=列表行数照旧自洽）。刻意只筛待批提案：超期/升级件是任务生命周期的独立信号（header 徽标
+    已注明"不是待批提案数"），不随本筛变，也不改任何金额掩码（掩码仍由 _apply_role_masks 按 X-Role 判）。
+    合法性由路由层 _ROSTER_ROLES 守卫（非法值 422 白话），本函数只做过滤、信任入参已校验。"""
     task_cols = _columns(con, "tasks")
     pending_rows = [dict(r) for r in con.execute(
         "SELECT task_id, risk_event_id, title, priority, proposed_action, proposal_params, "
         "assignee_role FROM tasks WHERE approval_status='pending'")]
+    if assignee_role is not None:                     # "我组的"筛选：只留指派给该角色的待批提案
+        pending_rows = [r for r in pending_rows if r["assignee_role"] == assignee_role]
 
     proposed_at: dict[str, str] = {}
     if "action_log" in tables and pending_rows:
@@ -1560,6 +1577,10 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
                        provenance: bool = Query(
                            default=False, description="?provenance=1 为七区卡 headline 附口径白话/"
                                                       "来源表/样例id；缺省关=byte-identical"),
+                       assignee_role: str | None = Query(
+                           default=None, description="待批提案队列\"我组的\"筛选：只保留指派给该角色的"
+                                                     "待批提案（仅影响 decisions 区，其余区不变）；缺省=全部"
+                                                     "pending（老板收件箱，byte-identical）。合法值=业务角色。"),
                        x_role: str = Header(default="ops", alias="X-Role"),
                        con: sqlite3.Connection = Depends(get_ro_connection),
                        db_path: str = Depends(get_db_path)) -> dict:
@@ -1567,7 +1588,13 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
         指标 SQL 口径见模块 docstring 总表与各 _zone_* builder docstring；脱敏两层见 _apply_role_masks；
         trend/世界无关性红线见模块 docstring。as_of 回放口径见模块 docstring「时间轴回放」节——缺省
         byte-identical；回放态附 window/as_of 信封/每区 headline_as_of，clock 恒为世界今天不随拖动改。
-        provenance=1（U2）→ 附独立 provenance 键（每区 caliber/sources/sample_ids）；缺省无此键。"""
+        provenance=1（U2）→ 附独立 provenance 键（每区 caliber/sources/sample_ids）；缺省无此键。
+        assignee_role（V22 任务1）→ 仅筛 decisions 区待批提案列表（"我组的"），非法值 422 白话；
+        缺省不传=不筛，全响应 byte-identical。"""
+        if assignee_role is not None and assignee_role not in _ROSTER_ROLES:
+            raise HTTPException(
+                422, detail=f"未知 assignee_role '{assignee_role}'——待批提案筛选仅支持业务角色："
+                            f"{'、'.join(sorted(_ROSTER_ROLES))}。缺省不传该参数=返回全部待批提案。")
         tables = _tables(con)
         window_start, world_clock = _world_window(con, tables)
         effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
@@ -1581,7 +1608,7 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
             _zone_suppliers(con, tables, replay_risk, effective_clock),
             _zone_inventory(con, tables, replay_risk, effective_clock),
             _zone_ai(con, tables, effective_clock, world_is_sim),
-            _zone_decisions(con, tables, effective_clock),
+            _zone_decisions(con, tables, effective_clock, assignee_role),
         ]
         payload: dict[str, Any] = {
             "world": world, "clock": world_clock, "role": x_role,

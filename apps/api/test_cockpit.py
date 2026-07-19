@@ -491,6 +491,80 @@ def test_v21_three_faces_same_judgment(client, con):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# V22 任务1 —— 待批提案队列"我组的"筛选（可选 assignee_role 参数）。缘起：财务陌生人实测
+# "待批队列里自己的活要靠运气翻到"（docs/research/2026-07-19-ux-stranger-round2.md）。红线：只加
+# 可选筛选参数，缺省=全部 pending（老板收件箱）逐字节不变；金额掩码逻辑零改。
+# ═══════════════════════════════════════════════════════════════════════════
+def _dec(client, assignee_role=None, role="manager"):
+    q = f"?assignee_role={assignee_role}" if assignee_role else ""
+    return _zones(client.get(f"/cockpit/vitals{q}", headers={"X-Role": role}))["decisions"]
+
+
+def test_vitals_decisions_assignee_filter_partitions(client, con):
+    """assignee_role 只筛待批提案列表：每角色过滤=该角色指派的 pending（现查 SQL 对照，卡片数=列表
+    件数=pending_total）；各角色互不重叠、并集=缺省全量（老板收件箱的严格划分）。金额/超期口径不受影响。"""
+    _ensure_pending_anchor(con, "ops")
+    _ensure_pending_anchor(con, "finance", tid="TSK-TEST-V22-FIN", est_cost=555.0)
+    full = _dec(client)
+    full_total = full["detail"]["pending_total"]
+    roles = [r[0] for r in con.execute(
+        "SELECT DISTINCT assignee_role FROM tasks WHERE approval_status='pending' "
+        "AND assignee_role IS NOT NULL")]
+    assert len(roles) >= 2, "本用例需 ≥2 个指派角色才能验划分（锚点已保证 ops+finance）"
+    role_sum = 0
+    for r in roles:
+        z = _dec(client, r)
+        sql_n = con.execute("SELECT count(*) FROM tasks WHERE approval_status='pending' "
+                            "AND assignee_role=?", (r,)).fetchone()[0]
+        assert z["headline_value"] == z["detail"]["pending_total"] == sql_n, \
+            f"{r} 过滤：卡片数=pending_total=该角色 pending 件数({sql_n})"
+        assert all(p["assignee_role"] == r for p in z["detail"]["pending_proposals"]), \
+            f"{r} 过滤后列表应只含该角色指派行"
+        # 超期/升级件是独立生命周期信号，不随"我组的"变（与缺省一致）
+        assert z["detail"]["overdue_tasks"] == full["detail"]["overdue_tasks"]
+        assert z["detail"]["escalated_tasks"] == full["detail"]["escalated_tasks"]
+        role_sum += sql_n
+    assert role_sum == full_total, "各角色 pending 件数之和 = 缺省全量（严格划分，无重叠无遗漏）"
+
+
+def test_vitals_decisions_default_unchanged_by_filter(client, con):
+    """钉死缺省不变（V22 任务1 硬红线）：不传 assignee_role → 幂等 + 老板收件箱=全部 pending +
+    列表含全部指派角色（未被"我组的"偷偷缩小）。缺省路径逐字节不因新参数漂移。"""
+    _ensure_pending_anchor(con, "ops")
+    d1 = _dec(client)
+    d2 = _dec(client)
+    assert d1 == d2, "缺省路径幂等（同请求两次深比较一致）"
+    full = con.execute("SELECT count(*) FROM tasks WHERE approval_status='pending'").fetchone()[0]
+    assert d1["headline_value"] == full == d1["detail"]["pending_total"], "缺省=全部 pending（收件箱全集）"
+    if full <= 50:  # 未触发列表 cap 时，缺省列表应覆盖库中全部指派角色（不被任何筛选预缩）
+        roles_in_list = {p["assignee_role"] for p in d1["detail"]["pending_proposals"]}
+        roles_in_db = {r[0] for r in con.execute(
+            "SELECT DISTINCT assignee_role FROM tasks WHERE approval_status='pending' "
+            "AND assignee_role IS NOT NULL")}
+        assert roles_in_list == roles_in_db, "缺省列表含全部指派角色，非某一组"
+
+
+def test_vitals_decisions_assignee_legal_but_empty(client):
+    """合法角色但当前世界无其指派待批 → 200 + 空列表（诚实空态，非 422）：这是前端"我组的"空态
+    「当前没有指派给〈角色〉的待批提案」依赖的后端行为。验证世界 sales 从无指派 → 空。"""
+    z = _dec(client, "sales")
+    assert z["detail"]["pending_proposals"] == []
+    assert z["headline_value"] == z["detail"]["pending_total"] == 0
+
+
+def test_vitals_decisions_assignee_role_illegal_422(client):
+    """非法 assignee_role → 422 白话（回显非法值 + 合法角色清单 + 指路缺省语义），不静默忽略。"""
+    resp = client.get("/cockpit/vitals?assignee_role=wizard", headers={"X-Role": "manager"})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert "wizard" in detail and "缺省" in detail, "白话错误应回显非法值并指路缺省"
+    # 合法值集应与本体派生的业务角色一致（不硬编码字面量：现查 _ROSTER_ROLES）
+    from apps.api.cockpit import _ROSTER_ROLES
+    assert all(r in detail for r in ("ops", "finance"))
+    assert "system" not in _ROSTER_ROLES, "非用户角色 system 不作为合法筛选值"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 角色脱敏：钱区对 ops 掩码（与 UI COST_FIELDS 同规），tier 走本体 sensitiveFieldRules
 # ═══════════════════════════════════════════════════════════════════════════
 def test_vitals_money_masked_for_ops(client):

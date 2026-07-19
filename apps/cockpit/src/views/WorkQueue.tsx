@@ -21,17 +21,21 @@ interface Props {
       标题放会被读成待批数（Daniel 实测困惑）——由调用方按区传消歧文案与 title 白话。 */
   alertLabel?: string;
   alertTitle?: string;
+  /** 头部筛选 chip 组（V22 任务1，待批提案"我组的"）：紧贴标题右侧，与右对齐的 headerActions 分列。 */
+  filterChips?: ReactNode;
   headerActions?: ReactNode;
   spec: QueueSpec | null;
   onDrill: (t: DrillTarget, key: string) => void;
   emptyHint?: ReactNode;
   context?: ReactNode;
   activeKey?: string | null; // 当前已滑出详情的条目（左缘高亮）
+  /** 队列体加载态（V22 任务1：切"我组的"重新拉取期间）——头部（含 chip）保持可见可点，仅体区显骨架。 */
+  loading?: boolean;
 }
 
 const badgeClass = (tone: "red" | "amber" | "neutral") => (tone === "red" ? "cp-chip red" : tone === "amber" ? "cp-chip amber" : "cp-chip");
 
-export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alertTitle, headerActions, spec, onDrill, emptyHint, context, activeKey }: Props) {
+export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alertTitle, filterChips, headerActions, spec, onDrill, emptyHint, context, activeKey, loading }: Props) {
   const rows = spec?.rows ?? [];
   return (
     <div className="cp-zone">
@@ -51,6 +55,7 @@ export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alert
           ))}
         </nav>
         <span className="cp-panel-head__title">{title}</span>
+        {filterChips}
         {/* 头部"共 N 条"标注（防静默截断，P1/P2）：由 QueueSpec.countLabel 提供，展示行数与全量数
             一致时=「共 N 条·按金额降序」，被截时=「共 N 条·显示前 M 条」如实注明。 */}
         {spec?.countLabel && <span className="cp-panel-head__meta">{spec.countLabel}</span>}
@@ -62,7 +67,10 @@ export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alert
       </div>
 
       <div className="cp-zone__scroll">
-        {spec && rows.length > 0 ? (
+        {loading ? (
+          // V22 任务1：切"我组的"重取期间——头部 chip 已在上方保持可点，此处仅体区显骨架，不闪旧行
+          <StateHint kind="loading" title="按你组筛选中…" skeletonRows={4} />
+        ) : spec && rows.length > 0 ? (
           <div className="cp-queue">
             <table className="cp-table cp-queue__table">
               <thead>

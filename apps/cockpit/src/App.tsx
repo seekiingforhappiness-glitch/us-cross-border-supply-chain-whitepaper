@@ -263,9 +263,9 @@ export default function App() {
               <StateHint kind="loading" title="指挥墙加载中…" skeletonRows={4} />
             )
           ) : stage.view === "zone" && activeZone ? (
-            <ZoneQueue zone={activeZone} onBack={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
+            <ZoneQueue zone={activeZone} role={role} asOf={asOf} onBack={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : (
-            <CommandWall zones={vitals.zones} provenance={vitals.provenance} gating={gating} onZone={goZone} onMap={goMap} />
+            <CommandWall zones={vitals.zones} role={role} provenance={vitals.provenance} gating={gating} onZone={goZone} onMap={goMap} />
           )}
         </div>
         <div className="cp-side">
