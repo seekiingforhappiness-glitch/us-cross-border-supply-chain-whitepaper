@@ -1,6 +1,9 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import {
   fetchObject,
+  fetchObjectsByFilter,
+  fetchRiskImpact,
+  formatUsd,
   isMasked,
   linksForType,
   MASK_TEXT,
@@ -8,12 +11,13 @@ import {
   type ObjectFields,
   type ObjectRef,
   type OntologyLink,
+  type PaymentImpactRow,
   type Role,
   type UsableLink,
 } from "../api";
 import Icon from "../components/Icons";
 import AdmissionDecisionBar from "./AdmissionDecisionBar";
-import { DecisionButtons } from "./ImpactPanel";
+import { DecisionButtons, PAY_ANCHOR_RULES, payRowStatus, REF_TYPE_CN, REF_TYPE_OBJ } from "./ImpactPanel";
 import {
   fieldGroup,
   fieldLabel,
@@ -108,6 +112,21 @@ const DISPO_HINT_STYLE: CSSProperties = {
   borderRadius: "6px",
 };
 
+// 轮3 余量①（客户卡"哪张订单出险"）：Customer 关系区本体只声明 customer_places（→ 销售订单）
+// 一条关系，没有 Customer↔RiskEvent 直接关系可 traverse（侦察结论，ontology/control-tower-
+// ontology.json links[] 核对过）。R19/R21（付款锚风险，仅这两条规则会产出付款归并行——
+// apps/api/cockpit.py::cockpit_risk_impact 对非付款锚风险恒返回 rows=[]，其余规则族即使能
+// traverse 到也永远渲染不出東西，故不做那条路）本身锚在 payment_id，订单行/客户都要经
+// /cockpit/risk-impact 按 payment→单据→对手方解出，前端无法反向定位"该风险是不是这个客户的"
+// ——只能把 R19/R21 全量候选（现查 GET /objects/RiskEvent?rule_id=R19|R21）逐个核对
+// counterparty_id 是否命中当前客户。这池子大小只取决于系统级资金流异常总量、不随本客户订单量
+// 增长（F1 语义决定"逾期应收/付款异常"是稀发事件——当前验证世界 15 条、模拟世界 21 条，见
+// engine/finance_rules.py 阈值）。规格建议"候选>5 只查前5"防的是随客户复杂度线性增长的雪崩；
+// 但这池子固定且小，卡 5 反而会把排名靠后的客户（如模拟世界 CUS-0002 排第 10）误判成"无风险"
+// （假阴性，比多查几个本地 SQLite 读判断更糟）——改用一个远高于现状的硬顶兜底，防未来数据
+// 规模真的失控，不做字面的"5"。
+const PAY_RISK_CHECK_CAP = 60;
+
 // C·P1（轮3 三人齐报"QUAL/RSK/付款记录 chip 死链 vs 任务徽标可点"）：关系区邻居 chip 原是裸
 // span+onClick——鼠标可点但键盘不可达、无障碍树里不存在（沿无障碍树驱动的测试与读屏用户都会把它
 // 判成"死链"；对比 AI 区任务链接是真 <button>，可点性因此不一致）。对象读端点 /objects/{type}/{id}
@@ -149,6 +168,7 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
   const [expanded, setExpanded] = useState<Record<string, Expanded>>({});
   const [dqOpen, setDqOpen] = useState(false); // 数据质量提示徽标：默认折叠
   const [dispo, setDispo] = useState<DispoHint>({ state: "none" }); // P1-3 处置状态派生提示
+  const [custRiskRows, setCustRiskRows] = useState<PaymentImpactRow[] | null>(null); // 轮3 余量①：客户"出险订单"
 
   useEffect(() => {
     let cancelled = false;
@@ -221,6 +241,58 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
       cancelled = true;
     };
   }, [target, role, riskStatusForDispo]);
+
+  // 轮3 余量①：客户卡"哪张订单出险"。仅 Customer 类型查——现取 R19/R21 全量候选（小池子，见上方
+  // PAY_RISK_CHECK_CAP 注释），逐个调 fetchRiskImpact（后端已实现的 payment→单据→对手方归并），
+  // 只留 counterparty_id 命中当前客户的行。查无归并行、候选池为空、或任一环节失败＝诚实静默
+  // （不渲染不报错）——绝不为了"有内容"而编造或降级展示。
+  useEffect(() => {
+    if (target.type !== "Customer") {
+      setCustRiskRows(null);
+      return;
+    }
+    let cancelled = false;
+    setCustRiskRows(null);
+    (async () => {
+      try {
+        const lists = await Promise.all(
+          [...PAY_ANCHOR_RULES].map((rule) =>
+            fetchObjectsByFilter("RiskEvent", { rule_id: rule }, role, 300).catch(() => null),
+          ),
+        );
+        if (cancelled) return;
+        const candidates = lists
+          .flatMap((r) => r?.items ?? [])
+          .filter((it) => RISK_NONTERMINAL.has(String(it.status)))
+          .slice(0, PAY_RISK_CHECK_CAP);
+        if (candidates.length === 0) {
+          if (!cancelled) setCustRiskRows(null);
+          return;
+        }
+        const impacts = await Promise.all(
+          candidates.map((c) => fetchRiskImpact(String(c.risk_event_id), role).catch(() => null)),
+        );
+        if (cancelled) return;
+        const rows: PaymentImpactRow[] = [];
+        const seen = new Set<string>();
+        for (const imp of impacts) {
+          if (!imp || imp.anchor !== "payment") continue;
+          for (const row of imp.rows) {
+            if (row.counterparty_type === "customer" && row.counterparty_id === target.id && !seen.has(row.payment_id)) {
+              seen.add(row.payment_id);
+              rows.push(row);
+            }
+          }
+        }
+        setCustRiskRows(rows.length > 0 ? rows : null);
+      } catch {
+        if (!cancelled) setCustRiskRows(null); // 诚实静默：链路任一环失败都不报错、不渲染
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [target, role]);
 
   const usable: UsableLink[] = linksForType(links, target.type);
 
@@ -360,6 +432,35 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
               ))}
 
               <div className="cp-drawer__section-title">关系（{usable.length} 条可走）</div>
+              {/* 轮3 余量①：客户"出险订单"提示——只在真找到归并行时才现身（诚实静默，查无/失败不渲染）。 */}
+              {target.type === "Customer" && custRiskRows && custRiskRows.length > 0 && (
+                <div style={DISPO_HINT_STYLE}>
+                  <div style={{ fontWeight: 600, color: "var(--ink-1)", marginBottom: 4 }}>
+                    <Icon name="warn" size={11} /> 出险订单 · {custRiskRows.length} 笔付款
+                  </div>
+                  {custRiskRows.map((r) => {
+                    const st = payRowStatus(r);
+                    const refObj = REF_TYPE_OBJ[r.ref_type];
+                    return (
+                      <div key={r.payment_id} style={{ display: "flex", alignItems: "baseline", gap: 6, margin: "3px 0", flexWrap: "wrap" }}>
+                        {refObj ? (
+                          <NeighborChip
+                            id={r.ref_id}
+                            title={`打开${REF_TYPE_CN[r.ref_type] ?? r.ref_type} ${r.ref_id}`}
+                            onOpen={() => onOpenObject({ type: refObj, id: r.ref_id })}
+                          />
+                        ) : (
+                          <span className="num">{r.ref_id}</span>
+                        )}
+                        <span className="num">{formatUsd(r.amount_usd)}</span>
+                        {/* .cp-table td.neg 是表格限定选择器，这里是裸 span，改内联色避免样式不生效
+                            （不新增 styles.css 规则——本单不可碰 styles.css）。 */}
+                        <span style={st.neg ? { color: "var(--sev-red)" } : undefined}>{st.text}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div className="cp-links">
                 {usable.map((l) => {
                   const exp = expanded[l.linkType];

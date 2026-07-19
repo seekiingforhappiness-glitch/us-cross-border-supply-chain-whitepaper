@@ -682,6 +682,27 @@ export const traverse = (type: string, id: string, link: string, role: Role) =>
     role,
   );
 
+// GET /objects/{type}（列表+等值过滤）薄封装——客户卡"出险订单"接线（轮3 余量①）用它按 rule_id
+// 取小规模系统级候选池（R19/R21 全量，现状 ≤21 条，不随客户订单量增长，见 ObjectCard.tsx 用处
+// 注释）。不做游标翻页——调用处场景本就是小结果集，翻页复杂度无必要。
+export interface ObjectListResult {
+  type: string;
+  world: string;
+  count: number;
+  limit: number;
+  items: ObjectFields[];
+}
+
+export const fetchObjectsByFilter = (
+  type: string,
+  filters: Record<string, string>,
+  role: Role,
+  limit = 300,
+): Promise<ObjectListResult> => {
+  const params = new URLSearchParams({ ...filters, limit: String(limit) });
+  return apiGet<ObjectListResult>(`/objects/${encodeURIComponent(type)}?${params.toString()}`, role);
+};
+
 // ═══════════════════════════ /ontology（对象卡的 links 清单来源）═══════════════════════════
 export interface OntologyLink {
   linkType: string;

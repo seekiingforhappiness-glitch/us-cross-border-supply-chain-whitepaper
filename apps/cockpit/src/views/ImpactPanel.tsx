@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   COUNTERPARTY_TYPES,
   COUNTERPARTY_TYPE_CN,
@@ -74,16 +74,30 @@ function parseIds(raw: unknown): string[] {
 
 const LINE_FETCH_CAP = 8; // 明细行按需拉取上限（用户点击触发，非循环，有界）
 
+// 苏苏 P3（轮3 余量②）：1280×720 视窗下动作区（批准/驳回）在视窗外，须先滚动才够得到按钮——
+// 把动作区钉在面板底部（position: sticky; bottom: 0），内容再长按钮也始终可见。用组件内联 style
+// 叠加既有 .cp-action 类（背景/边框/圆角不变，本单不新增 styles.css 规则）。sticky 的生效边界是
+// 最近可滚动祖先，即 .cp-impact__body（overflow-y:auto）——恰是本面板唯一滚动区，语义正确、无需
+// 额外包一层容器。boxShadow 只在贴底时给一点层次分隔，不影响未滚动时的观感（阴影本身极浅）。
+const ACTION_STICKY_STYLE: CSSProperties = {
+  position: "sticky",
+  bottom: 0,
+  zIndex: 2,
+  boxShadow: "0 -6px 12px -6px rgba(0, 0, 0, 0.4)",
+};
+
 // ── 付款锚风险（R19/R21，轮3-D）归并呈现 ────────────────────────────────────
 // 摘要文本有"客户 CUS-0002 订单 SO-SIM-01008"而结构化区 0 条——因为这族风险锚在付款不在订单行。
 // 后端 /cockpit/risk-impact 沿实际 schema 归并（payment→单据→对手方），这里照实呈现；归并不到
 // （rows 空）时保留原有诚实空态文案不变。译名/可点链接与全舱同规（对象类型映射见 api.ts）。
-const PAY_ANCHOR_RULES = new Set(["R19", "R21"]);
-const REF_TYPE_CN: Record<string, string> = { sales_order: "订单", supplier_invoice: "供应商发票" };
-const REF_TYPE_OBJ: Record<string, string> = { sales_order: "SalesOrder", supplier_invoice: "SupplierInvoice" };
+// export：ObjectCard.tsx 客户卡"出险订单"接线（轮3 余量①）复用同一份规则集/映射表/状态译法——
+// 单一来源，不重复定义（AGENTS §5）。
+export const PAY_ANCHOR_RULES = new Set(["R19", "R21"]);
+export const REF_TYPE_CN: Record<string, string> = { sales_order: "订单", supplier_invoice: "供应商发票" };
+export const REF_TYPE_OBJ: Record<string, string> = { sales_order: "SalesOrder", supplier_invoice: "SupplierInvoice" };
 const CPTY_TYPE_OBJ: Record<string, string> = { customer: "Customer", supplier: "Supplier" };
 
-function payRowStatus(r: PaymentImpactRow): { text: string; neg: boolean } {
+export function payRowStatus(r: PaymentImpactRow): { text: string; neg: boolean } {
   if (r.overdue_days != null) return { text: `逾期 ${r.overdue_days} 天`, neg: true };
   if (r.status === "paid") return { text: r.is_anchor === false ? "已付（重复笔）" : "已付", neg: false };
   return { text: "待回款", neg: false };
@@ -792,7 +806,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
         {/* 动作区（A-1/V13①批准驳回 + B-1/V18 关闭风险）：待拍板提案在此直接拍板；无待拍板提案时
             （已批/从未有提案）改渲染关闭风险（走同一条人类决策通道，留痕到审计、maker-checker 不变）。
             Streamlit 操作台作为兜底入口保留（改期/加急等复杂处置提案仍需去那边发起）。 */}
-        <div className="cp-action">
+        <div className="cp-action" style={ACTION_STICKY_STYLE}>
           <div className="cp-action__t">
             <Icon name="stamp" size={13} /> 动作区
           </div>
