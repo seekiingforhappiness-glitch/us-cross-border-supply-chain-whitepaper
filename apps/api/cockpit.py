@@ -726,8 +726,44 @@ def _zone_customers(con, tables: set[str], replay_risk: bool = False,
     }
 
 
+# ─── 供应商合规维度（K·P1，轮3 林律"该把风险项排到我面前"）───────────────────────
+# 合规字段只对 compliance/manager 角色附到供应商队列行——本体 Supplier.uflpa_risk_flag
+# visibleTo=[compliance,manager]（ontology sensitiveFieldRules）；其他角色载荷里根本不带这些键
+# （不是带着掩码——不开新可见性洞）。audit/docs 两枚状态本体无独立 visibleTo，随 UFLPA 同门附带=
+# 严格窄于任一可能声明，不越权。资质异常只标"库里显式坏值"，None/未知不臆断标红（诚实不编造）。
+COMPLIANCE_ROLES = ("compliance", "manager")
+_SUPPLIER_COMP_COLS = ("uflpa_risk_flag", "factory_audit_status", "compliance_docs_status")
+_AUDIT_BAD = {"not_started", "pending", "failed"}       # 工厂审计显式坏态（enum 其余=passed/waived=正常）
+_DOCS_BAD = {"missing", "partial", "rejected"}            # 合规文件显式坏态（enum 其余=provided/verified=正常）
+
+
+def _flag_true(v: Any) -> bool:
+    """布尔旗标真值判定（库里 uflpa_risk_flag 可能是 '0'/'1' 文本、0/1 整数、true/false、None）。
+    只认明确真值，其余（含 None/空/'0'）一律 False——不把缺失/未知当成命中（诚实非编造）。"""
+    if v is None:
+        return False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    return str(v).strip().lower() in ("1", "true", "t", "yes", "y")
+
+
+def _qual_abnormal(audit: Any, docs: Any) -> bool:
+    """资质是否异常：工厂审计或合规文件落在**显式坏态集**（None/未知不算异常，不臆断）。"""
+    a = str(audit).strip().lower() if audit is not None else ""
+    d = str(docs).strip().lower() if docs is not None else ""
+    return a in _AUDIT_BAD or d in _DOCS_BAD
+
+
+def _supplier_comp_available(con, tables: set[str]) -> bool:
+    """本世界 suppliers 表是否带齐三枚合规列（世界无关性红线：缺列的世界不附字段、不 500）。"""
+    return "suppliers" in tables and set(_SUPPLIER_COMP_COLS) <= _columns(con, "suppliers")
+
+
 def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
-                    clock: str | None = None) -> dict:
+                    clock: str | None = None, role: str | None = None,
+                    sort_compliance: bool = False) -> dict:
     """供应商区。四指标口径：
     · 交期达成率(headline)：SELECT po.supplier_id, count(*), sum(达成) FROM purchase_orders po
       JOIN (SELECT po_id, min(received_date) first_recv FROM goods_receipts GROUP BY po_id) g
@@ -743,8 +779,19 @@ def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
       WHERE rule_id IN ('R7','R8','R9','R10','R11','R12','R13') AND status='open'。
     alert_count = open R7-R14 计数。trend：无逐日快照 → null。
     回放（replay_risk，仅 sim）：单一依赖 R14 + 对账差异 R7-R13 按 _risk_active 时点重建（活跃风险计数/
-    金额=可回放，affected_value_usd 是风险行快照）；交期达成率/缺陷率是 GRN 累计存量，不动、如实标存量。"""
+    金额=可回放，affected_value_usd 是风险行快照）；交期达成率/缺陷率是 GRN 累计存量，不动、如实标存量。
+    合规维度（K·P1）：role∈COMPLIANCE_ROLES 时 worst_suppliers 行附 uflpa_risk_flag(规整bool)/
+    factory_audit_status/compliance_docs_status/qual_abnormal(派生bool，单一来源在后端)，detail 附
+    compliance_dimension（全库 UFLPA/资质异常计数+口径 basis；零阳性附诚实 note）；sort_compliance=True
+    → 全列表重排（UFLPA 命中→资质异常→交期升序）后再取 Top10（否则阳性沉在 10 名外永远浮不上来）。
+    其他角色/缺省 sort：载荷与行序逐字节不变（不带合规键，非掩码——本体 visibleTo 语义是"载荷不含"）。"""
     rfrag, rp = _risk_active(replay_risk, clock)
+    comp_ok = role in COMPLIANCE_ROLES and _supplier_comp_available(con, tables)
+    comp_map: dict[str, dict] = {}
+    if comp_ok:
+        comp_map = {r["supplier_id"]: dict(r) for r in con.execute(
+            "SELECT supplier_id, uflpa_risk_flag, factory_audit_status, "
+            "compliance_docs_status FROM suppliers")}
     if "goods_receipts" in tables:
         per_supplier = [dict(r) for r in con.execute("""
             SELECT po.supplier_id, s.supplier_name, count(*) pos_measured,
@@ -759,6 +806,21 @@ def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
         for r in per_supplier:
             r["rate"] = round(r["on_time"] / r["pos_measured"], 4) if r["pos_measured"] else None
         per_supplier.sort(key=lambda r: (r["rate"] is None, r["rate"]))
+        if comp_ok:
+            # K·P1：行附合规三列+派生 qual_abnormal（规则单一来源在后端，前端只读不复刻判定）。
+            for r in per_supplier:
+                c = comp_map.get(r["supplier_id"], {})
+                r["uflpa_risk_flag"] = _flag_true(c.get("uflpa_risk_flag"))
+                r["factory_audit_status"] = c.get("factory_audit_status")
+                r["compliance_docs_status"] = c.get("compliance_docs_status")
+                r["qual_abnormal"] = _qual_abnormal(c.get("factory_audit_status"),
+                                                    c.get("compliance_docs_status"))
+            if sort_compliance:
+                # 全列表重排后才截 Top10——阳性若沉在交期第 11 名之后，缺省口径永远浮不上来。
+                # 组内并列仍按交期升序（最差在前，stable sort + 显式尾键，与缺省口径同语义）。
+                per_supplier.sort(key=lambda r: (not r["uflpa_risk_flag"],
+                                                 not r["qual_abnormal"],
+                                                 r["rate"] is None, r["rate"]))
         delivery = {"rate": round(on_time / measured, 4) if measured else None,
                     "pos_measured": measured, "on_time": on_time,
                     "worst_suppliers": per_supplier[:10]}
@@ -797,6 +859,33 @@ def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
                    "recon_diff_r7_r13": {"open_risks": recon["c"],
                                          "amount_usd": round(recon["v"] or 0.0, 2)}},
     }
+    if role in COMPLIANCE_ROLES:               # K·P1：合规维度摘要（其他角色载荷不含此键）
+        if comp_ok:
+            uflpa_total = sum(1 for c in comp_map.values()
+                              if _flag_true(c.get("uflpa_risk_flag")))
+            qual_total = sum(1 for c in comp_map.values()
+                             if _qual_abnormal(c.get("factory_audit_status"),
+                                               c.get("compliance_docs_status")))
+            comp_dim: dict[str, Any] = {
+                "available": True,
+                "sort": "compliance" if sort_compliance else "default",
+                "uflpa_flagged_total": uflpa_total,
+                "qual_abnormal_total": qual_total,
+                "suppliers_total": len(comp_map),
+                "basis": ("UFLPA 旗标/工厂审计/合规文件三列来自 suppliers 表现查（全库计数含无收货记录"
+                          "的供应商）；合规排序=UFLPA 命中优先、次按资质显式异常（审计 not_started/"
+                          "pending/failed 或文件 missing/partial/rejected；未知/空不臆断）、再按交期"
+                          "达成率升序。"),
+            }
+            if uflpa_total == 0:
+                comp_dim["note"] = (f"当前无 UFLPA 标记供应商（全库 {len(comp_map)} 家现查为 0）"
+                                    f"——合规排序按资质异常、再按交期兜底。")
+            zone["detail"]["compliance_dimension"] = comp_dim
+        else:
+            zone["detail"]["compliance_dimension"] = {
+                "available": False,
+                "reason": "本世界 suppliers 表缺合规列（UFLPA/审计/文件），无合规维度可排——"
+                          "如实缺，非零阳性。"}
     if headline_reason:
         zone["headline_reason"] = headline_reason
     return zone
@@ -1702,6 +1791,10 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
                            default=None, description="待批提案队列\"我组的\"筛选：只保留指派给该角色的"
                                                      "待批提案（仅影响 decisions 区，其余区不变）；缺省=全部"
                                                      "pending（老板收件箱，byte-identical）。合法值=业务角色。"),
+                       sort: str | None = Query(
+                           default=None, description="供应商队列排序（K·P1）：sort=compliance（仅 "
+                                                     "compliance/manager 可用）=UFLPA 命中优先→资质异常→"
+                                                     "交期升序；缺省=交期升序（byte-identical）。"),
                        x_role: str = Header(default="ops", alias="X-Role"),
                        con: sqlite3.Connection = Depends(get_ro_connection),
                        db_path: str = Depends(get_db_path)) -> dict:
@@ -1716,6 +1809,16 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
             raise HTTPException(
                 422, detail=f"未知 assignee_role '{assignee_role}'——待批提案筛选仅支持业务角色："
                             f"{'、'.join(sorted(_ROSTER_ROLES))}。缺省不传该参数=返回全部待批提案。")
+        if sort is not None:                   # K·P1：合规排序参数门（fail-fast 白话，同 X-World 惯例）
+            if sort != "compliance":
+                raise HTTPException(
+                    422, detail=f"未知 sort 值 '{sort}'——当前仅支持 sort=compliance"
+                                f"（供应商队列按合规风险排序）。缺省不传=按交期达成率升序。")
+            if x_role not in COMPLIANCE_ROLES:
+                raise HTTPException(
+                    422, detail=f"合规维度需合规或经理角色——当前是 {x_role}，无 UFLPA/资质"
+                                f"可见权（本体 Supplier.uflpa_risk_flag 仅对 compliance/manager "
+                                f"可见）。请切到合规或经理角色后再用合规排序。")
         tables = _tables(con)
         window_start, world_clock = _world_window(con, tables)
         effective_clock, replay = _resolve_as_of(as_of, world_clock, window_start)
@@ -1726,7 +1829,8 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
             _zone_money(con, tables, effective_clock, replay_risk, replay),
             _zone_fulfillment(con, tables, effective_clock, world_is_sim),
             _zone_customers(con, tables, replay_risk, effective_clock),
-            _zone_suppliers(con, tables, replay_risk, effective_clock),
+            _zone_suppliers(con, tables, replay_risk, effective_clock,
+                            role=x_role, sort_compliance=(sort == "compliance")),
             _zone_inventory(con, tables, replay_risk, effective_clock),
             _zone_ai(con, tables, effective_clock, world_is_sim),
             _zone_decisions(con, tables, effective_clock, assignee_role),

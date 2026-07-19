@@ -331,6 +331,64 @@ def test_xworld_dual_routing(api):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ①+ 付款锚归并增量（轮3-Opus 歧义3 清偿）：R19/R21 影响块吃 cockpit._payment_impact 单一来源
+# ═══════════════════════════════════════════════════════════════════════════
+def test_impact_payment_rows_for_r19(api):
+    """R19 提案（sim，affected_so_line_ids='[]' 但任务 proposal_params 带 customer_id+金额）：
+    impact.payment_rows 有归并行，行内容与 /cockpit/risk-impact 同一归并链对库现查一致
+    （payment→sales_order→客户，唯一匹配）；note 改指认付款行（不再"无订单行级影响"到底）。"""
+    client, _v, scon = api
+    # 挑一个金额对 payments 唯一匹配的 R19 提案（动态判定——归并本就只对唯一命中生效，不赌样本）
+    picked = None
+    for row in scon.execute(
+            "SELECT t.task_id, t.proposal_params, re.affected_value_usd FROM tasks t "
+            "JOIN risk_events re ON re.risk_event_id=t.risk_event_id "
+            "WHERE re.rule_id='R19' ORDER BY t.task_id"):
+        import json as _json
+        params = _json.loads(row["proposal_params"] or "{}")
+        cid = params.get("customer_id")
+        if not cid or row["affected_value_usd"] is None:
+            continue
+        hits = scon.execute(
+            "SELECT payment_id, ref_id, counterparty_id, amount_usd FROM payments "
+            "WHERE direction='in' AND status='scheduled' AND counterparty_id=? "
+            "AND round(amount_usd,2)=round(?,2)", (cid, row["affected_value_usd"])).fetchall()
+        if len(hits) == 1:
+            picked = (row["task_id"], hits[0])
+            break
+    assert picked, "sim 应有金额唯一匹配的 R19 提案（轮3-D 已实证）"
+    tid, exp = picked
+    imp = _ev(client, tid).json()["impact"]
+    assert imp["payment_rows"], "R19 影响块应带付款归并行"
+    r0 = imp["payment_rows"][0]
+    assert r0["payment_id"] == exp["payment_id"]
+    assert r0["counterparty_id"] == exp["counterparty_id"]
+    assert r0["ref_id"] == exp["ref_id"]
+    assert r0["amount_usd"] == exp["amount_usd"]          # manager 见真值
+    assert r0["is_anchor"] is True
+    assert r0["overdue_days"] is None or isinstance(r0["overdue_days"], int)
+    assert "付款" in imp["note"], "有归并行时 note 应指认付款行，不再是'无订单行级影响'话术"
+
+
+def test_impact_payment_rows_masked_for_ops(api):
+    """脱敏：ops 看 payment_rows 内 amount_usd 掩码（走既有装配末端 _mask_money，不开新洞）。"""
+    client, _v, scon = api
+    tid = _pick(scon, "re.rule_id='R19'")
+    imp = _ev(client, tid, role=OPS).json()["impact"]
+    assert "payment_rows" in imp, "R19 影响块应带 payment_rows 键（含空数组诚实空态）"
+    for r in imp["payment_rows"]:
+        assert r["amount_usd"] == MASK, "ops 下付款行金额必须掩码"
+
+
+def test_impact_no_payment_keys_for_non_payment_anchor(api):
+    """非付款锚提案（R1）：impact 不带 payment_rows/payment_note 键——载荷 byte-identical 不回归。"""
+    client, _v, scon = api
+    tid = _pick(scon, "re.rule_id='R1' AND re.affected_so_line_ids NOT IN ('','[]')")
+    imp = _ev(client, tid).json()["impact"]
+    assert "payment_rows" not in imp and "payment_note" not in imp
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ② summary —— precedent_summary_line 纯函数（runtime propose 步引用的同一逻辑）
 # ═══════════════════════════════════════════════════════════════════════════
 def test_summary_line_real_and_first_case(api):

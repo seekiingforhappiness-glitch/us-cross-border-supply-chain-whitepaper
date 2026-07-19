@@ -31,11 +31,13 @@ interface Props {
   activeKey?: string | null; // 当前已滑出详情的条目（左缘高亮）
   /** 队列体加载态（V22 任务1：切"我组的"重新拉取期间）——头部（含 chip）保持可见可点，仅体区显骨架。 */
   loading?: boolean;
+  /** 加载骨架标题（缺省"队列加载中…"；调用方按场景传白话，如"按你组筛选中…"/"按合规风险重排中…"）。 */
+  loadingTitle?: string;
 }
 
 const badgeClass = (tone: "red" | "amber" | "neutral") => (tone === "red" ? "cp-chip red" : tone === "amber" ? "cp-chip amber" : "cp-chip");
 
-export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alertTitle, filterChips, headerActions, spec, onDrill, emptyHint, context, activeKey, loading }: Props) {
+export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alertTitle, filterChips, headerActions, spec, onDrill, emptyHint, context, activeKey, loading, loadingTitle }: Props) {
   const rows = spec?.rows ?? [];
   return (
     <div className="cp-zone">
@@ -68,8 +70,8 @@ export default function WorkQueue({ crumbs, title, alertCount, alertLabel, alert
 
       <div className="cp-zone__scroll">
         {loading ? (
-          // V22 任务1：切"我组的"重取期间——头部 chip 已在上方保持可点，此处仅体区显骨架，不闪旧行
-          <StateHint kind="loading" title="按你组筛选中…" skeletonRows={4} />
+          // V22 任务1：筛选/重排重取期间——头部 chip 已在上方保持可点，此处仅体区显骨架，不闪旧行
+          <StateHint kind="loading" title={loadingTitle ?? "队列加载中…"} skeletonRows={4} />
         ) : spec && rows.length > 0 ? (
           <div className="cp-queue">
             <table className="cp-table cp-queue__table">

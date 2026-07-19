@@ -46,6 +46,9 @@ const ALT_ORDER = ["expedite", "accept_delay"];
 // "该风险本就不落到订单行上"（无 order_lines/customers，非查错而是设计上就没有）也算"这块给不出支撑"。
 function impactHasNoData(impact: EvidenceImpact): boolean {
   if (impact.available === false) return true; // 同 ImpactRow：风险查无
+  // 付款锚增量（轮3-Opus 歧义3）：有付款归并行=该块有数据（R19/R21 影响落在付款不落订单行，
+  // 归并行就是这块的"数字"）——不再因订单行/客户为 0 误判全空。
+  if (impact.payment_rows && impact.payment_rows.length > 0) return false;
   // 三个数字（受影响订单行/客户）皆为 0（含"本就不落订单行"的诚实非缺数空态）→ 这块没有可看的数字。
   return !impact.affected_order_lines && !impact.affected_customers;
 }
@@ -60,11 +63,27 @@ function alternativesHasNoData(alt: EvidenceAlternatives): boolean {
 }
 
 // ── ① 影响：受影响订单行 / 金额合计 / 波及客户，三数字一行（金额 MASK 照实显"无权查看"，不当数字）──
+// 付款锚增量（轮3-Opus 歧义3 清偿）：R19/R21 提案后端附 payment_rows（与 /cockpit/risk-impact 同一
+// 归并链）——逐行渲染"1 笔付款 · 客户 X · 订单 Y · $Z · 逾期 N 天"；归并不到显 payment_note 诚实空态；
+// 非付款锚提案载荷不带此键，本块渲染与改前逐字节一致。
+const REF_CN: Record<string, string> = { sales_order: "订单", supplier_invoice: "供应商发票" };
+const CP_CN: Record<string, string> = { customer: "客户", supplier: "供应商" };
+
+function paymentLine(p: NonNullable<EvidenceImpact["payment_rows"]>[number], i: number, n: number): string[] {
+  // 返回 [前缀, 尾缀]，金额单独渲染（掩码样式）。前缀按任务书话术："1 笔付款 · 客户 X · 订单 Y · "
+  const head = n === 1 ? "1 笔付款" : `付款 ${i + 1}/${n}`;
+  const cp = `${CP_CN[p.counterparty_type] ?? p.counterparty_type} ${p.counterparty_id}`;
+  const ref = `${REF_CN[p.ref_type] ?? p.ref_type} ${p.ref_id}`;
+  const tail = `${p.overdue_days != null ? ` · 逾期 ${p.overdue_days} 天` : ""}${p.is_anchor === false ? " · 疑似重复笔" : ""}`;
+  return [`${head} · ${cp} · ${ref} · `, tail];
+}
+
 function ImpactRow({ impact }: { impact: EvidenceImpact }) {
   if (impact.available === false) {
     return <div className="cp-ev__empty">{impact.reason ?? "该提案关联的风险查无，无法计算影响面。"}</div>;
   }
   const amt = impact.amount_usd;
+  const payRows = impact.payment_rows ?? [];
   return (
     <>
       <div className="cp-ev__nums">
@@ -81,7 +100,22 @@ function ImpactRow({ impact }: { impact: EvidenceImpact }) {
           <span className="cp-ev__num-k">波及客户</span>
         </div>
       </div>
+      {payRows.length > 0 && (
+        <div className="cp-ev__payrows">
+          {payRows.map((p, i) => {
+            const [head, tail] = paymentLine(p, i, payRows.length);
+            return (
+              <div key={p.payment_id} className="cp-ev__payrow">
+                {head}
+                <span className={`num ${isMasked(p.amount_usd) ? "is-masked" : "gold"}`}>{formatUsd(p.amount_usd)}</span>
+                {tail}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {impact.note && <div className="cp-ev__note">{impact.note}</div>}
+      {impact.payment_note && <div className="cp-ev__note">{impact.payment_note}</div>}
     </>
   );
 }

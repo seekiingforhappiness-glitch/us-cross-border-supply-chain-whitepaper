@@ -1367,6 +1367,121 @@ def test_customs_queue_sim_world(sim_world):
     assert d["total"] > 0, "前置：sim 库应有清关卡点票"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# K·P1 供应商队列合规维度（轮3 林律"让我一家家点开核对 UFLPA 是体力活"）
+# 可见性红线：本体 Supplier.uflpa_risk_flag visibleTo=[compliance,manager]——其他角色载荷
+# **根本不带**合规键（非掩码，不开新洞）；缺省排序钉死；sort=compliance 角色门 422 白话。
+# ═══════════════════════════════════════════════════════════════════════════
+_COMP_KEYS = ("uflpa_risk_flag", "factory_audit_status", "compliance_docs_status", "qual_abnormal")
+
+
+def _sup_zone(c, role, sort=None):
+    url = "/cockpit/vitals" + (f"?sort={sort}" if sort else "")
+    r = c.get(url, headers={"X-Role": role})
+    assert r.status_code == 200, r.text
+    return next(z for z in r.json()["zones"] if z["zone"] == "suppliers")
+
+
+def test_suppliers_compliance_fields_for_compliance_role(client, con):
+    """compliance 角色：worst_suppliers 行附合规四键（值对库现查，独立 SQL 真值判定路径）+
+    detail.compliance_dimension 全库计数与独立 SQL 一致（含无收货、不在队列里的供应商）。"""
+    z = _sup_zone(client, "compliance")
+    rows = z["detail"]["delivery_hit_rate"]["worst_suppliers"]
+    assert rows, "前置：验证世界应有收货域供应商队列"
+    for r in rows:
+        assert set(_COMP_KEYS) <= set(r), f"行缺合规键：{sorted(r)}"
+        db = con.execute("SELECT uflpa_risk_flag u, factory_audit_status a, "
+                         "compliance_docs_status d FROM suppliers WHERE supplier_id=?",
+                         (r["supplier_id"],)).fetchone()
+        # 独立真值判定路径（SQL 端 lower/trim 文本枚举，与实现的 python _flag_true 是两条路）
+        exp_uflpa = (str(db["u"]).strip().lower() in ("1", "true", "t", "yes", "y")
+                     if db["u"] is not None else False)
+        assert r["uflpa_risk_flag"] == exp_uflpa
+        assert r["factory_audit_status"] == db["a"]
+        assert r["compliance_docs_status"] == db["d"]
+        exp_abn = (str(db["a"] or "").strip().lower() in ("not_started", "pending", "failed")
+                   or str(db["d"] or "").strip().lower() in ("missing", "partial", "rejected"))
+        assert r["qual_abnormal"] == exp_abn
+    comp = z["detail"]["compliance_dimension"]
+    exp_total = con.execute(
+        "SELECT count(*) FROM suppliers "
+        "WHERE lower(trim(cast(uflpa_risk_flag AS TEXT))) IN ('1','true','t','yes','y')"
+    ).fetchone()[0]
+    assert comp["available"] is True and comp["sort"] == "default"
+    assert comp["uflpa_flagged_total"] == exp_total
+    assert comp["suppliers_total"] == con.execute("SELECT count(*) FROM suppliers").fetchone()[0]
+    # 零阳性世界必须带诚实 note（sim 全 0 场景），有阳性则不带——两态都钉死
+    assert ("note" in comp) == (exp_total == 0)
+
+
+def test_suppliers_no_compliance_fields_for_other_roles(client):
+    """可见性红线：非 compliance/manager 角色载荷**不含**任何合规键（不是掩码是不带）——
+    行级四键 + 区级 compliance_dimension 都不得出现；ops/finance/procurement 三角色扫全。"""
+    for role in ("ops", "finance", "procurement"):
+        z = _sup_zone(client, role)
+        assert "compliance_dimension" not in z["detail"], f"{role} 载荷泄漏 compliance_dimension"
+        for r in z["detail"]["delivery_hit_rate"]["worst_suppliers"]:
+            leaked = set(_COMP_KEYS) & set(r)
+            assert not leaked, f"{role} 行载荷泄漏合规键 {leaked}"
+
+
+def test_suppliers_default_order_pinned_with_fields(client, con):
+    """缺省排序钉死：compliance（带字段）与 ops（不带）的行序完全一致；且逐行达成率单调不降
+    （升序=最差在前，附字段不动序）；manager 同 compliance 见字段。"""
+    comp_rows = _sup_zone(client, "compliance")["detail"]["delivery_hit_rate"]["worst_suppliers"]
+    mgr_rows = _sup_zone(client, "manager")["detail"]["delivery_hit_rate"]["worst_suppliers"]
+    ops_rows = _sup_zone(client, "ops")["detail"]["delivery_hit_rate"]["worst_suppliers"]
+    assert [r["supplier_id"] for r in comp_rows] == [r["supplier_id"] for r in ops_rows]
+    assert [r["supplier_id"] for r in mgr_rows] == [r["supplier_id"] for r in ops_rows]
+    assert all(set(_COMP_KEYS) <= set(r) for r in mgr_rows), "manager 也应见合规字段"
+    rates = [r["rate"] for r in ops_rows if r["rate"] is not None]
+    assert rates == sorted(rates), "缺省序=达成率升序（最差在前）不得被改动"
+
+
+def test_suppliers_sort_compliance_role_gate_422(client):
+    """sort=compliance 对无权角色 → 422 白话（合规维度需合规或经理角色）；未知 sort 值 → 422。"""
+    r = client.get("/cockpit/vitals?sort=compliance", headers={"X-Role": "ops"})
+    assert r.status_code == 422
+    msg = r.json()["error"]["message"]
+    assert "合规" in msg and ("manager" in msg or "经理" in msg)
+    r2 = client.get("/cockpit/vitals?sort=delivery", headers={"X-Role": "compliance"})
+    assert r2.status_code == 422 and "sort" in r2.json()["error"]["message"]
+
+
+def test_suppliers_sort_compliance_orders_flagged_first(client):
+    """sort=compliance（compliance 角色）：UFLPA 命中行全部排最前、资质异常次之、组内按交期升序；
+    与库内独立现查的分组期望逐位对照（验证世界有 3 家 UFLPA=True 真阳性，非合成）。"""
+    z = _sup_zone(client, "compliance", sort="compliance")
+    comp = z["detail"]["compliance_dimension"]
+    assert comp["sort"] == "compliance"
+    rows = z["detail"]["delivery_hit_rate"]["worst_suppliers"]
+    # 字典序钉死（与声明口径逐字对应）：UFLPA 命中优先 → 次按资质异常 → 再按交期升序。
+    # 即 (¬uflpa, ¬qual_abnormal, rate is None, rate) 元组序列必须已然有序——UFLPA 组内
+    # "又异常又命中"排在"仅命中"之前（合规风险更重者更靠前），组内再按交期最差在前。
+    keys = [(not r["uflpa_risk_flag"], not r["qual_abnormal"], r["rate"] is None, r["rate"])
+            for r in rows]
+    assert keys == sorted(keys), f"合规字典序被打破：{keys}"
+    # 阳性数前置校验：本用例的看守力依赖验证世界真有阳性（若重灌后归零，此断言诚实报前置失效）
+    assert comp["uflpa_flagged_total"] > 0, "前置：验证世界应有 UFLPA 阳性样本（当前库 3 家）"
+    assert any(r["uflpa_risk_flag"] for r in rows), "阳性应浮上 Top10 首屏"
+
+
+def test_suppliers_sort_compliance_zero_positive_world(sim_world):
+    """sim 世界全库 UFLPA=0（轮3 §三备忘）：排序功能仍正确工作 + compliance_dimension 带
+    诚实空态 note（"当前无 UFLPA 标记供应商"），不编造阳性。"""
+    c, scon = sim_world
+    z = _sup_zone(c, "compliance", sort="compliance")
+    comp = z["detail"]["compliance_dimension"]
+    exp = scon.execute(
+        "SELECT count(*) FROM suppliers "
+        "WHERE lower(trim(cast(uflpa_risk_flag AS TEXT))) IN ('1','true','t','yes','y')"
+    ).fetchone()[0]
+    assert comp["uflpa_flagged_total"] == exp
+    if exp == 0:
+        assert "当前无 UFLPA 标记供应商" in comp["note"]
+        assert not any(r["uflpa_risk_flag"] for r in z["detail"]["delivery_hit_rate"]["worst_suppliers"])
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))

@@ -46,8 +46,10 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from agent.tools import _can_see_cost
 # 复用 cockpit 既有纯helper（AGENTS.md §5 不重写）：_json_ids=affected_*_ids JSON 解析、
 # _mask_money=键名 _usd 后缀就地掩码（内含 MASK 常量）、_tables=表存在性探测。cockpit 已被 main
-# 常驻加载，无新增成本。
-from apps.api.cockpit import _json_ids, _mask_money, _tables
+# 常驻加载，无新增成本。付款锚归并（轮3-Opus 歧义3 清偿）：_payment_impact/_PAYMENT_ANCHOR_RULES/
+# _world_window 同一来源 import——归并链逻辑只在 cockpit 一份，绝不复制第二份。
+from apps.api.cockpit import (_PAYMENT_ANCHOR_RULES, _json_ids, _mask_money,
+                              _payment_impact, _tables, _world_window)
 # 复用 engine 既有只读 helper/常量（不改一行 engine）：航线派生 + 列序 + 白话标签。
 from engine.resolution_memory import (COLUMNS, DECISION_LABELS, QUALITY_LABELS_ZH,
                                        ACTION_LABELS, lane_for_shipment)
@@ -61,16 +63,29 @@ _ALT_ACTIONS = ("expedite", "accept_delay")
 # ═══════════════════════════════════════════════════════════════════════════
 # ① impact —— 受影响订单行数 / 金额合计 / 波及客户数（复用 cockpit 影响 SQL 口径，缩到单风险）
 # ═══════════════════════════════════════════════════════════════════════════
-def impact_block(con: sqlite3.Connection, affected_so_line_ids: Any) -> dict:
+def impact_block(con: sqlite3.Connection, affected_so_line_ids: Any,
+                 risk: dict | None = None) -> dict:
     """单风险影响面（口径同 cockpit `_customer_risk_map`：affected_so_line_ids→sales_order_lines→
     sales_orders→customers，去重行 Σ(qty×unit_price_usd)、去重客户数）。JSON 解析复用 cockpit `_json_ids`。
     该风险无关联订单行（费用/单据类，affected_so_line_ids 空/'[]'）→ 三数为 0 + 白话 note（诚实非缺数）。
-    id 悬空（JSON 有、库里查无）→ 如实略过并在 note 标出，不猜。金额键以 _usd 结尾 → 装配末端按角色掩码。"""
+    id 悬空（JSON 有、库里查无）→ 如实略过并在 note 标出，不猜。金额键以 _usd 结尾 → 装配末端按角色掩码。
+    付款锚增量（轮3-Opus 歧义3 清偿）：risk 传入且为 R19/R21（或 affected_so_line_ids 里有 PAY-* id）
+    → 复用 cockpit._payment_impact 单一来源归并（payment→单据→对手方，零文本解析），附 payment_rows
+    （前端渲染"1 笔付款 · 客户 X · 订单 Y · $Z · 逾期 N 天"）；归并不到 → payment_rows=[]+payment_note
+    诚实空态白话。PAY-* id 不再进订单行 SQL（它们是付款不是订单行，按"悬空行"标注是误导）。
+    risk 缺省 None → 载荷逐字节不变（非付款锚风险不带 payment_* 键）。"""
     line_ids = _json_ids(affected_so_line_ids)
+    pay_anchor = risk is not None and (
+        risk.get("rule_id") in _PAYMENT_ANCHOR_RULES
+        or any(str(i).startswith("PAY") for i in line_ids))
+    if pay_anchor:                           # 付款 id 走付款归并链，不冒充订单行 id 去查 SO 行
+        line_ids = [i for i in line_ids if not str(i).startswith("PAY")]
     if not line_ids:
-        return {"affected_order_lines": 0, "amount_usd": 0.0, "affected_customers": 0,
-                "note": "该风险未关联具体订单行（如费用/单据类风险），无订单行级影响可算——"
-                        "非缺数，是这类风险本就不落到订单行上。"}
+        out: dict[str, Any] = {
+            "affected_order_lines": 0, "amount_usd": 0.0, "affected_customers": 0,
+            "note": "该风险未关联具体订单行（如费用/单据类风险），无订单行级影响可算——"
+                    "非缺数，是这类风险本就不落到订单行上。"}
+        return _augment_payment_rows(con, out, risk) if pay_anchor else out
     placeholders = ",".join("?" * len(line_ids))
     rows = con.execute(
         f"""SELECT sol.so_line_id, sol.qty, sol.unit_price_usd, so.customer_id
@@ -88,13 +103,31 @@ def impact_block(con: sqlite3.Connection, affected_so_line_ids: Any) -> dict:
         amount += (r["qty"] or 0) * (r["unit_price_usd"] or 0.0)
         if r["customer_id"]:
             customers.add(r["customer_id"])
-    out: dict[str, Any] = {
+    out = {
         "affected_order_lines": len(seen), "amount_usd": round(amount, 2),
         "affected_customers": len(customers),
         "requested_line_ids": len(line_ids), "resolved_line_ids": len(seen)}
     if len(seen) < len(line_ids):            # 悬空 id 如实标注（脏数据不猜、不冒充完整）
         out["note"] = (f"{len(line_ids) - len(seen)} 个受影响订单行 id 在本世界库中查无对应行"
                        f"（已按现存 {len(seen)} 行如实计算，未猜测缺失行的金额/客户）。")
+    return _augment_payment_rows(con, out, risk) if pay_anchor else out
+
+
+def _augment_payment_rows(con: sqlite3.Connection, out: dict, risk: dict | None) -> dict:
+    """付款锚风险的影响块增量：cockpit._payment_impact 单一来源归并（不复制第二份逻辑）。
+    有归并行 → note 改指认付款行（"未关联订单行"与下方付款行并排是自相矛盾话术）；
+    归并不到 → payment_rows=[] + payment_note 诚实空态（沿用 cockpit 白话原文）。
+    金额键 amount_usd 在 payment_rows 内 → build_evidence 装配末端统一按角色掩码，不开新洞。"""
+    tables = _tables(con)
+    _, clock = _world_window(con, tables)
+    pay = _payment_impact(con, tables, risk, clock)
+    out["payment_rows"] = pay["rows"]
+    if pay["rows"]:
+        if not out.get("affected_order_lines"):
+            out["note"] = ("该风险锚在付款不在订单行——影响以付款归并行呈现"
+                           "（付款→单据→对手方，与 cockpit 影响面板同一归并链）。")
+    elif pay.get("note"):
+        out["payment_note"] = pay["note"]
     return out
 
 
@@ -375,7 +408,7 @@ def build_evidence(con: sqlite3.Connection, task: sqlite3.Row, risk: dict | None
         "task_id": task["task_id"], "risk_event_id": task["risk_event_id"],
         "proposed_action": task["proposed_action"], "approval_status": task["approval_status"],
         "role": role,
-        "impact": impact_block(con, risk.get("affected_so_line_ids")) if risk else
+        "impact": impact_block(con, risk.get("affected_so_line_ids"), risk=risk) if risk else
                   {"available": False, "reason": "该提案关联的风险事件在本世界库中查无，无法计算影响面。"},
         "precedents": prec,
         "trust": trust_block(rule_id),

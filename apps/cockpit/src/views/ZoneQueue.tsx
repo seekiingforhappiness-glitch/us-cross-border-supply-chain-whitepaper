@@ -76,10 +76,51 @@ export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, ac
   const [mineLoading, setMineLoading] = useState(false);
   const [mineErr, setMineErr] = useState(false);
 
+  // 供应商队列合规排序（K·P1，轮3 林律"风险管理系统该把风险项排到我面前"）：仅 compliance/manager
+  // 显示 chip（本体 Supplier.uflpa_risk_flag visibleTo 同集——无权角色不摆假按钮，与后端 422 门同源）。
+  // 切"按合规风险"→ 带 sort=compliance 重取 vitals，仅取其 suppliers 区覆盖显示（同"我组的"模式，
+  // 不污染 App 共享 vitals；排序与字段全由后端做，前端只透传）。
+  const canCompSort = zone.zone === "suppliers" && (role === "compliance" || role === "manager");
+  const [compSort, setCompSort] = useState(false);
+  const [compZone, setCompZone] = useState<Zone | null>(null);
+  const [compLoading, setCompLoading] = useState(false);
+  const [compErr, setCompErr] = useState(false);
+
   // 离开可筛区 / 换角色 → 复位到"全部"（不把上一次筛选态带去别处）。
   useEffect(() => {
     if (!canFilter) setMineOnly(false);
   }, [canFilter, role]);
+
+  // 离开供应商区 / 换角色 → 复位到"按交期"（缺省口径），不残留排序态。
+  useEffect(() => {
+    if (!canCompSort) setCompSort(false);
+  }, [canCompSort, role]);
+
+  // "按合规风险"激活 → 拉取 sort=compliance 的 vitals（世界跟随 api 模块级单例，随 X-Role/asOf）。
+  useEffect(() => {
+    if (!compSort || !canCompSort) {
+      setCompZone(null);
+      setCompErr(false);
+      return;
+    }
+    let cancelled = false;
+    setCompLoading(true);
+    setCompErr(false);
+    fetchVitals(role, asOf, true, undefined, "compliance")
+      .then((v) => {
+        if (cancelled) return;
+        setCompZone(v.zones.find((z) => z.zone === "suppliers") ?? null);
+        setCompLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCompErr(true);
+        setCompLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [compSort, canCompSort, role, asOf]);
 
   // "我组的"激活 → 拉取过滤后的 decisions 区（世界跟随 api 模块级单例，随 X-Role/asOf）。
   useEffect(() => {
@@ -108,8 +149,9 @@ export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, ac
   }, [mineOnly, canFilter, role, asOf]);
 
   const filtering = mineOnly && canFilter;
-  // 队列列表用过滤后的 decisions 区；告警计数/聚合上下文仍用原区（超期/升级是独立信号，不随"我组的"变）。
-  const listZone = filtering && mineZone ? mineZone : zone;
+  const compSorting = compSort && canCompSort;
+  // 队列列表用过滤/重排后的区；告警计数/聚合上下文仍用原区（超期/升级是独立信号，不随筛选排序变）。
+  const listZone = filtering && mineZone ? mineZone : compSorting && compZone ? compZone : zone;
 
   // 清关卡点逐票队列（轮3-G）：仅履约区取数——角色/世界随 X-Role/X-World 头同源（脱敏后端做）。
   const isFulfillment = zone.zone === "fulfillment";
@@ -161,16 +203,40 @@ export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, ac
         我组的
       </button>
     </div>
+  ) : canCompSort ? (
+    // K·P1：供应商队列排序 chip（复用 cp-qfilter 分段式两钮）——仅合规/经理可见（同后端 422 门）。
+    <div className="cp-qfilter" role="group" aria-label="供应商队列排序">
+      <button
+        type="button"
+        className={`cp-qfilter__chip ${!compSort ? "is-on" : ""}`}
+        aria-pressed={!compSort}
+        onClick={() => setCompSort(false)}
+        title="按交期达成率升序（最差在前，缺省口径）"
+      >
+        按交期
+      </button>
+      <button
+        type="button"
+        className={`cp-qfilter__chip ${compSort ? "is-on" : ""}`}
+        aria-pressed={compSort}
+        onClick={() => setCompSort(true)}
+        title="UFLPA 命中优先、次按资质显式异常、再按交期升序（合规风险排到面前）"
+      >
+        按合规风险排序
+      </button>
+    </div>
   ) : undefined;
 
   // 空态：筛选态显诚实"当前没有指派给〈角色〉的待批提案"；加载失败给可操作出路；否则沿用区级 emptyHint。
   const emptyHint = mineErr
     ? "「我组的」筛选加载失败——请切回「全部」或稍后重试"
-    : filtering
-      ? `当前没有指派给「${roleLabel(role)}」的待批提案`
-      : isFulfillment && customsErr
-        ? "清关卡点逐票队列加载失败——稍后重试；卡点计数仍见下方聚合。"
-        : EMPTY_HINT[zone.zone] ?? "本区无逐条队列——见下方聚合指标。";
+    : compErr
+      ? "「按合规风险排序」加载失败——请切回「按交期」或稍后重试"
+      : filtering
+        ? `当前没有指派给「${roleLabel(role)}」的待批提案`
+        : isFulfillment && customsErr
+          ? "清关卡点逐票队列加载失败——稍后重试；卡点计数仍见下方聚合。"
+          : EMPTY_HINT[zone.zone] ?? "本区无逐条队列——见下方聚合指标。";
 
   // 履约区队列＝清关卡点逐票（轮3-G）；其余区沿用 zoneQueue 聚合映射。
   const spec = isFulfillment ? (customs ? customsSpec(customs) : null) : zoneQueue(listZone);
@@ -185,7 +251,8 @@ export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, ac
         ? "告警数=超期任务+升级件，不是待批提案数（待批数见卡片大数字与下方列表行数）"
         : undefined}
       filterChips={filterChips}
-      loading={(filtering && mineLoading && !mineZone) || (isFulfillment && customsLoading && !customs)}
+      loading={(filtering && mineLoading && !mineZone) || (compSorting && compLoading && !compZone) || (isFulfillment && customsLoading && !customs)}
+      loadingTitle={filtering ? "按你组筛选中…" : compSorting ? "按合规风险重排中…" : "队列加载中…"}
       headerActions={
         zone.zone === "fulfillment" && onMap ? (
           <button className="cp-switch-btn" onClick={onMap}>

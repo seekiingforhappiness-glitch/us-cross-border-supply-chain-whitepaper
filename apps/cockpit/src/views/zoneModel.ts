@@ -15,6 +15,7 @@ import {
   type Missing,
   type ObjectRef,
   type Role,
+  type SupplierComplianceDimension,
   type Zone,
   type ZoneId,
 } from "../api";
@@ -406,19 +407,54 @@ function customersQueue(z: Zone): QueueSpec {
 function suppliersQueue(d: D): QueueSpec | null {
   const delivery = d.delivery_hit_rate;
   if (isMissing(delivery) || !delivery) return null; // 缺收货域→无队列，聚合上下文承接
-  const dv = delivery as { worst_suppliers: { supplier_id: string; supplier_name: string; pos_measured: number; rate: number | null }[] };
+  const dv = delivery as {
+    worst_suppliers: {
+      supplier_id: string;
+      supplier_name: string;
+      pos_measured: number;
+      rate: number | null;
+      // K·P1 合规三键：仅 compliance/manager 载荷带（本体 visibleTo；其他角色根本不带，非掩码）。
+      // uflpa_risk_flag/qual_abnormal 是后端规整/派生 bool——判定规则单一来源在后端，前端只读。
+      uflpa_risk_flag?: boolean;
+      qual_abnormal?: boolean;
+      factory_audit_status?: string | null;
+      compliance_docs_status?: string | null;
+    }[];
+  };
   const worst = dv.worst_suppliers ?? [];
+  // K·P1（轮3 林律"让我一家家点开核对 UFLPA 是体力活"）：合规维度摘要（仅授权角色载荷有此键）。
+  const comp = d.compliance_dimension as SupplierComplianceDimension | undefined;
+  const compSorted = comp?.available && comp.sort === "compliance";
   // J·P2（轮3 老周/林律"列表 PO 数 153 vs 对象卡关系采购单 167 对不上"）：两数是两种口径并存，
   // 非数据错——此列 pos_measured 只计"有收货记录、计入达成率分母"的采购单（后端 JOIN goods_receipts，
   // 见 _zone_suppliers），对象卡关系区"采购单"是该供应商全部采购单（含未收货，SUP-0010 实证
   // 167 全量 / 153 有收货）。列头点明 + basis 行白话讲清，不掩盖也不改后端。
+  const baseBasis =
+    "「PO 数（有收货）」只计有收货记录、计入达成率分母的采购单；对象卡关系区的「采购单」是全部采购单（含未收货），数字更大是口径差非数据错";
+  const orderBasis = compSorted
+    ? "按合规风险排序（UFLPA 命中优先、次按资质显式异常、再按交期达成率升序，API 口径）。"
+    : "按交期达成率升序（最差在前，API 口径）。";
+  // 零阳性诚实空态（sim 世界全库 UFLPA=0 时排序仍要能用）：后端 note 白话原文直出，不前端另造。
+  const compNote = comp?.available ? (comp.note ?? "") : (comp?.reason ?? "");
   return {
     columns: [{ label: "供应商" }, { label: "达成率", num: true }, { label: "PO 数（有收货）", num: true }],
-    basis:
-      "按交期达成率升序（最差在前，API 口径）。「PO 数（有收货）」只计有收货记录、计入达成率分母的采购单；对象卡关系区的「采购单」是全部采购单（含未收货），数字更大是口径差非数据错",
+    basis: `${orderBasis}${baseBasis}${compNote ? `。${compNote}` : ""}`,
     rows: worst.slice(0, 20).map((s) => ({
       key: s.supplier_id,
-      badge: s.rate == null ? undefined : s.rate < 0.7 ? { text: "低", tone: "red" } : s.rate < 0.85 ? { text: "关注", tone: "amber" } : undefined,
+      // 合规红/琥珀标优先于交期标（合规视角下 UFLPA 是首要风险信号）；载荷没带合规键（未授权角色/
+      // 缺列世界）→ 原交期徽标原样（数据没有就不渲染，不编造）。
+      badge:
+        s.uflpa_risk_flag === true
+          ? { text: "UFLPA", tone: "red" as const }
+          : s.qual_abnormal === true
+            ? { text: "资质异常", tone: "amber" as const }
+            : s.rate == null
+              ? undefined
+              : s.rate < 0.7
+                ? { text: "低", tone: "red" as const }
+                : s.rate < 0.85
+                  ? { text: "关注", tone: "amber" as const }
+                  : undefined,
       cells: [{ text: s.supplier_name }, { text: formatPct(s.rate), num: true, tone: s.rate != null && s.rate < 0.85 ? "neg" : undefined }, { text: formatInt(s.pos_measured), num: true }],
       drill: { kind: "object", ref: { type: "Supplier", id: s.supplier_id }, title: s.supplier_name },
     })),

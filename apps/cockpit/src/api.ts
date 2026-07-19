@@ -338,14 +338,32 @@ export interface Vitals {
 // provenance（U2）：驾驶舱恒开（七区卡溯源浮层要用），后端为纯附加键（不影响既有字段）。
 // assigneeRole（V22 任务1"我组的"）：可选——仅筛 decisions 区待批提案列表为"指派给该角色"的行，
 // 其余区不变；缺省不传该参数 → 全响应 byte-identical（老板收件箱=全部 pending）。非法值后端 422。
-export const fetchVitals = (role: Role, asOf?: string | null, provenance = true, assigneeRole?: Role | null) => {
+// sort（K·P1 供应商合规排序）：仅 "compliance"——供应商队列 UFLPA 命中优先→资质异常→交期升序；
+// 仅 compliance/manager 角色可传（其他角色后端 422 白话），缺省不传=交期升序 byte-identical。
+export const fetchVitals = (role: Role, asOf?: string | null, provenance = true, assigneeRole?: Role | null, sort?: "compliance" | null) => {
   const qs = new URLSearchParams();
   if (asOf) qs.set("as_of", asOf);
   if (provenance) qs.set("provenance", "1");
   if (assigneeRole) qs.set("assignee_role", assigneeRole);
+  if (sort) qs.set("sort", sort);
   const q = qs.toString();
   return apiGet<Vitals>(`/cockpit/vitals${q ? `?${q}` : ""}`, role);
 };
+
+// ═══════════════ 供应商队列合规维度（K·P1，仅 compliance/manager 载荷含）═══════════════
+// 本体 Supplier.uflpa_risk_flag visibleTo=[compliance,manager]——其他角色载荷里**根本不带**这些键
+// （不是掩码）。行级 uflpa_risk_flag/qual_abnormal 均为后端规整/派生 bool（判定规则单一来源在后端，
+// 前端只读不复刻）；compliance_dimension 为区级摘要（全库计数+口径 basis+零阳性诚实 note）。
+export interface SupplierComplianceDimension {
+  available: boolean;
+  reason?: string; // available:false（该世界缺合规列）
+  sort?: "compliance" | "default" | string;
+  uflpa_flagged_total?: number; // 全库现查（含无收货记录、不在队列里的供应商）
+  qual_abnormal_total?: number;
+  suppliers_total?: number;
+  basis?: string;
+  note?: string; // 零阳性时的诚实空态白话（"当前无 UFLPA 标记供应商…"）
+}
 
 // ═══════════════════════════════ /cockpit/panorama ═══════════════════════════════
 export interface PanoAlert {
@@ -964,6 +982,10 @@ export interface EvidenceImpact {
   requested_line_ids?: number;
   resolved_line_ids?: number;
   note?: string; // 无订单行 / 悬空 id 的白话说明（诚实非缺数）
+  // 付款锚增量（轮3-Opus 歧义3 清偿）：R19/R21 提案附付款归并行（与 /cockpit/risk-impact 同一
+  // 归并链、同一行形状）；非付款锚提案**不带**此键（byte-identical）。归并不到 → 空数组 + payment_note。
+  payment_rows?: PaymentImpactRow[];
+  payment_note?: string; // 归并不到时的诚实空态白话（锚付款无法唯一定位等）
 }
 
 export interface EvidenceEffectiveness {
