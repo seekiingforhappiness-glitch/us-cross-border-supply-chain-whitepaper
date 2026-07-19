@@ -4,6 +4,18 @@
 
 ## 当前位置
 
+> **V19/批A 环境坑防复发闭环（2026-07-19，独立会话）**：批A 教训"新 backfill 的 simworld 必须
+> 补跑 apply_seam_columns 否则 sim 审批 500"靠人记得——重建路径未堵（write_simworld unlink 后只按
+> OBJECT/SIM/S2 DDL 建表，三运营态表+接缝列必丢，TDD RED 实证）。修法：sim/store.py 落库尾接线
+> 迁移工具（apply + ensure_operational_tables，DDL 单一来源、幂等、lazy import 不破 engine/agent
+> 隔离），重建即带表。双层回归看守：sim/test_store.py（生成即带三运营表+trace_id+接缝列/触发器；
+> 同世界两次落库逐字节一致）+ apps/api/test_decisions_sim.py（X-World: sim 带理由审批 → 200 +
+> 审计落 sim 库 action_log；负验证实证丢表副本同请求=500，用例看守力成立）。验收：pytest
+> apps/api 148 全绿（+1）/sim+pipeline 11 全绿（+2）/sim.verify 复现性逐字节一致 PASS。
+> **候 Daniel 裁决（非本次引入，stash 基线对照证实）**：sim.verify 残余 3 failed（source='sim' 纯度/
+> sim-approver-01 命名/先例 -SIM- 标识）系活演示库被驾驶舱真实审批写入后，运营态内容不再满足
+> "纯生成物"断言——verify 口径（只管生成物 vs 也管活库）属判定逻辑，AGENTS §5 禁自改，已留任务卡。
+
 > **V22 五道裁决全批 + 健壮性/UX 常任授权（2026-07-19，Daniel 原话"5项都要。以后这种明显提升
 > 健壮性和用户体验的，自己决定就好了"）**：决策日志 V22 已入账，AGENTS §4 增常任授权行。
 > 执行批次：**批A 已收官（597773b）**：④默认模拟世界（sim 库缺失时报错指路+一键回验证世界）

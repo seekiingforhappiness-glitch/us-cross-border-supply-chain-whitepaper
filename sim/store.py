@@ -454,4 +454,13 @@ def write_simworld(world, cfg, path=None):
         counts[name] = len(rows)
     con.commit()
     con.close()
+    # 迁移接线（V19/V22批A 勘误防复发，2026-07-19）：重建即带 ①三张运营态表（action_log/dq_issues/
+    #   integration_outbox——否则重建后 sim 库承接不了写动作，审批/催办在 app.actions._log 撞
+    #   "no such table" → HTTP 500）②接缝列 version/tenant_id + 版本触发器（乐观并发接缝）。
+    #   V19/批A 只迁移了存量库并靠人记得"重建后补跑 apply_seam_columns"，此处堵死重建路径。
+    #   DDL 单一来源复用迁移工具（幂等空表/ALTER，逐次生成字节仍一致，sim/test_store.py 看守）；
+    #   lazy import：apply_seam_columns 依赖链纯 pipeline/标准库，不拉 engine/agent，头部隔离原则不破。
+    from pipeline.apply_seam_columns import apply, ensure_operational_tables
+    apply(path)
+    ensure_operational_tables(path)
     return counts
