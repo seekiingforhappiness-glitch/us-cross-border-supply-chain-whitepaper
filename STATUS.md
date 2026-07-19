@@ -23,9 +23,17 @@
 > 全 API X-Role 同源（钱区可见/UFLPA 掩码/审批 403"当前是财务 finance"白话/scope parity 含
 > finance 全绿）——陈会计四任务三解。顺手修 test_coordination_loop 快照锈蚀（四键仍逐值精确）。
 > 回归：pytest 143（+11）/coordination_loop/security 288/parity/lint 0/digest 9582dcb0 不变。
-> **V22 五项全部落地。批D 挂账**：其余角色（cs/procurement/compliance/sales）复制接入、
-> "我的任务"按角色过滤视图（涉 API 聚合语义）、open_coordination 进驾驶舱、协调写 helper
-> 下沉 api.ts、AI 工作流卡面 mode 徽标（需后端 ai-flow 补字段）。
+> **V22 五项全部落地。批D 已收官**：其余四角色接入（cs/procurement/compliance/sales，
+> 注册表各一行+声明依据 hint；COORD_UI_ROLES 补齐至与 COORD_PERMS 同集；七角色切换走查零
+> 控制台错误；compliance/sales 协作流只读不渲染假按钮）。回归 pytest 147（+4）/parity 七角色/
+> lint 0/digest 不变。**批D 附带发现（候 Daniel，触权限边界不自行修）**：对象读端点
+> /objects/{type}/{id} 对 Invoice/CostScenario 的组式脱敏规则显式跳过（masker 自述"门槛1
+> 本次不动"）——cs/sales 可读发票 total_usd 真值（主会话三角色对照实证 2849.9）。严格说
+> total_usd 不在具名声明清单、四个具名字段声明自述"会话层脱敏"，属声明语义模糊+执行不全覆盖
+> 灰区，与"ai-flow note 金额 ops 不脱敏"同族=**脱敏声明化二期**的裁决素材。
+> **余量挂账**："我的任务"按角色过滤（候 Daniel 答"财务进来先看自己的活还是先看全局"）、
+> open_coordination 进驾驶舱、协调写 helper 下沉 api.ts、AI 卡面 mode 徽标（需后端补字段）、
+> DEMO_ROSTER 补 compliance/sales 条目（若两角色未来获写权限）。
 
 > **双线合流说明（2026-07-19，升级编排会话执行 merge）**：07-18/19 夜间两条会话线**并行且互不知情**
 > 地各自推进了 L-UX 循环——handoff 线（V21 三裁决落地 + L-UX-1 收环宣告）与升级编排线（轮1 复测
