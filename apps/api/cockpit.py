@@ -1282,6 +1282,49 @@ def _build_panorama(con, tables: set[str], replay_risk: bool = False,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# AI 工作流条目「执行方式」徽标（L-UX 轮2 诚实跳过项的清偿，不变量11 标注义务）
+# ═══════════════════════════════════════════════════════════════════════════
+# 为什么这样建（≤5 行，AGENTS.md §4）：
+#   · 前端要标注「确定性剧本 vs 真模型」，但 ai-flow 载荷原本无 mode 字段——本函数只在**可判定**
+#     的条目上补 mode（'deterministic'|'llm'），判不了的绝不编造（宁缺勿造，同 provenance 的诚实空态）。
+#   · 唯一可靠的 ai_action→run 桥接是 commands 台账的幂等键：runtime 写步骤的键形如 run:{run_id}:{step_no}
+#     （agent/runtime.py::_execute），且 commands.object_id == action_log.target_object_id（assign/propose
+#     两写动作 object_id 即 task_id，两表同值）。据此从 run 的 think 步 result_json.mode 现查该动作的执行方式。
+#   · 纯读、零写、不改任何事件语义；缺 commands/agent_run_steps 表的世界→空映射→无条目带 mode（byte-identical）。
+def _runtime_ai_action_modes(con, tables: set[str]) -> dict[tuple[str, str], str]:
+    """预建 {(action, object_id): mode} 映射——把 runtime 派生的 ai_action 连回其 run 的 think 步执行方式。
+
+    桥接链：action_log(ai-agent 写) ── (action, target_object_id) ── commands(idempotency_key='run:RUN:step')
+            ── run_id ── agent_run_steps(kind='think').result_json.mode。
+    只收无歧义键（同一 (action, object_id) 落在多个 run 且 mode 冲突时不入表——判不了不编造）。
+    缺表世界返回空 dict（调用方据此不给任何条目补 mode，与改动前载荷逐字等价）。"""
+    if "commands" not in tables or "agent_run_steps" not in tables:
+        return {}
+    # run_id → mode（每 run 取首个 think 步；一 run 一 think、其 mode 全程恒定，见 runtime._think）
+    run_mode: dict[str, str] = {}
+    for r in con.execute("SELECT run_id, result_json FROM agent_run_steps "
+                         "WHERE kind='think' ORDER BY run_id, step_no"):
+        if r["run_id"] in run_mode or not r["result_json"]:
+            continue
+        try:
+            m = (json.loads(r["result_json"]) or {}).get("mode")
+        except (ValueError, TypeError):
+            m = None
+        if m in ("llm", "deterministic"):
+            run_mode[r["run_id"]] = m
+    # (action, object_id) → 该键涉及的 mode 集合（经 run-keyed 命令桥接）
+    keyed: dict[tuple[str, str], set[str]] = {}
+    for r in con.execute("SELECT action, object_id, idempotency_key FROM commands "
+                         "WHERE idempotency_key LIKE 'run:%' AND object_id IS NOT NULL"):
+        parts = r["idempotency_key"].split(":")     # run:{run_id}:{step_no}
+        m = run_mode.get(parts[1]) if len(parts) >= 2 else None
+        if m is not None:
+            keyed.setdefault((r["action"], r["object_id"]), set()).add(m)
+    # 只保留唯一 mode 的键（歧义键剔除，不编造）
+    return {k: next(iter(v)) for k, v in keyed.items() if len(v) == 1}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # AI 工作流时间线（ai-flow）builder
 # ═══════════════════════════════════════════════════════════════════════════
 def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) -> list[dict]:
@@ -1299,7 +1342,10 @@ def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) 
     排序键 = (ts 字符串, 各来源内行序) 倒序；sim_date 为日期粒度（无时分秒），与带时间戳来源
     同日混排时排在该日时间戳条目之前，docstring 如实声明不补造时刻。
     回放（as_of，见模块 docstring）：各来源按自身时间戳 ≤ as_of 过滤——事件日志天然可回放（只看"截至
-    当日已发生"的留痕）；as_of=None（缺省）→ 无过滤，与改动前逐字等价 ⇒ byte-identical。"""
+    当日已发生"的留痕）；as_of=None（缺省）→ 无过滤，与改动前逐字等价 ⇒ byte-identical。
+    执行方式徽标（mode，不变量11）：**可判定**的条目补 mode（'deterministic'|'llm'）——llm_call 天然 'llm'；
+    ai_action 经 _runtime_ai_action_modes 从其 run 的 think 步现查。判不了的条目（task_flow / sim / 无 run
+    桥接的 ai_action）不带 mode 字段（不编造）。缺 runtime 表的世界→映射空→无条目带 mode（载荷 byte-identical）。"""
     def _ts_filter(expr: str, has_where: bool) -> tuple[str, tuple]:
         """ts≤as_of 过滤片段。as_of=None → ('',())：拼出的 SQL 与原句逐字相同。"""
         if not as_of:
@@ -1307,6 +1353,7 @@ def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) 
         return (f"{'AND' if has_where else 'WHERE'} {expr} <= ? ", (as_of,))
 
     items: list[tuple[str, str, dict]] = []      # (ts, tiebreak, item)
+    ai_action_modes = _runtime_ai_action_modes(con, tables)  # (action, object_id) → mode（判不了的键不在表中）
 
     if "llm_calls" in tables:
         f, p = _ts_filter("date(created_at)", False)
@@ -1319,6 +1366,7 @@ def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) 
                 "summary": f"AI 调用 {r['call_type']} via {r['provider']}"
                            f"{'/' + r['model'] if r['model'] else ''}（{r['status']}）",
                 "ref_object": r["trace_id"], "sim": False,
+                "mode": "llm",                     # llm_call 天然是真模型调用（含降级/失败的出境尝试）
                 "detail": {"call_type": r["call_type"], "provider": r["provider"],
                            "model": r["model"], "status": r["status"],
                            "duration_ms": r["duration_ms"],
@@ -1337,14 +1385,18 @@ def _build_ai_flow(con, tables: set[str], limit: int, as_of: str | None = None) 
                 "SELECT log_id, actor, role, action, target_object_id, params_json, "
                 "timestamp, result FROM action_log WHERE actor='ai-agent' "
                 f"{f}ORDER BY timestamp DESC, log_id DESC LIMIT ?", (*p, limit)):
-            items.append((r["timestamp"], f"log:{r['log_id']:012d}", {
+            item = {
                 "ts": r["timestamp"], "kind": "ai_action",
                 "summary": f"AI（role={r['role']}）执行 {r['action']} → "
                            f"{r['target_object_id']}（{r['result']}）",
                 "ref_object": r["target_object_id"], "sim": False,
                 "detail": {"actor": r["actor"], "role": r["role"], "action": r["action"],
                            "result": r["result"],
-                           "proposal_params": _parse_params(r["params_json"])}}))
+                           "proposal_params": _parse_params(r["params_json"])}}
+            mode = ai_action_modes.get((r["action"], r["target_object_id"]))
+            if mode:                               # 判得了才补（runtime 派生的 ai_action）；判不了不带 mode
+                item["mode"] = mode
+            items.append((r["timestamp"], f"log:{r['log_id']:012d}", item))
         ph = ",".join("?" * len(_TASK_FLOW_ACTIONS))
         f2, p2 = _ts_filter("date(timestamp)", True)
         for r in con.execute(

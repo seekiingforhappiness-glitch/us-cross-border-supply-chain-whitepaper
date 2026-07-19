@@ -261,7 +261,7 @@ def test_channel_whitelist_and_ai_face_invariants(api):
     onto = load_ontology()
     coord_snake = {snake_case(n) for n in COORD_ACTIONS}
 
-    # (a) OpenCoordination（开新线程，本批不做）→ 404，白话说明去处；未知动作同样 404
+    # (a) OpenCoordination 走独立 POST /threads 路由，不在本转移通道 → 此路由 404，白话说明去处；未知动作同样 404
     t = _thread_in_state(scon, "awaiting", exclude=_used_sim_ids)
     for bad in ("OpenCoordination", "open_coordination", "no_such_action"):
         r = client.post(f"/collaboration/threads/{t['coordination_id']}/actions/{bad}",
@@ -295,6 +295,130 @@ def test_channel_whitelist_and_ai_face_invariants(api):
                          "WHERE coordination_id=?", (te["coordination_id"],)).fetchone()
     assert after["state"] == "responded"
     assert "8/30" in (after["last_response"] or "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ⑧ 发起新协调线程 POST /collaboration/threads（V22② 余量清偿，独立于 {id}/actions 路由）
+#   成功创建 + audit(OpenCoordination ok) + commands 台账 + 幂等重放不重复建 / 越权 403 / task 不存在
+#   422 白话 / counterparty 枚举 422 白话 / 缺 X-Actor 422。写入原样走 open_coordination（语义一行不改）。
+# ═══════════════════════════════════════════════════════════════════════════
+def _a_task(con: sqlite3.Connection) -> dict:
+    """现查一条 Task 做协调锚点（勿硬编码 id）。"""
+    row = con.execute("SELECT task_id, risk_event_id FROM tasks ORDER BY task_id LIMIT 1").fetchone()
+    assert row is not None, "临时库应有 Task（演示数据前置）"
+    return dict(row)
+
+
+def test_open_coordination_success_creates_thread_and_audits(api):
+    client, _vcon, scon = api
+    task = _a_task(scon)
+    n_before = scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0]
+    cmd_before = scon.execute(
+        "SELECT count(*) FROM commands WHERE action='OpenCoordination'").fetchone()[0]
+
+    r = client.post(
+        "/collaboration/threads",
+        json={"task_id": task["task_id"], "counterparty_type": "supplier",
+              "counterparty_ref": "SUP·工厂A", "ask": "工厂确认改期后交期（测试）",
+              "next_action_due": "2026-08-30"},
+        headers={**SIM, "X-Role": "ops", "X-Actor": OPS_ACTOR})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["object_id"], body
+    cid = body["object_id"]
+
+    # 线程真落库（+1）、状态 awaiting、锚到该 Task、owner=发起人（缺省兜底）
+    row = scon.execute("SELECT * FROM coordination_threads WHERE coordination_id=?",
+                       (cid,)).fetchone()
+    assert row is not None
+    assert row["task_id"] == task["task_id"] and row["state"] == "awaiting"
+    assert row["counterparty_type"] == "supplier" and row["owner"] == OPS_ACTOR
+    assert scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0] == n_before + 1
+
+    # audit（OpenCoordination ok，actor=真实操作人）+ commands 台账（经写总线）
+    assert _audit_count(scon, "OpenCoordination", cid, "ok") == 1
+    log = scon.execute("SELECT actor FROM action_log WHERE action='OpenCoordination' "
+                       "AND target_object_id=? AND result='ok'", (cid,)).fetchone()
+    assert log["actor"] == OPS_ACTOR, "审计 actor 必须是 X-Actor 透传的真实操作人"
+    assert scon.execute("SELECT count(*) FROM commands WHERE action='OpenCoordination'"
+                        ).fetchone()[0] == cmd_before + 1, "发起协调必须经 execute_command 落 commands 台账"
+
+
+def test_open_coordination_idempotent_replay_creates_once(api):
+    client, _vcon, scon = api
+    task = _a_task(scon)
+    key = "open-coord-idem-test-1"
+    payload = {"task_id": task["task_id"], "counterparty_type": "forwarder",
+               "counterparty_ref": "FWD·货代B", "ask": "货代确认改配船期（幂等测试）",
+               "next_action_due": "2026-09-01"}
+    hdrs = {**SIM, "X-Role": "ops", "X-Actor": OPS_ACTOR, "Idempotency-Key": key}
+    n_before = scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0]
+
+    r1 = client.post("/collaboration/threads", json=payload, headers=hdrs)
+    r2 = client.post("/collaboration/threads", json=payload, headers=hdrs)
+    assert r1.status_code == 200 and r2.status_code == 200, (r1.text, r2.text)
+    assert r1.json()["object_id"] == r2.json()["object_id"], "同幂等键重放必须返回同一线程号"
+    assert scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0] == n_before + 1, \
+        "同幂等键重放不得重复建线程（恰建一次）"
+
+
+def test_open_coordination_unauthorized_manager_403_with_denied_audit(api):
+    client, _vcon, scon = api
+    task = _a_task(scon)
+    assert "manager" not in COORD_PERMS["ManageCoordination"]
+    n_before = scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0]
+
+    r = client.post(
+        "/collaboration/threads",
+        json={"task_id": task["task_id"], "counterparty_type": "supplier",
+              "counterparty_ref": "x", "ask": "经理越权发起（应 403）",
+              "next_action_due": "2026-08-30"},
+        headers={**SIM, "X-Role": "manager", "X-Actor": MANAGER_ACTOR})
+    assert r.status_code == 403, r.text
+    # 越权不得建线程；denied 审计留痕（app 层 _denied，target=task_id）
+    assert scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0] == n_before, \
+        "越权发起不得建线程"
+    assert _audit_count(scon, "OpenCoordination", task["task_id"], "denied%") >= 1, \
+        "越权必须走 _denied 审计留痕"
+
+
+def test_open_coordination_missing_task_422_plainhint(api):
+    client, _vcon, _scon = api
+    r = client.post(
+        "/collaboration/threads",
+        json={"task_id": "TSK-DOES-NOT-EXIST", "counterparty_type": "supplier",
+              "counterparty_ref": "x", "ask": "锚到不存在的任务（应拒）",
+              "next_action_due": "2026-08-30"},
+        headers={**SIM, "X-Role": "ops", "X-Actor": OPS_ACTOR})
+    assert r.status_code == 422, r.text
+    assert "TSK-DOES-NOT-EXIST" in r.json()["detail"] and "不存在" in r.json()["detail"], \
+        "task 不存在应白话报错并点名缺失的锚点"
+
+
+def test_open_coordination_bad_counterparty_type_422_plainhint(api):
+    client, _vcon, _scon = api
+    task = _a_task(_vcon)  # verify 世界任取一条 Task
+    r = client.post(
+        "/collaboration/threads",
+        json={"task_id": task["task_id"], "counterparty_type": "not-a-type",
+              "counterparty_ref": "x", "ask": "非法对手方类型（应拒）",
+              "next_action_due": "2026-08-30"},
+        headers={**VERIFY, "X-Role": "ops", "X-Actor": OPS_ACTOR})
+    assert r.status_code == 422, r.text
+    assert "counterparty_type" in r.json()["detail"], "枚举校验应白话点名字段"
+
+
+def test_open_coordination_missing_x_actor_422(api):
+    client, _vcon, scon = api
+    task = _a_task(scon)
+    r = client.post(
+        "/collaboration/threads",
+        json={"task_id": task["task_id"], "counterparty_type": "supplier",
+              "counterparty_ref": "x", "ask": "缺 X-Actor（应拒）",
+              "next_action_due": "2026-08-30"},
+        headers={**SIM, "X-Role": "ops"})
+    assert r.status_code == 422, r.text
+    assert "X-Actor" in r.json()["detail"]
 
 
 if __name__ == "__main__":

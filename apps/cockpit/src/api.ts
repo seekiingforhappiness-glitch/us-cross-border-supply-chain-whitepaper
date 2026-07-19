@@ -156,6 +156,60 @@ export async function postDecision(
   return (await resp.json()) as DecisionResult;
 }
 
+// ── 协调对手方类型枚举（发起协调下拉源）──────────────────────────────────────
+// 镜像 app/coordination_actions.py::COUNTERPARTY_TYPES（= 本体 CoordinationThread.counterparty_type
+// values）；后端仍是权威（非法值 422 白话）。前端下拉用这份，避免用户手打错。
+export const COUNTERPARTY_TYPES = ["supplier", "forwarder", "customs_broker", "bank", "customer"] as const;
+export type CounterpartyType = (typeof COUNTERPARTY_TYPES)[number];
+export const COUNTERPARTY_TYPE_CN: Record<CounterpartyType, string> = {
+  supplier: "供应商",
+  forwarder: "货代",
+  customs_broker: "报关行",
+  bank: "银行",
+  customer: "客户",
+};
+
+// 发起新协调线程（V22② 余量清偿）：POST /collaboration/threads（独立于 {id}/actions 转移通道）。
+// 与 postDecision 同构——X-Actor 必填 + 按意图记幂等键 + 白话错误原样透传（后端 detail 是中文原文）。
+// owner 不由前端填：后端缺省用发起人身份（open_coordination 要求非空，发起协调者天然是负责人）。
+export interface OpenCoordinationBody {
+  task_id: string;
+  counterparty_type: CounterpartyType;
+  counterparty_ref: string;
+  ask: string;
+  next_action_due: string;
+}
+export async function openCoordination(
+  body: OpenCoordinationBody,
+  role: Role,
+  actor: string,
+): Promise<DecisionResult> {
+  const { sig, key } = intentKeyFor("OpenCoordination", body as unknown as Record<string, unknown>, actor);
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE_URL}/collaboration/threads`, {
+      method: "POST",
+      // 写通道跟随当前世界（X-World，reqHeaders 带上）：模拟世界发起即写模拟库、验证世界写验证库。
+      headers: reqHeaders(role, { "Content-Type": "application/json", "X-Actor": actor, "Idempotency-Key": key }),
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw e; // 网络级失败：保留意图键，重试同意图复用同键（总线只执行一次）
+  }
+  if (resp.status !== 409) pendingIntentKeys.delete(sig);
+  if (!resp.ok) {
+    let detail = `提交失败：HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string" && j.detail) detail = j.detail;
+    } catch {
+      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as DecisionResult;
+}
+
 // ═══════════════════════════════ /cockpit/vitals ═══════════════════════════════
 export type ZoneId =
   | "money"
@@ -322,6 +376,9 @@ export interface AiFlowItem {
   summary: string;
   ref_object: string | null;
   sim: boolean;
+  // 执行方式徽标（不变量11）：后端仅在**可判定**的条目上补——llm_call 天然 'llm'；runtime 派生的
+  // ai_action 从其 run 的 think 步现查。判不了的条目（task_flow/sim/无桥接 ai_action）无此字段（不编造）。
+  mode?: "deterministic" | "llm";
   detail: Record<string, unknown>;
 }
 

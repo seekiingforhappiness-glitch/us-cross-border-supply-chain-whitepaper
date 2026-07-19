@@ -560,6 +560,21 @@ body {
   padding: 0 4px;
   letter-spacing: 0.05em;
 }
+/* 执行方式徽标（不变量11：确定性剧本 vs 真模型）——复用 SIM 徽标的小药丸图案，克制。
+   "真模型"=信标蓝(AI 信号，醒目)；"剧本"=弱化中性(它是无聊的默认，不该抢眼)。 */
+.cp-story__mode {
+  font-size: 9.5px;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 0 4px;
+  letter-spacing: 0.03em;
+  color: var(--ink-2);
+  border: 1px solid var(--line-strong);
+}
+.cp-story__mode[data-mode="llm"] {
+  color: var(--beacon);
+  border-color: var(--beacon-dim);
+}
 .cp-flow__empty {
   color: var(--ink-2);
   font-size: 12px;
@@ -958,6 +973,112 @@ body {
   margin-left: auto;
   color: var(--ink-2);
   font-size: 10px;
+}
+
+/* 发起协调（V22② 余量：处置任务区块的对外协调入口）——复用 cp-decide 系列的按钮/输入图案，克制。 */
+.cp-task-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cp-task-row .cp-link-btn {
+  flex: 1;
+}
+.cp-coord-open {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 4px 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--beacon-dim);
+}
+.cp-coord-open__toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--beacon);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.cp-coord-open__toggle:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--beacon) 12%, transparent);
+}
+.cp-coord-open__toggle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.cp-coord-open__form {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 2px 0 4px;
+}
+.cp-coord-open__hint {
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+.cp-coord-open__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--ink-1);
+}
+.cp-coord-open__ctrl {
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-0);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 4px 7px;
+}
+.cp-coord-open__row .cp-coord-open__ctrl {
+  flex: 1;
+}
+.cp-coord-open__acts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cp-coord-open__submit {
+  background: var(--beacon);
+  border: 1px solid var(--beacon);
+  border-radius: var(--radius-sm);
+  color: #04101f;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.cp-coord-open__submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.cp-coord-open__cancel {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.cp-coord-open__ok {
+  font-size: 10.5px;
+  color: var(--sev-green);
+}
+.cp-coord-open__err {
+  font-size: 10.5px;
+  color: var(--sev-red);
 }
 .cp-neighbors {
   margin: 4px 0 8px 14px;

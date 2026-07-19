@@ -140,12 +140,17 @@ function humanizeSummary(summary: string): string {
 // ── 故事卡类型 ──────────────────────────────────────────────────────────────
 export type StoryState = "detected" | "proposed" | "approved" | "rejected" | "closed" | "info";
 
+// 执行方式（不变量11）→ 人话徽标：仅后端判得了的条目带 mode，判不了则 undefined（卡面不渲染徽标）。
+export type ExecMode = "deterministic" | "llm";
+export const MODE_CN: Record<ExecMode, string> = { deterministic: "剧本", llm: "真模型" };
+
 export interface StoryEvent {
   ts: string;
   kind: string;
   kindLabel: string;
   text: string; // 人话化后的时间线描述
   ref: ObjectRef | null; // 该事件自身对象链接（点击行为不变）
+  mode?: ExecMode; // 该步执行方式（后端可判定才有）
 }
 export interface StoryLink {
   label: string;
@@ -159,6 +164,7 @@ export interface Story {
   amount: string | null; // 醒目金额串（可选）
   trail: string; // 主句后半（金额后）
   ts: string; // 最近事件 ts（排序 + 展示）
+  mode?: ExecMode; // 卡面执行方式徽标：取代表事件（驱动主句的那条）的 mode，判不了则 undefined 不渲染
   events: StoryEvent[]; // 时间线（时间升序）
   links: StoryLink[]; // 「查看详情」去重链接（风险 / 任务）
 }
@@ -230,6 +236,7 @@ export function buildStories(items: AiFlowItem[]): Story[] {
       kindLabel: KIND_CN[e.kind] ?? e.kind,
       text: sim ? humanizeNote(e.kind, String((e.detail as { note?: string })?.note ?? "")) : humanizeSummary(e.summary),
       ref: refToObjectRef(e.ref_object),
+      mode: e.mode, // 后端可判定才有；判不了则 undefined（徽标不渲染）
     }));
     const latestTs = sorted[sorted.length - 1].ts;
 
@@ -269,6 +276,8 @@ export function buildStories(items: AiFlowItem[]): Story[] {
       sim,
       ...composed,
       ts: latestTs,
+      // 卡面徽标 = 代表事件（驱动主句的那条 = 非 sim 卡的末条）的 mode；sim 卡无 mode（后端不判 sim 条目）。
+      mode: sim ? undefined : timeline[timeline.length - 1]?.mode,
       events: timeline,
       links,
     });

@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import {
+  COUNTERPARTY_TYPES,
+  COUNTERPARTY_TYPE_CN,
   fetchObject,
   formatInt,
   formatUsd,
   isMasked,
   MASK,
+  openCoordination,
   postDecision,
   traverse,
+  type CounterpartyType,
   type ObjectFields,
   type ObjectRef,
   type PanoAlert,
@@ -319,6 +323,85 @@ function CloseRiskButton({
   );
 }
 
+// 发起新协调线程（V22② 余量清偿，缘起李珊任务3 断头路的最后一环——催办已进驾驶舱，发起也补上）。
+// 协调权限组 COORD_PERMS.ManageCoordination={ops,cs,procurement,finance}（本体声明）的前端镜像——与
+// AiWorkflow.tsx::COORD_UI_ROLES 严格同集；老板/合规/销售不在组内 → 不渲染（诚实，不给必 403 的假按钮）。
+// 后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。锚在**具体 Task**（有任务上下文才能锚定协调，
+// 与 CL1 语义一致：协调是某处置任务派生的对外往返）。owner 不在表单——后端缺省用发起人身份。
+const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance"];
+
+function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role; onOpened?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [ct, setCt] = useState<CounterpartyType>("supplier");
+  const [ref, setRef] = useState("");
+  const [ask, setAsk] = useState("");
+  const [due, setDue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  if (!COORD_UI_ROLES.includes(role)) return null; // 角色门控：非协调角色不渲染发起入口
+
+  const canSubmit = !busy && ref.trim() !== "" && ask.trim() !== "" && due !== "";
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await openCoordination(
+        { task_id: taskId, counterparty_type: ct, counterparty_ref: ref.trim(), ask: ask.trim(), next_action_due: due },
+        role,
+        actorForRole(role),
+      );
+      setReceipt(`已发起协调线程 ${res.object_id ?? ""}——去右栏「协作流」tab 跟进 / 催办。`);
+      setOpen(false);
+      setRef("");
+      setAsk("");
+      setDue("");
+      onOpened?.(); // 可选通知父层；发起协调**不关面板**（不改本风险的处置态，成功回执需留在原地可见）
+    } catch (e) {
+      setErr((e as Error).message); // 后端白话错误原文（无权 403 / task 不存在 / 枚举非法…），不吞不美化
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="cp-coord-open">
+      <button className="cp-coord-open__toggle" onClick={() => { setOpen((v) => !v); setErr(null); }} disabled={busy}>
+        <Icon name="users" size={12} /> {open ? "收起" : "发起协调"}
+      </button>
+      {open && (
+        <div className="cp-coord-open__form">
+          <div className="cp-coord-open__hint">对外协调（追工厂改期 / 追货代改配 / 追客户拆单…），锚定本处置任务 <span className="num">{taskId}</span></div>
+          <label className="cp-coord-open__row">
+            对手方类型
+            <select value={ct} onChange={(e) => setCt(e.target.value as CounterpartyType)} className="cp-coord-open__ctrl">
+              {COUNTERPARTY_TYPES.map((c) => (
+                <option key={c} value={c}>{COUNTERPARTY_TYPE_CN[c]}</option>
+              ))}
+            </select>
+          </label>
+          <input className="cp-coord-open__ctrl" type="text" placeholder="对手方标识（如：SUP·工厂A / 货代名）" value={ref} onChange={(e) => setRef(e.target.value)} />
+          <input className="cp-coord-open__ctrl" type="text" placeholder="诉求（如：确认改期到 8/30 出货）" value={ask} onChange={(e) => setAsk(e.target.value)} />
+          <label className="cp-coord-open__row">
+            首个待办截止
+            <input className="cp-coord-open__ctrl" type="date" value={due} onChange={(e) => setDue(e.target.value)} required />
+          </label>
+          <div className="cp-coord-open__acts">
+            <button className="cp-coord-open__submit" onClick={submit} disabled={!canSubmit}>
+              {busy ? "发起中…" : "确认发起"}
+            </button>
+            <button className="cp-coord-open__cancel" onClick={() => setOpen(false)} disabled={busy}>取消</button>
+          </div>
+        </div>
+      )}
+      {receipt && <div className="cp-coord-open__ok">{receipt}</div>}
+      {err && <div className="cp-coord-open__err">{err}</div>}
+    </div>
+  );
+}
+
 export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActed, onSwitchRole }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void; onActed?: () => void; onSwitchRole?: (r: Role) => void }) {
   const alerts = [...focus.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
   const members = focus.members ?? [];
@@ -572,17 +655,20 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
               )}
             </div>
 
-            {/* 处置任务入口（打开对象卡看任务） */}
+            {/* 处置任务入口（打开对象卡看任务）+ 发起对外协调（V22② 余量：协调锚在具体处置任务） */}
             {taskIds.length > 0 && (
               <div className="cp-impact__sect">
                 <div className="cp-impact__sect-t">处置任务</div>
                 <div className="cp-links">
                   {taskIds.map((tid) => (
-                    <button key={tid} className="cp-link-btn" onClick={() => onOpenObject({ type: "Task", id: tid })}>
-                      <Icon name="propose" size={14} />
-                      <span className="num">{tid}</span>
-                      <span className="cp-link-btn__dir">打开处置任务 →</span>
-                    </button>
+                    <div key={tid} className="cp-task-row">
+                      <button className="cp-link-btn" onClick={() => onOpenObject({ type: "Task", id: tid })}>
+                        <Icon name="propose" size={14} />
+                        <span className="num">{tid}</span>
+                        <span className="cp-link-btn__dir">打开处置任务 →</span>
+                      </button>
+                      <OpenCoordForm taskId={tid} role={role} />
+                    </div>
                   ))}
                 </div>
               </div>

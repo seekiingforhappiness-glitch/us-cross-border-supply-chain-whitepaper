@@ -12,9 +12,10 @@
 为什么这样建、它与 /decisions 的关系（≤5 行，AGENTS.md §4）：
   · 完全复用 apps/api/decisions.py 的人类通道模式——白名单声明驱动 + X-Actor 必填 + 经
     app.command_bus.execute_command（写总线，落 commands 台账 + Idempotency-Key 幂等）+ 白话错误信封。
-  · 白名单**恰为** coordination_actions.COORD_TRANSITIONS 的五个键（对既有线程的转移动作），
-    与本体 permission_key=ManageCoordination 取交集双确认；OpenCoordination（开新线程）不在
-    COORD_TRANSITIONS → 天然排除（本批不做，范围控制，报告挂账）。白名单外一律 404。
+  · {id}/actions 通道白名单**恰为** coordination_actions.COORD_TRANSITIONS 的五个键（对既有线程的
+    转移动作），与本体 permission_key=ManageCoordination 取交集双确认；OpenCoordination（开新线程）不在
+    COORD_TRANSITIONS → 天然排除于该路由，白名单外一律 404。**开新线程另走独立路由 `POST /threads`**
+    （V22② 余量清偿）——它不是状态机转移，不能挂到按 coordination_id 操作的路由，见 post_open_coordination。
   · AI 面零暴露：这五个动作本体 exposed_as_tool=false / ai_executable=never，从不进 /actions 白名单、
     从不进 MCP build_tool_defs——本通道是它们唯一的 HTTP 暴露面，只对人开、与 AI 面物理隔离。
   · 权限 = COORD_PERMS["ManageCoordination"]（{ops,cs,procurement,finance}），越权走 coordination_actions
@@ -96,7 +97,7 @@ def build_collaboration_actions_router(get_db_path: Callable, as_of: str) -> API
             allowed = sorted({a["name"] for a in _coordination_write_actions(load_ontology())})
             raise HTTPException(
                 404, detail=f"未知或非协调线程动作 '{action_name}'——本通道仅对既有线程操作的五动作 "
-                            f"{allowed} 可 POST（开新线程 OpenCoordination 本批未接，仍走 Streamlit 操作台）。")
+                            f"{allowed} 可 POST（开新线程 OpenCoordination 请走 POST /collaboration/threads）。")
 
         # X-Actor 必填（与 /decisions 同款差异）：这是人工协调通道，审计要留痕『谁催的 / 谁记的回应』，
         # 系统不替你代填。缺失即 422 并用白话中文说清为什么必须带。
@@ -142,5 +143,73 @@ def build_collaboration_actions_router(get_db_path: Callable, as_of: str) -> API
         if not result.get("ok", False):                # 有权但被拒（非法状态转移 / 缺必填参数 / 线程不存在）
             raise HTTPException(422, detail=result.get("error") or f"动作 '{action['name']}' 执行未通过")
         return result                                  # 成功：原样返回 {ok, object_id, side_effects, error}
+
+    @router.post("/threads")
+    def post_open_coordination(
+            body: dict = Body(default={}),
+            x_role: str = Header(default="ops", alias="X-Role"),
+            x_actor: str | None = Header(default=None, alias="X-Actor"),
+            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+            db_path: str = Depends(get_db_path)) -> dict:
+        """人类协调通道：**发起新线程**（OpenCoordination，A20）。
+
+        为什么单列于 {id}/actions 路由之外（≤5 行，AGENTS.md §4）：open 不是对既有线程的**状态机转移**
+        （它创建线程、天然不在 COORD_TRANSITIONS），故不能挂到那条按 coordination_id 操作的路由；它是
+        对集合 POST 一条新资源，REST 语义就该是 `POST /threads`。其余不变量与转移通道**完全同构**：
+        X-Role 鉴权(COORD_PERMS) + X-Actor 必填 + 经 execute_command(幂等+commands 台账) + audit +
+        白话错误信封；写入原样走 coordination_actions.open_coordination（语义/审计/前置校验一行不改）。
+        AI 面零暴露照旧：OpenCoordination 本体 exposed_as_tool=false/ai_executable=never，不进 /actions、
+        不进 MCP build_tool_defs——本路由是它唯一 HTTP 暴露面，只对人开。"""
+        # X-Actor 必填（同转移通道：人工协调要留痕『谁发起的』，系统不代填）。
+        if x_actor is None or not x_actor.strip():
+            raise HTTPException(
+                422, detail="缺少 X-Actor 请求头：这是人工协调通道，必须带上发起这次协调的人的身份 id。"
+                            "发起协调要留痕『谁发起的』，所以这个身份必须由你带上，系统不替你代填。")
+        actor = x_actor.strip()
+
+        # 参数从 body **显式取六键**（多余键会撞 open_coordination 签名 → TypeError → 422）。
+        # counterparty_type 边界枚举校验（crisp 422；前端下拉本应挡住，这里是纵深防御 + 白话报错）。
+        ct = str(body.get("counterparty_type") or "").strip()
+        valid_ct = coordination_actions.COUNTERPARTY_TYPES
+        if ct and ct not in valid_ct:
+            raise HTTPException(
+                422, detail=f"counterparty_type 非法：'{ct}'——需为 {sorted(valid_ct)} 之一。")
+        # owner 缺省 = 发起人 actor（复刻 CL1 语义不发明：owner 是我方负责人，发起协调者天然是负责人；
+        # open_coordination 要求 owner 非空——不让前端多填一个字段，用发起人身份兜底，业务语义一致）。
+        owner = str(body.get("owner") or "").strip() or actor
+        params = {
+            "task_id": str(body.get("task_id") or "").strip(),
+            "counterparty_type": ct,
+            "counterparty_ref": str(body.get("counterparty_ref") or "").strip(),
+            "ask": str(body.get("ask") or "").strip(),
+            "owner": owner,
+            "next_action_due": str(body.get("next_action_due") or "").strip(),
+        }
+
+        # X-Role 鉴权：与转移通道同款——独立算 permitted 只为选 HTTP 状态码；无论如何都照常调 fn，
+        # 它用同一份 COORD_PERMS 再判一次并在拒绝时走 _denied()（写 action_log denied 审计），不重建鉴权。
+        permitted = x_role in coordination_actions.COORD_PERMS["ManageCoordination"]
+
+        con = app_actions.connect(db_path)
+        try:
+            try:
+                result = execute_command(
+                    con, action="OpenCoordination", params=params, actor=actor, role=x_role,
+                    as_of=as_of, action_func=coordination_actions.open_coordination,
+                    idempotency_key=idempotency_key)
+            except TypeError as exc:
+                raise HTTPException(
+                    422, detail=f"请求体参数与 OpenCoordination 签名不匹配：{exc}")
+        finally:
+            con.close()
+
+        if not permitted:                              # 无权：app 层已 _denied 留痕，此处映射 403
+            raise HTTPException(
+                403, detail=result.get("error")
+                or f"角色 '{x_role}' 无权发起协调（协调权限组 ManageCoordination，已记录审计）")
+        if not result.get("ok", False):                # 有权但被拒（task 不存在 / 参数非法 / counterparty 枚举）
+            raise HTTPException(
+                422, detail=result.get("error") or "发起协调未通过（task 不存在 / 参数非法）")
+        return result                                  # 成功：原样返回 {ok, object_id=新线程号, side_effects, error}
 
     return router

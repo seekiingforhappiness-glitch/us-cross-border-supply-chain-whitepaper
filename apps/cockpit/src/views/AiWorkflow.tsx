@@ -16,7 +16,7 @@ import { actorForRole } from "../roleActors";
 import Icon, { type IconName } from "../components/Icons";
 import StateHint from "../components/StateHint";
 import AiRuns from "./AiRuns";
-import { buildStories, KIND_CN, SEV_CN, type Story, type StoryState } from "./aiFlowModel";
+import { buildStories, KIND_CN, MODE_CN, SEV_CN, type Story, type StoryState } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
 
 // 页面第二主角：AI 工作流「用户故事卡」流（V10 补记：从事件日志重构为用户视角）。同一风险/任务链的
@@ -77,6 +77,13 @@ function StoryCard({ story, latest, onOpenObject }: { story: Story; latest: bool
           {infoLabel}
         </span>
         {story.sim && <span className="cp-flow-card__sim">SIM</span>}
+        {/* 执行方式徽标（不变量11）：确定性剧本 vs 真模型——仅后端判得了的卡渲染，判不了不显（不编造）。
+            "真模型"用信标蓝(AI 信号)、"剧本"用弱化中性——克制、复用既有徽标图案。 */}
+        {story.mode && (
+          <span className="cp-story__mode" data-mode={story.mode} title={story.mode === "llm" ? "这一步由真模型（LLM）产出" : "这一步由确定性剧本产出，未调用模型"}>
+            {MODE_CN[story.mode]}
+          </span>
+        )}
         <span className="cp-story__time num">{story.ts}</span>
       </div>
 
@@ -589,10 +596,11 @@ export default function AiWorkflow({
         <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
       ) : tab === "collab" ? (
         <div className="cp-collab-tab">
-          {/* 诚实横幅（批D 更新，缘起李珊任务3）：催办/记回应/升级/达成/谈崩已可在驾驶舱线程卡上
-              直接完成（协调权限组：运营/客服/采购/财务；老板/合规/销售视角只读）；开新协调线程本批未接，如实指去处。 */}
+          {/* 诚实横幅（V22② 余量清偿后更新，缘起李珊任务3）：催办/记回应/升级/达成/谈崩可在下方线程卡直接完成；
+              发起新协调线程也已进驾驶舱——在「影响分析」面板的「处置任务」区块点「发起协调」（需任务上下文锚定）。
+              协调权限组：运营/客服/采购/财务；老板/合规/销售视角只读。 */}
           <div className="cp-collab-note">
-            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成（需协调角色：运营/客服/采购/财务；其余角色只读）；发起新协调线程仍在 Streamlit 操作台。
+            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成；发起新协调线程请到「影响分析」面板的「处置任务」区块点「发起协调」（需协调角色：运营/客服/采购/财务；其余角色只读）。
           </div>
           <CollabPanel role={role} world={world} onOpenObject={onOpenObject} />
         </div>

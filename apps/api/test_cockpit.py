@@ -742,6 +742,73 @@ def test_ai_flow_limit_param(client):
     assert client.get("/cockpit/ai-flow", params={"limit": 9999}).status_code == 422
 
 
+def test_ai_flow_mode_badge(tmp_path):
+    """AI 工作流条目「执行方式」徽标（L-UX 轮2 诚实跳过项清偿，不变量11）：
+    · llm_call 条目天然 mode='llm'；
+    · runtime 派生的 ai_action 经 commands 幂等键(run:{run_id}:{step_no})桥到 run 的 think 步 → mode 现查；
+    · task_flow / 无 run 桥接的 ai_action → **不带 mode 字段**（判不了不编造）。"""
+    import sqlite3 as _sq
+    from agent.runtime import ensure_runtime_tables
+    from app.command_bus import ensure_commands_table
+    dest = tmp_path / "mode_flow.sqlite"
+    shutil.copy(REPO_DB, dest)
+    con = _sq.connect(dest)
+    ensure_runtime_tables(con)
+    ensure_commands_table(con)
+    # 两个 run：一个 think 步 mode=deterministic（剧本），一个 mode=llm（真模型）
+    for rid, mode in (("RUN-DET", "deterministic"), ("RUN-LLM", "llm")):
+        con.execute("INSERT INTO agent_runs (run_id, goal, status, agent_role, budget_json, "
+                    "created_at, updated_at, killed, summary) VALUES (?,?,?,?,?,?,?,0,NULL)",
+                    (rid, "处置 RSK-X", "running", "ops", "{}", "2026-07-10T00:00:00Z",
+                     "2026-07-10T00:00:00Z"))
+        con.execute("INSERT INTO agent_run_steps (run_id, step_no, kind, payload_json, "
+                    "result_json, created_at) VALUES (?,?,?,?,?,?)",
+                    (rid, 1, "think", "{}", json.dumps({"mode": mode}), "2026-07-10T00:00:01Z"))
+    # 两条 run-keyed 命令（object_id 即 task_id，与 action_log.target_object_id 同值 → 桥接键）
+    con.execute("INSERT INTO commands (command_id, idempotency_key, action, actor, role, "
+                "params_fingerprint, result_status, object_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                ("c1", "run:RUN-DET:3", "AssignTask", "ai-agent", "ops", "fp", "ok",
+                 "TSK-MODE-DET", "2026-07-10T00:00:02Z"))
+    con.execute("INSERT INTO commands (command_id, idempotency_key, action, actor, role, "
+                "params_fingerprint, result_status, object_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                ("c2", "run:RUN-LLM:4", "ProposeMitigation", "ai-agent", "ops", "fp", "ok",
+                 "TSK-MODE-LLM", "2026-07-10T00:00:03Z"))
+    # 三条 ai-agent 审计行：两条有 run 桥接（应得 mode），一条无桥接（不应带 mode）
+    for action, tid, ts in (("AssignTask", "TSK-MODE-DET", "2026-07-10T09:00:00Z"),
+                            ("ProposeMitigation", "TSK-MODE-LLM", "2026-07-10T09:01:00Z"),
+                            ("ProposeMitigation", "TSK-NO-BRIDGE", "2026-07-10T09:02:00Z")):
+        con.execute("INSERT INTO action_log (actor, role, action, target_object_id, params_json, "
+                    "as_of_date, timestamp, result, trace_id) VALUES (?,?,?,?,?,?,?,?,NULL)",
+                    ("ai-agent", "ops", action, tid, "{}", "2026-07-10", ts, "ok"))
+    con.commit()
+    con.close()
+
+    saved = app.dependency_overrides.get(get_db_path)
+    app.dependency_overrides[get_db_path] = lambda: str(dest)
+    try:
+        with TestClient(app) as c:
+            d = c.get("/cockpit/ai-flow", params={"limit": 500},
+                      headers={"X-Role": "manager"}).json()
+        by_ref = {i["ref_object"]: i for i in d["items"]}
+        # ai_action：run 桥接 → mode 现查（剧本 / 真模型）
+        assert by_ref["TSK-MODE-DET"]["kind"] == "ai_action"
+        assert by_ref["TSK-MODE-DET"]["mode"] == "deterministic"
+        assert by_ref["TSK-MODE-LLM"]["mode"] == "llm"
+        # 无 run 桥接的 ai_action → 判不了 → 不带 mode 字段（不编造）
+        assert "mode" not in by_ref["TSK-NO-BRIDGE"], by_ref["TSK-NO-BRIDGE"]
+        # llm_call 天然 'llm'；task_flow 判不了不带 mode
+        for i in d["items"]:
+            if i["kind"] == "llm_call":
+                assert i["mode"] == "llm"
+            if i["kind"] == "task_flow":
+                assert "mode" not in i, i
+    finally:
+        if saved is not None:
+            app.dependency_overrides[get_db_path] = saved
+        else:
+            app.dependency_overrides.pop(get_db_path, None)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 双世界：ONTOLOGY_DB → simworld 副本（真实环境变量链路）
 # ═══════════════════════════════════════════════════════════════════════════
