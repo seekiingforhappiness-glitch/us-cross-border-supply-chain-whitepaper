@@ -180,8 +180,9 @@ const COORD_LEGAL: Record<string, CoordActionId[]> = {
 };
 
 // 驾驶舱已适配角色中属于协调权限组的（COORD_PERMS.ManageCoordination={ops,cs,procurement,finance}
-// 的前端镜像 ∩ roleActors 已适配集）；老板 manager 不在组内 → 只读。后端 COORD_PERMS 仍是权威。
-const COORD_UI_ROLES: Role[] = ["ops", "finance"];
+// 的前端镜像 ∩ roleActors 已适配集）——批D cs/procurement 接入 UI 后镜像与后端权限组**严格同集**；
+// 老板 manager、compliance、sales 均不在组内 → 只读。后端 COORD_PERMS 仍是权威（越权走 403+denied 审计）。
+const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance"];
 
 const COORD_META: Record<CoordActionId, { label: string; hint: string }> = {
   record_outreach: { label: "催办", hint: "再追一次对方，并重设下一步截止日" },
@@ -260,9 +261,9 @@ function CoordOps({ t, role, onActed }: { t: CollabThread; role: Role; onActed: 
   const [receipt, setReceipt] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // 协调权限组 COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance}（本体声明）∌ manager。
-  // 驾驶舱已适配角色（manager/ops/finance）里运营与财务在组内——老板视角不渲染写动作（诚实只读，
-  // 不给必 403 的假按钮）；后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。
+  // 协调权限组 COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance}（本体声明）——批D 后
+  // 驾驶舱七角色与该权限组严格同集：运营/客服/采购/财务在组内可写，老板/合规/销售不渲染写动作
+  // （诚实只读，不给必 403 的假按钮）；后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。
   if (!COORD_UI_ROLES.includes(role) || legal.length === 0) {
     return receipt ? <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--sev-green)" }}>{receipt}</div> : null;
   }
@@ -588,10 +589,10 @@ export default function AiWorkflow({
         <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
       ) : tab === "collab" ? (
         <div className="cp-collab-tab">
-          {/* 诚实横幅（V22② 更新，缘起李珊任务3）：催办/记回应/升级/达成/谈崩已可在驾驶舱线程卡上
-              直接完成（协调权限组：运营；老板视角只读）；开新协调线程本批未接，如实指去处。 */}
+          {/* 诚实横幅（批D 更新，缘起李珊任务3）：催办/记回应/升级/达成/谈崩已可在驾驶舱线程卡上
+              直接完成（协调权限组：运营/客服/采购/财务；老板/合规/销售视角只读）；开新协调线程本批未接，如实指去处。 */}
           <div className="cp-collab-note">
-            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成（需协调角色：运营/财务；老板视角只读）；发起新协调线程仍在 Streamlit 操作台。
+            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成（需协调角色：运营/客服/采购/财务；其余角色只读）；发起新协调线程仍在 Streamlit 操作台。
           </div>
           <CollabPanel role={role} world={world} onOpenObject={onOpenObject} />
         </div>

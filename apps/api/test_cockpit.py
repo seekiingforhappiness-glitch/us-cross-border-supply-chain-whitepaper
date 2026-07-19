@@ -582,13 +582,82 @@ def test_scope_parity_api_side_cost_oracle(client):
     Streamlit 侧）：驾驶舱钱区脱敏与 agent.tools._can_see_cost 是**同一把尺子**——凡 _can_see_cost 为真
     的角色 API 就给真金额、为假就 MASK，两个方向都验，证明 UI 聚合与 AI 工具消费同一权限判定。"""
     from agent.tools import _can_see_cost
-    for role in ("finance", "manager", "ops", "cs"):
+    # 批D：扩至七角色全量（cs/procurement/compliance/sales 新接入 UI，与 finance/manager/ops 同一循环
+    # 同一断言逻辑验证——不是另起一套判断，_can_see_cost 仍是唯一权威源）。
+    for role in ("finance", "manager", "ops", "cs", "procurement", "compliance", "sales"):
         headline = _zones(client.get("/cockpit/vitals", headers={"X-Role": role}))["money"]["headline_value"]
         if _can_see_cost(role):
             assert headline != MASK and isinstance(headline, (int, float)), \
                 f"{role}: _can_see_cost 为真，API 钱区 headline 应给真金额"
         else:
             assert headline == MASK, f"{role}: _can_see_cost 为假，API 钱区 headline 应掩码"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 批D：cs/procurement/compliance/sales 驾驶舱角色纵向切片（决策日志 V22①"finance 优先——其后
+# cs/procurement/compliance/sales"）。同 finance 纪律：一切数据范围由 apps/api 按 X-Role 同源执行
+# （前端 roleActors.ts 不复制规则），本组从 API 侧固化四新角色的可见/掩码，依据本体 sensitiveFieldRules
+# 声明逐条核对写就（8 条规则 2026-07-19 逐条侦察：procurement/sales 均无 visibleTo 命中，如实记录）。
+# ═══════════════════════════════════════════════════════════════════════════
+def test_objects_customer_tier_visible_for_cs_money_masked(client, con):
+    """Customer.tier（sensitiveFieldRules visibleTo=[cs,manager]）对 cs 可见真值；钱区 headline 对
+    cs 掩码（cs 不在 agent.tools._COST_VISIBLE=finance/manager）——客服看得到客户分层但看不到钱。"""
+    row = con.execute("SELECT customer_id, tier FROM customers WHERE tier IS NOT NULL LIMIT 1").fetchone()
+    assert row, "库内应有带 tier 的客户（datagen 产出）"
+    cid, true_tier = row[0], row[1]
+    got = client.get(f"/objects/Customer/{cid}", headers={"X-Role": "cs"}).json()["tier"]
+    assert got == true_tier, "cs 对 Customer.tier 应见真值（对象读端点，非仅聚合层）"
+    money = _zones(client.get("/cockpit/vitals", headers={"X-Role": "cs"}))["money"]
+    assert money["headline_value"] == MASK, "cs 不是成本角色，钱区 headline 应掩码"
+
+
+def test_objects_uflpa_visible_for_compliance_money_masked(client, con):
+    """Supplier.uflpa_risk_flag（sensitiveFieldRules visibleTo=[compliance,manager]）对 compliance
+    可见真值；钱区 headline 对 compliance 掩码（不在 _COST_VISIBLE）——合规看得到供应商合规旗标
+    （UFLPA 强迫劳动风险）但看不到钱，与陈会计财务场景互补、非"合规=看全部"。"""
+    row = con.execute("SELECT supplier_id FROM suppliers WHERE uflpa_risk_flag IS NOT NULL "
+                      "AND uflpa_risk_flag != '' LIMIT 1").fetchone()
+    assert row, "库内应有带 uflpa_risk_flag 的供应商（datagen 产出）"
+    sid = row[0]
+    flag = client.get(f"/objects/Supplier/{sid}", headers={"X-Role": "compliance"}).json()["uflpa_risk_flag"]
+    assert flag != MASK, "compliance 对合规专属字段 uflpa_risk_flag 应见真值"
+    money = _zones(client.get("/cockpit/vitals", headers={"X-Role": "compliance"}))["money"]
+    assert money["headline_value"] == MASK, "compliance 不是成本角色，钱区 headline 应掩码"
+
+
+def test_vitals_money_masked_for_sales_no_declared_visible_field(client, con):
+    """sales：本体 sensitiveFieldRules 全部 8 条规则逐条核对（Customer.tier/credit_terms/risk_tier、
+    Supplier.uflpa_risk_flag、CostScenario 组、Invoice 组、AdmissionCase.conditions、Payment.amount_usd）
+    **无一条 visibleTo 含 sales**——如实钉死：钱区 headline 与合规专属字段(uflpa_risk_flag)对 sales
+    均掩码，当前无任何专属可见敏感字段（非缺陷，2026-07-19 侦察结论，非猜测）。对照 finance 同请求应
+    真值，排除"API 整体故障"误判。"""
+    money = _zones(client.get("/cockpit/vitals", headers={"X-Role": "sales"}))["money"]
+    assert money["headline_value"] == MASK, "sales 不是成本角色，钱区 headline 应掩码"
+    row = con.execute("SELECT supplier_id FROM suppliers WHERE uflpa_risk_flag IS NOT NULL "
+                      "AND uflpa_risk_flag != '' LIMIT 1").fetchone()
+    assert row, "库内应有带 uflpa_risk_flag 的供应商"
+    flag = client.get(f"/objects/Supplier/{row[0]}", headers={"X-Role": "sales"}).json()["uflpa_risk_flag"]
+    assert flag == MASK, "sales 不在 uflpa_risk_flag 的 visibleTo（仅 compliance/manager），应掩码"
+    fin_headline = _zones(client.get("/cockpit/vitals", headers={"X-Role": "finance"}))["money"]["headline_value"]
+    assert fin_headline != MASK, "对照组：finance 应见真值（排除误判 API 整体故障）"
+
+
+def test_objects_task_amount_own_team_visible_for_procurement(client, con):
+    """procurement 自队金额例外（决策日志 V21①、agent.tools.own_team_amount_visible，三面同源单一
+    权威源）：两世界现有 tasks.assignee_role 目前只出现 cs/finance/ops（2026-07-19 实测两库 DISTINCT
+    assignee_role，procurement 从未被真实指派过待批提案）——本体亦无 procurement 专属可见字段，故用
+    既有 _ensure_pending_anchor 自愈锚点模式（同 finance/ops 既有测试手法，写在 module 级临时库副本，
+    不碰 data/ 源文件真值）验证代码路径确实认 procurement 为『自队』：procurement 见真值，cs（他队
+    且无成本权限）掩码。"""
+    tid = _ensure_pending_anchor(con, "procurement", est_cost=555.0, tid="TSK-TEST-V22-PROCUREMENT")
+
+    def obj_cost(role):
+        pp = client.get(f"/objects/Task/{tid}", headers={"X-Role": role}).json()["proposal_params"]
+        pp = json.loads(pp) if isinstance(pp, str) else pp
+        return pp.get("est_cost_usd")
+
+    assert obj_cost("procurement") == 555.0, "procurement 对自队(assignee_role=procurement)提案金额应见真值"
+    assert obj_cost("cs") == MASK, "cs 对他队(procurement)提案金额应掩码"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
