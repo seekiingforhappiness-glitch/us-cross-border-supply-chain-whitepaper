@@ -1131,11 +1131,15 @@ body {
   color: var(--beacon);
   border-color: var(--beacon-dim);
 }
+/* C·P1（轮3）：可点邻居 chip 与纯占位（"+N 更多"）原视觉无差——不可点的降字色+虚线边，
+   可点的保持实线边 + hover 变信标蓝（上方既有规则），一眼可辨；键盘焦点态走全局 :focus-visible。 */
 .cp-neighbor.is-plain {
   cursor: default;
+  color: var(--ink-3);
+  border-style: dashed;
 }
 .cp-neighbor.is-plain:hover {
-  color: var(--ink-1);
+  color: var(--ink-3);
   border-color: var(--line-strong);
 }
 

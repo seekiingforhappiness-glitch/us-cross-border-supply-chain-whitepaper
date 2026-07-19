@@ -14,6 +14,7 @@ SQL（如客户区用 json_each 展开 affected_so_line_ids，与实现的 pytho
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 from pathlib import Path
@@ -1203,6 +1204,167 @@ def test_simworld_panorama_replay_anchoring(sim_world):
     assert d["meta"]["open_risks_total"] == active
     anchored = sum(n["alert_count"] for layer in d["layers"].values() for n in layer["nodes"])
     assert anchored + d["meta"]["alerts_unanchored_total"] == active  # 守恒
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 轮3-A（P1）：ai-flow 自由文本金额脱敏——_can_see_cost 声明的执行缺口收紧。
+# 泄漏面是 sim_ai_activity.detail 灌出的 summary/note 里的 "$7157.16"（_mask_money 只掩
+# 结构化 _usd 键管不到文本）。非成本角色文本 "$金额"→"$•••"；finance/manager 不受影响。
+# ═══════════════════════════════════════════════════════════════════════════
+_RAW_DOLLAR = re.compile(r"\$\s*\d")     # 裸美元金额（$ 后跟数字；$••• 不命中）
+
+
+def test_ai_flow_text_amounts_masked_for_non_cost_roles(sim_world):
+    """合规/运营（非成本角色）：ai-flow 全载荷无裸美元金额，掩码 $••• 保留金额位语义信号。"""
+    c, scon = sim_world
+    n = scon.execute("SELECT count(*) FROM sim_ai_activity WHERE detail LIKE '%$%'").fetchone()[0]
+    assert n > 0, "前置：sim 库应有带 $ 金额的 AI 留痕（否则断言空转）"
+    for role in ("compliance", "ops", "cs", "procurement", "sales"):
+        txt = json.dumps(c.get("/cockpit/ai-flow", params={"limit": 500},
+                               headers={"X-Role": role}).json(), ensure_ascii=False)
+        assert not _RAW_DOLLAR.search(txt), f"{role}: ai-flow 载荷仍有裸美元金额（执行缺口未堵）"
+        assert "$•••" in txt, f"{role}: 应保留 $••• 掩码信号（不是把金额整句删掉）"
+
+
+def test_ai_flow_text_amounts_kept_for_cost_roles(sim_world):
+    """finance/manager（_can_see_cost）：ai-flow 文本金额保留真值，不被误伤。"""
+    c, _ = sim_world
+    for role in ("finance", "manager"):
+        txt = json.dumps(c.get("/cockpit/ai-flow", params={"limit": 500},
+                               headers={"X-Role": role}).json(), ensure_ascii=False)
+        assert _RAW_DOLLAR.search(txt), f"{role}: 成本角色应见文本真值金额"
+        assert "$•••" not in txt, f"{role}: 成本角色不应出现文本掩码"
+
+
+def test_ai_flow_default_role_text_masked(sim_world):
+    """X-Role 缺省（=ops）行为对齐既有掩码语义：同样无裸美元金额。"""
+    c, _ = sim_world
+    txt = json.dumps(c.get("/cockpit/ai-flow", params={"limit": 500}).json(),
+                     ensure_ascii=False)
+    assert not _RAW_DOLLAR.search(txt)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 轮3-D（P1）：付款锚风险（R19/R21）影响归并 /cockpit/risk-impact/{id}。
+# 归并链全走 schema（payment→单据→对手方，零文本解析）；断言值对临时库跑独立 SQL 现查，
+# 并与风险摘要文本中的客户/订单号交叉一致（苏苏实证的"摘要有、结构化区 0 条"缺口）。
+# ═══════════════════════════════════════════════════════════════════════════
+def test_risk_impact_r19_sim_matches_summary_text(sim_world):
+    """sim R19：归并行的客户号/订单号与 root_cause 摘要文本一致；金额=风险行独立现查。"""
+    c, scon = sim_world
+    row = scon.execute("SELECT risk_event_id, root_cause, affected_value_usd FROM risk_events "
+                       "WHERE rule_id='R19' ORDER BY risk_event_id LIMIT 1").fetchone()
+    assert row, "前置：sim 库应有 R19 风险"
+    m = re.search(r"客户 (CUS-\d+) 订单 (SO-SIM-\d+)", row["root_cause"])
+    assert m, f"前置：R19 摘要应含客户/订单号（{row['root_cause']}）"
+    d = c.get(f"/cockpit/risk-impact/{row['risk_event_id']}",
+              headers={"X-Role": "manager"}).json()
+    assert d["anchor"] == "payment" and d["rows"], d
+    r0 = d["rows"][0]
+    assert r0["counterparty_type"] == "customer"
+    assert r0["counterparty_id"] == m.group(1), "归并客户号应与摘要文本一致"
+    assert r0["ref_type"] == "sales_order" and r0["ref_id"] == m.group(2), "归并订单号应与摘要文本一致"
+    assert abs(r0["amount_usd"] - row["affected_value_usd"]) < 0.01
+    assert r0["overdue_days"] is not None and r0["overdue_days"] > 0, "未回款应收应有逾期天数"
+
+
+def test_risk_impact_r21_sim_anchor_and_duplicate_sibling(sim_world):
+    """sim R21（重复付款）：任务 proposal_params.payment_id 锚 + 同据同额姊妹笔一并列出。"""
+    c, scon = sim_world
+    t = scon.execute("SELECT t.risk_event_id, t.proposal_params FROM tasks t "
+                     "JOIN risk_events r ON r.risk_event_id=t.risk_event_id "
+                     "WHERE r.rule_id='R21' ORDER BY t.task_id LIMIT 1").fetchone()
+    assert t, "前置：sim 库应有 R21 任务"
+    anchor_pid = json.loads(t["proposal_params"])["payment_id"]
+    d = c.get(f"/cockpit/risk-impact/{t['risk_event_id']}",
+              headers={"X-Role": "manager"}).json()
+    assert d["anchor"] == "payment"
+    by_id = {r["payment_id"]: r for r in d["rows"]}
+    assert anchor_pid in by_id and by_id[anchor_pid]["is_anchor"] is True
+    # 姊妹重复笔：同 ref 同额的另一笔（独立 SQL 现查），应在 rows 里且 is_anchor=False
+    src = scon.execute("SELECT ref_type, ref_id, amount_usd FROM payments WHERE payment_id=?",
+                       (anchor_pid,)).fetchone()
+    sibs = [r[0] for r in scon.execute(
+        "SELECT payment_id FROM payments WHERE ref_type=? AND ref_id=? "
+        "AND round(amount_usd,2)=round(?,2) AND payment_id != ?",
+        (src["ref_type"], src["ref_id"], src["amount_usd"], anchor_pid))]
+    assert sibs, "前置：R21 应存在同据同额的姊妹笔（重复付款异常本体）"
+    for s in sibs:
+        assert s in by_id and by_id[s]["is_anchor"] is False
+
+
+def test_risk_impact_verify_world_r19_and_masking(client, con):
+    """验证世界 R19（affected 里直接是 PAY id）：payment→订单/客户归并 = 独立 SQL 现查；
+    金额掩码跟随现行角色规则（ops 掩、finance 真值——_can_see_cost 同一把尺）。"""
+    row = con.execute("SELECT risk_event_id, affected_so_line_ids FROM risk_events "
+                      "WHERE rule_id='R19' ORDER BY risk_event_id LIMIT 1").fetchone()
+    assert row, "前置：验证世界应有 R19 风险"
+    pay_id = json.loads(row["affected_so_line_ids"])[0]
+    pay = con.execute("SELECT counterparty_id, ref_id, amount_usd FROM payments "
+                      "WHERE payment_id=?", (pay_id,)).fetchone()
+    d = client.get(f"/cockpit/risk-impact/{row['risk_event_id']}",
+                   headers={"X-Role": "finance"}).json()
+    assert d["anchor"] == "payment" and d["rows"]
+    r0 = d["rows"][0]
+    assert (r0["payment_id"], r0["counterparty_id"], r0["ref_id"]) == \
+        (pay_id, pay["counterparty_id"], pay["ref_id"])
+    assert abs(r0["amount_usd"] - pay["amount_usd"]) < 0.01, "finance 应见真值"
+    masked = client.get(f"/cockpit/risk-impact/{row['risk_event_id']}",
+                        headers={"X-Role": "ops"}).json()
+    assert masked["rows"][0]["amount_usd"] == MASK, "ops 金额应掩码（现行角色规则）"
+
+
+def test_risk_impact_non_payment_rule_honest_empty(client, con):
+    """非付款锚风险（如 R1）：anchor='so_line' + rows=[]（订单行归并走既有链路，不假装归并）。"""
+    row = con.execute("SELECT risk_event_id FROM risk_events WHERE rule_id='R1' "
+                      "ORDER BY risk_event_id LIMIT 1").fetchone()
+    assert row, "前置：验证世界应有 R1 风险"
+    d = client.get(f"/cockpit/risk-impact/{row['risk_event_id']}",
+                   headers={"X-Role": "manager"}).json()
+    assert d["anchor"] == "so_line" and d["rows"] == [] and d["note"]
+
+
+def test_risk_impact_unknown_risk_404(client):
+    resp = client.get("/cockpit/risk-impact/RSK-NO-SUCH", headers={"X-Role": "manager"})
+    assert resp.status_code == 404
+    assert "不存在" in resp.json()["detail"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 轮3-G（P0）：清关卡点逐票队列 /cockpit/customs-queue——与七区卡 customs_blocked 同一
+# WHERE 口径（not_filed 且在途），total/排序/po_count 对临时库独立 SQL 现查，不誊抄数字。
+# ═══════════════════════════════════════════════════════════════════════════
+def _assert_customs_queue_consistent(payload: dict, dbcon) -> None:
+    expected = dbcon.execute("SELECT count(*) FROM shipments "
+                             "WHERE customs_status='not_filed' AND status='in_transit'"
+                             ).fetchone()[0]
+    assert payload["total"] == expected, "total 应=七区卡同口径现查"
+    assert payload["count"] == min(50, expected) == len(payload["items"])
+    days = [i["stuck_days"] for i in payload["items"] if i["stuck_days"] is not None]
+    assert days == sorted(days, reverse=True), "应按卡点天数降序"
+    if payload["items"]:
+        it = payload["items"][0]
+        po_raw = dbcon.execute("SELECT po_ids FROM shipments WHERE shipment_id=?",
+                               (it["shipment_id"],)).fetchone()[0]
+        assert it["po_count"] == len([p for p in str(po_raw or "").split("|") if p]), \
+            "po_count 应=管道分隔现查（同 panorama 解析口径）"
+        assert "卡点天数" in payload["basis"], "口径白话应入 basis"
+
+
+def test_customs_queue_verify_world(client, con):
+    d = client.get("/cockpit/customs-queue", headers={"X-Role": "manager"}).json()
+    assert d["world"] == "verification"
+    _assert_customs_queue_consistent(d, con)
+    assert d["total"] > 0, "前置：验证世界应有清关卡点票（当前库 40）"
+
+
+def test_customs_queue_sim_world(sim_world):
+    """sim 世界（林律实证卡片 21 票只有数字）：逐票队列条数=独立现查，不硬编码 21。"""
+    c, scon = sim_world
+    d = c.get("/cockpit/customs-queue", headers={"X-Role": "compliance"}).json()
+    assert d["world"] == "simulation"
+    _assert_customs_queue_consistent(d, scon)
+    assert d["total"] > 0, "前置：sim 库应有清关卡点票"
 
 
 if __name__ == "__main__":

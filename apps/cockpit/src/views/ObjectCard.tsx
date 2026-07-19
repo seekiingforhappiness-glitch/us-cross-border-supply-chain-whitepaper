@@ -108,6 +108,32 @@ const DISPO_HINT_STYLE: CSSProperties = {
   borderRadius: "6px",
 };
 
+// C·P1（轮3 三人齐报"QUAL/RSK/付款记录 chip 死链 vs 任务徽标可点"）：关系区邻居 chip 原是裸
+// span+onClick——鼠标可点但键盘不可达、无障碍树里不存在（沿无障碍树驱动的测试与读屏用户都会把它
+// 判成"死链"；对比 AI 区任务链接是真 <button>，可点性因此不一致）。对象读端点 /objects/{type}/{id}
+// 覆盖本体全部 35 类（apps/api/main.py TABLE_BY_TYPE 全集，已核验无缺），故关系区邻居 chip 一律
+// 真可点：补 role="button"+tabIndex+Enter/Space，键盘焦点态走全局 :focus-visible；纯占位"+N 更多"
+// 保持 is-plain 不可点（可点/不可点的视觉区分见 styles.css .cp-neighbor.is-plain）。
+function NeighborChip({ id, title, onOpen }: { id: string; title: string; onOpen: () => void }) {
+  return (
+    <span
+      className="cp-neighbor"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      title={title}
+    >
+      {id}
+    </span>
+  );
+}
+
 function renderVal(type: string, field: string, v: unknown): { text: string; cls: string; masked?: boolean } {
   if (v === null || v === undefined) return { text: "—", cls: "null" };
   if (isMasked(v)) return { text: MASK_TEXT, cls: "masked", masked: true };
@@ -316,13 +342,11 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
                         ) : dispo.state === "tasks" ? (
                           <>
                             处置任务{" "}
-                            <span
-                              className="cp-neighbor"
-                              onClick={() => onOpenObject({ type: "Task", id: dispo.rep.id })}
+                            <NeighborChip
+                              id={dispo.rep.id}
                               title={`打开任务 ${dispo.rep.id}`}
-                            >
-                              {dispo.rep.id}
-                            </span>{" "}
+                              onOpen={() => onOpenObject({ type: "Task", id: dispo.rep.id })}
+                            />{" "}
                             {dispoPhase(dispo.rep)}——任务完成不等于风险自动关闭，风险关闭需运营在影响面板动作区确认。
                           </>
                         ) : (
@@ -363,14 +387,12 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
                         ) : (
                           <div className="cp-neighbors">
                             {exp.ids.slice(0, 40).map((id) => (
-                              <span
+                              <NeighborChip
                                 key={id}
-                                className="cp-neighbor"
-                                onClick={() => onOpenObject({ type: l.neighborType, id })}
+                                id={id}
                                 title={`打开${OBJECT_TYPE_CN[l.neighborType] ?? l.neighborType} ${id}`}
-                              >
-                                {id}
-                              </span>
+                                onOpen={() => onOpenObject({ type: l.neighborType, id })}
+                              />
                             ))}
                             {exp.ids.length > 40 && (
                               <span className="cp-neighbor is-plain">+{exp.ids.length - 40} 更多</span>

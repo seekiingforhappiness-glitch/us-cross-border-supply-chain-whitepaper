@@ -3,6 +3,7 @@ import {
   COUNTERPARTY_TYPES,
   COUNTERPARTY_TYPE_CN,
   fetchObject,
+  fetchRiskImpact,
   formatInt,
   formatUsd,
   isMasked,
@@ -14,6 +15,7 @@ import {
   type ObjectFields,
   type ObjectRef,
   type PanoAlert,
+  type PaymentImpactRow,
   type Role,
 } from "../api";
 import { actorForRole, roleShort } from "../roleActors";
@@ -71,6 +73,21 @@ function parseIds(raw: unknown): string[] {
 }
 
 const LINE_FETCH_CAP = 8; // 明细行按需拉取上限（用户点击触发，非循环，有界）
+
+// ── 付款锚风险（R19/R21，轮3-D）归并呈现 ────────────────────────────────────
+// 摘要文本有"客户 CUS-0002 订单 SO-SIM-01008"而结构化区 0 条——因为这族风险锚在付款不在订单行。
+// 后端 /cockpit/risk-impact 沿实际 schema 归并（payment→单据→对手方），这里照实呈现；归并不到
+// （rows 空）时保留原有诚实空态文案不变。译名/可点链接与全舱同规（对象类型映射见 api.ts）。
+const PAY_ANCHOR_RULES = new Set(["R19", "R21"]);
+const REF_TYPE_CN: Record<string, string> = { sales_order: "订单", supplier_invoice: "供应商发票" };
+const REF_TYPE_OBJ: Record<string, string> = { sales_order: "SalesOrder", supplier_invoice: "SupplierInvoice" };
+const CPTY_TYPE_OBJ: Record<string, string> = { customer: "Customer", supplier: "Supplier" };
+
+function payRowStatus(r: PaymentImpactRow): { text: string; neg: boolean } {
+  if (r.overdue_days != null) return { text: `逾期 ${r.overdue_days} 天`, neg: true };
+  if (r.status === "paid") return { text: r.is_anchor === false ? "已付（重复笔）" : "已付", neg: false };
+  return { text: "待回款", neg: false };
+}
 
 // A-1（V13①）待拍板动作区：把批准/驳回真的搬回驾驶舱。经理角色可点，其余角色看到灰态 + 提示。
 // 批准=approve_mitigation(decision='approved') 按方案回写并结单；驳回=decision='rejected' 退回专员改方案
@@ -411,6 +428,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
   const [risk, setRisk] = useState<ObjectFields | null>(null);
   const [lines, setLines] = useState<ObjectFields[] | null>(null);
   const [custRows, setCustRows] = useState<CustRow[] | null>(null);
+  const [payRows, setPayRows] = useState<PaymentImpactRow[] | null>(null); // 付款锚归并行（轮3-D）
   const [taskIds, setTaskIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -425,6 +443,7 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
       setRisk(null);
       setLines(null);
       setCustRows(null);
+      setPayRows(null);
       setTaskIds([]);
       return;
     }
@@ -434,21 +453,29 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
     setRisk(null);
     setLines(null);
     setCustRows(null);
+    setPayRows(null);
     setTaskIds([]);
     const rid = focusAlert.risk_event_id;
     fetchObject("RiskEvent", rid, role)
       .then(async (r) => {
         if (cancelled) return;
         setRisk(r);
-        const ids = parseIds(r.affected_so_line_ids).slice(0, LINE_FETCH_CAP);
-        const [lineRes, taskRes] = await Promise.all([
+        const allIds = parseIds(r.affected_so_line_ids);
+        // 付款锚风险族（R19/R21 或 affected 里是 PAY-* id）：走 /cockpit/risk-impact 归并链；
+        // PAY id 不当订单行去 fetch（那条路必 404，之前正是它把结构化区打成"0 条无可归并"）。
+        const payAnchored = PAY_ANCHOR_RULES.has(String(r.rule_id)) || allIds.some((id) => id.startsWith("PAY"));
+        const ids = allIds.filter((id) => !id.startsWith("PAY")).slice(0, LINE_FETCH_CAP);
+        const [lineRes, taskRes, payRes] = await Promise.all([
           Promise.all(ids.map((id) => fetchObject("SalesOrderLine", id, role).catch(() => null))),
           traverse("RiskEvent", rid, "task_handles_risk", role).catch(() => null),
+          payAnchored ? fetchRiskImpact(rid, role).catch(() => null) : Promise.resolve(null),
         ]);
         if (cancelled) return;
         const okLines = lineRes.filter((x): x is ObjectFields => x !== null);
         setLines(okLines);
         setTaskIds(taskRes?.neighbor_ids ?? []);
+        // 归并到才展示（rows 空/接口失败 → 保留原有诚实空态文案，不新造空态）
+        setPayRows(payRes && payRes.anchor === "payment" && payRes.rows.length > 0 ? payRes.rows : null);
 
         // 波及客户：line→order→customer_id 归并 + 敞口(qty×price)排序，有界。
         const soIds = [...new Set(okLines.map((l) => String(l.so_id)).filter(Boolean))];
@@ -566,20 +593,54 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
               )}
             </div>
 
-            {/* 受影响订单行 */}
+            {/* 受影响订单行 / 受影响单据（付款锚风险 R19/R21 显付款归并，轮3-D） */}
             <div className="cp-impact__sect">
               <div className="cp-impact__sect-t">
-                受影响订单行
+                {payRows ? "受影响单据 · 付款锚" : "受影响订单行"}
                 {risk && (
                   <span
                     className="cp-impact__agg"
-                    title="影响货值＝受影响订单行 Σqty×单价，是这笔风险牵连了多少货；不是处置这笔风险要花多少钱（那是「处置成本」，两个口径不同、并存不冲突）"
+                    title={payRows
+                      ? "影响金额＝该笔风险锚定付款的金额（R19 逾期应收 / R21 重复付款）；不是处置这笔风险要花多少钱（那是「处置成本」）"
+                      : "影响货值＝受影响订单行 Σqty×单价，是这笔风险牵连了多少货；不是处置这笔风险要花多少钱（那是「处置成本」，两个口径不同、并存不冲突）"}
                   >
-                    {affectedLineCount} 条 · 影响货值 <b className={isMasked(totalUsd) ? "" : "gold"}>{formatUsd(totalUsd as number | string)}</b>
+                    {payRows ? `${payRows.length} 笔付款` : `${affectedLineCount} 条`} · {payRows ? "影响金额" : "影响货值"}{" "}
+                    <b className={isMasked(totalUsd) ? "" : "gold"}>{formatUsd(totalUsd as number | string)}</b>
                   </span>
                 )}
               </div>
-              {!lines ? (
+              {payRows ? (
+                <table className="cp-table cp-table--tight">
+                  <thead>
+                    <tr>
+                      <th>付款</th>
+                      <th>单据</th>
+                      <th className="num">金额</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payRows.map((p) => {
+                      const st = payRowStatus(p);
+                      const refObj = REF_TYPE_OBJ[p.ref_type];
+                      return (
+                        <tr
+                          key={p.payment_id}
+                          className={refObj ? "is-click" : ""}
+                          onClick={() => refObj && onOpenObject({ type: refObj, id: p.ref_id })}
+                        >
+                          <td className="name num">{p.payment_id}</td>
+                          <td className="num">
+                            {REF_TYPE_CN[p.ref_type] ?? p.ref_type} {p.ref_id}
+                          </td>
+                          <td className="num">{formatUsd(p.amount_usd)}</td>
+                          <td className={st.neg ? "neg" : ""}>{st.text}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : !lines ? (
                 loading ? (
                   <StateHint kind="loading" compact title="加载中…" />
                 ) : (
@@ -619,13 +680,47 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
               {risk && affectedLineCount > (lines?.length ?? 0) && <div className="cp-basis">显示前 {lines?.length} 行（共 {affectedLineCount} 行受影响）</div>}
             </div>
 
-            {/* 波及客户 */}
+            {/* 波及客户（付款锚风险：payment→单据→对手方归并行——"客户 X · 订单 Y · 金额 Z"，轮3-D） */}
             <div className="cp-impact__sect">
               <div className="cp-impact__sect-t">
-                波及客户
-                {custRows && custRows.length > 0 && <span className="cp-impact__agg">{custRows.length} 家</span>}
+                {payRows && payRows.some((p) => p.counterparty_type !== "customer") ? "波及对手方" : "波及客户"}
+                {payRows
+                  ? <span className="cp-impact__agg">{new Set(payRows.map((p) => p.counterparty_id)).size} 家</span>
+                  : custRows && custRows.length > 0 && <span className="cp-impact__agg">{custRows.length} 家</span>}
               </div>
-              {!custRows ? (
+              {payRows ? (
+                <table className="cp-table cp-table--tight">
+                  <thead>
+                    <tr>
+                      <th>{payRows.some((p) => p.counterparty_type !== "customer") ? "对手方" : "客户"}</th>
+                      <th>{payRows.some((p) => p.ref_type === "supplier_invoice") ? "单据" : "订单"}</th>
+                      <th className="num">金额</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payRows.filter((p) => p.is_anchor !== false).map((p) => {
+                      const cptyObj = CPTY_TYPE_OBJ[p.counterparty_type];
+                      const st = payRowStatus(p);
+                      return (
+                        <tr
+                          key={`${p.counterparty_id}-${p.ref_id}`}
+                          className={cptyObj ? "is-click" : ""}
+                          onClick={() => cptyObj && onOpenObject({ type: cptyObj, id: p.counterparty_id })}
+                        >
+                          <td className="name num">
+                            {COUNTERPARTY_TYPE_CN[p.counterparty_type as CounterpartyType] ?? p.counterparty_type} {p.counterparty_id}
+                          </td>
+                          <td className="num">{p.ref_id}</td>
+                          <td className="num">
+                            {formatUsd(p.amount_usd)}
+                            {st.neg && <span className="neg">（{st.text}）</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : !custRows ? (
                 loading ? (
                   <StateHint kind="loading" compact title="归并中…" />
                 ) : (

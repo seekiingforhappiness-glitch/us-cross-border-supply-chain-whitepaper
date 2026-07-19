@@ -135,6 +135,7 @@ panorama 聚合规则（单层>40 实体时聚合为分组节点，保画面可�
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from datetime import date, timedelta
@@ -256,6 +257,29 @@ def _apply_role_masks(payload: dict, role: str) -> dict:
             if zone.get("headline_unit") == "usd":
                 zone["headline_value"] = MASK
     return payload
+
+
+# ─── ai-flow 载荷自由文本金额脱敏（轮3-A P1，_can_see_cost 声明的执行缺口收紧）───
+# 为什么这样建（≤5 行，AGENTS.md §4）：
+#   · 泄漏面是**自由文本**（sim_ai_activity.detail 灌出的 summary/note 带 "$7157.16"），
+#     _mask_money 只掩结构化 _usd 键管不到——补文本层，判定复用 agent/tools._can_see_cost 同一权威。
+#   · 正则锚定 '$'+数字（对象编号如 RSK-SIM-00001 无 '$' 前缀，零误伤），替换为 $•••——保留
+#     "这里有个金额"的语义信号（前端 parseAmount 不吃 ••• → 金额徽标自然消失，文案仍可读）。
+_TEXT_AMOUNT_RE = re.compile(r"\$\s*\d[\d,]*(?:\.\d+)?")
+TEXT_AMOUNT_MASK = "$•••"
+
+
+def _mask_text_amounts(node: Any) -> Any:
+    """就地递归：str 值里的 '$金额' → '$•••'（dict/list 深走，非 str 标量原样）。返回同一节点。"""
+    if isinstance(node, dict):
+        for key, val in node.items():
+            node[key] = _mask_text_amounts(val)
+        return node
+    if isinstance(node, list):
+        return [_mask_text_amounts(item) for item in node]
+    if isinstance(node, str):
+        return _TEXT_AMOUNT_RE.sub(TEXT_AMOUNT_MASK, node)
+    return node
 
 
 def _shift_date(day: str, delta_days: int) -> str:
@@ -1564,6 +1588,103 @@ def _provenance_ai_flow(con, tables: set[str]) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 付款锚风险影响归并（轮3-D P1：R19/R21 摘要有客户/订单号、结构化区却 0 条无可归并）
+# ═══════════════════════════════════════════════════════════════════════════
+# 为什么这样建（≤5 行，AGENTS.md §4）：
+#   · R19/R21 锚在 payment 不在订单行——验证世界把 payment_id 写进 affected_so_line_ids（engine
+#     幂等自然键），sim 世界该列如实留空、锚在任务 proposal_params（payment_id / customer_id）。
+#   · 归并链全走实际 schema：payment → ref（sales_order/supplier_invoice）→ 对手方（customer/
+#     supplier），零文本解析；恢复不唯一（歧义）或链路真缺 → rows=[] + 白话 note，不编造。
+#   · R21 补列同据同额的姊妹付款（重复付款异常的"另一笔"），让"哪张单据被重复付了"看得见。
+_PAYMENT_ANCHOR_RULES = ("R19", "R21")
+
+
+def _payment_row(con, pay_id: str, clock: str | None) -> dict | None:
+    """单笔付款 → 影响行。逾期天数=世界时钟−到期日（仅未回款的应收，负值/缺日期不硬算）。"""
+    r = _one(con, "SELECT payment_id, direction, counterparty_type, counterparty_id, "
+                  "ref_type, ref_id, amount_usd, due_date, status FROM payments "
+                  "WHERE payment_id=?", (pay_id,))
+    if not r:
+        return None
+    row = dict(r)
+    overdue = None
+    if (clock and row["due_date"] and row["direction"] == "in"
+            and row["status"] != "paid"):
+        try:
+            delta = (date.fromisoformat(clock[:10])
+                     - date.fromisoformat(str(row["due_date"])[:10])).days
+            overdue = delta if delta > 0 else None
+        except ValueError:
+            overdue = None                 # 脏日期如实略过，不 raise
+    row["overdue_days"] = overdue
+    return row
+
+
+def _resolve_anchor_payments(con, tables: set[str], risk: sqlite3.Row) -> list[str]:
+    """风险 → 锚付款 id 列表。两条路，都是 schema 键，零猜测：
+    ① affected_so_line_ids 里的 PAY-* id（验证世界 engine 写法）；
+    ② 该风险任务的 proposal_params：payment_id 直取（sim R21），或 customer_id+金额对
+       payments 唯一匹配（sim R19；命中≠1 视为歧义 → 放弃，不编造）。"""
+    ids = [i for i in _json_ids(risk["affected_so_line_ids"]) if i.startswith("PAY")]
+    if ids or "tasks" not in tables:
+        return ids
+    resolved: list[str] = []
+    for t in con.execute("SELECT proposal_params FROM tasks WHERE risk_event_id=?",
+                         (risk["risk_event_id"],)):
+        try:
+            params = json.loads(t["proposal_params"]) if t["proposal_params"] else {}
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(params, dict):
+            continue
+        if params.get("payment_id"):
+            resolved.append(str(params["payment_id"]))
+            continue
+        if params.get("customer_id") and risk["affected_value_usd"] is not None:
+            hits = [r["payment_id"] for r in con.execute(
+                "SELECT payment_id FROM payments WHERE direction='in' AND status='scheduled' "
+                "AND counterparty_id=? AND round(amount_usd,2)=round(?,2)",
+                (params["customer_id"], risk["affected_value_usd"]))]
+            if len(hits) == 1:             # 唯一命中才算数——歧义即放弃（诚实空态）
+                resolved.append(hits[0])
+    return list(dict.fromkeys(resolved))   # 去重保序
+
+
+def _payment_impact(con, tables: set[str], risk: sqlite3.Row, clock: str | None) -> dict:
+    """付款锚影响块：rows=归并行（客户/供应商 × 单据 × 金额 × 逾期天数），空则带白话 note。"""
+    if "payments" not in tables:
+        return {"anchor": "payment", "rows": [],
+                "note": "该世界缺 payments 表——付款归并链无从建立（如实空，非 0 条）。"}
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for pid in _resolve_anchor_payments(con, tables, risk):
+        row = _payment_row(con, pid, clock)
+        if not row or row["payment_id"] in seen:
+            continue
+        seen.add(row["payment_id"])
+        row["is_anchor"] = True
+        rows.append(row)
+        if risk["rule_id"] == "R21":       # 重复付款：补同据同额姊妹笔，让"哪张单据被重复付"可见
+            for s in con.execute(
+                    "SELECT payment_id FROM payments WHERE ref_type=? AND ref_id=? "
+                    "AND round(amount_usd,2)=round(?,2) AND payment_id != ? "
+                    "ORDER BY payment_id", (row["ref_type"], row["ref_id"],
+                                            row["amount_usd"], row["payment_id"])):
+                if s["payment_id"] in seen:
+                    continue
+                sib = _payment_row(con, s["payment_id"], clock)
+                if sib:
+                    sib["is_anchor"] = False
+                    seen.add(sib["payment_id"])
+                    rows.append(sib)
+    out: dict[str, Any] = {"anchor": "payment", "rows": rows}
+    if not rows:
+        out["note"] = ("锚付款在本库无法唯一定位（链路数据缺失或歧义）——如实空，不猜。"
+                       "摘要文本仍以风险 root_cause 为准。")
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 路由工厂：main.py 尾部挂载（cockpit 不 import main → 零循环导入；
 # 复用 main 的 get_db_path/get_ro_connection 依赖 ⇒ 测试 dependency_overrides 自动生效）
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1681,6 +1802,114 @@ def build_cockpit_router(get_db_path: Callable, get_ro_connection: Callable,
                                                replay and world_is_sim)
         if provenance:                     # U2：独立键，缺省不加 → byte-identical
             payload["provenance"] = _provenance_ai_flow(con, tables)
+        payload = _apply_role_masks(payload, x_role)
+        # 轮3-A（P1 执行缺口收紧）：非成本角色（含缺省 ops，与既有掩码语义对齐）再过文本层——
+        # summary/note 等自由文本里的 "$金额" → $•••；finance/manager（_can_see_cost）不受影响。
+        if not _can_see_cost(x_role):
+            payload = _mask_text_amounts(payload)
+        return payload
+
+    @router.get("/risk-impact/{risk_event_id}")
+    def cockpit_risk_impact(risk_event_id: str,
+                            x_role: str = Header(default="ops", alias="X-Role"),
+                            con: sqlite3.Connection = Depends(get_ro_connection),
+                            db_path: str = Depends(get_db_path)) -> dict:
+        """付款锚风险（R19/R21）影响归并（轮3-D）：payment → 单据（sales_order/supplier_invoice）
+        → 对手方（客户/供应商），结构化补齐"客户 X · 订单 Y · 金额 Z（· 逾期 N 天）"。
+        非付款锚风险 → anchor='so_line' + rows=[]（订单行归并走既有 /objects 链路，本端点不重复）。
+        金额掩码跟随现行角色规则（amount_usd 键过 _apply_role_masks，finance/manager 见真值）。"""
+        tables = _tables(con)
+        if "risk_events" not in tables:
+            raise HTTPException(404, detail="该世界无 risk_events 表——无风险可归并。")
+        risk = _one(con, "SELECT risk_event_id, rule_id, affected_so_line_ids, "
+                         "affected_value_usd FROM risk_events WHERE risk_event_id=?",
+                    (risk_event_id,))
+        if not risk:
+            raise HTTPException(404, detail=f"风险 {risk_event_id} 在当前世界不存在——"
+                                            f"确认编号或先切到正确的世界（验证/模拟）。")
+        _, world_clock = _world_window(con, tables)
+        payload: dict[str, Any] = {
+            "world": infer_world(db_path), "role": x_role,
+            "risk_event_id": risk["risk_event_id"], "rule_id": risk["rule_id"],
+            "basis": ("R19/R21 锚在付款：归并链＝付款→单据（销售订单/供应商发票）→对手方"
+                      "（客户/供应商）；逾期天数＝世界时钟−应收到期日（仅未回款应收）。"),
+        }
+        has_pay_anchor = (risk["rule_id"] in _PAYMENT_ANCHOR_RULES
+                          or any(i.startswith("PAY")
+                                 for i in _json_ids(risk["affected_so_line_ids"])))
+        if has_pay_anchor:
+            payload.update(_payment_impact(con, tables, risk, world_clock))
+        else:
+            payload.update({"anchor": "so_line", "rows": [],
+                            "note": "非付款锚风险：订单行/客户归并走既有对象读链路，"
+                                    "本端点仅服务 R19/R21 付款锚风险族。"})
+        return _apply_role_masks(payload, x_role)
+
+    @router.get("/customs-queue")
+    def cockpit_customs_queue(limit: int = Query(default=50, ge=1, le=50),
+                              x_role: str = Header(default="ops", alias="X-Role"),
+                              con: sqlite3.Connection = Depends(get_ro_connection),
+                              db_path: str = Depends(get_db_path)) -> dict:
+        """清关卡点逐票队列（轮3-G P0：卡片"21 票"只有数字无清单、原文案导流去不存在的入口）。
+        口径与七区卡完全同源：customs_status='not_filed' 且 status='in_transit'（fulfillment 区
+        customs_blocked 的同一条 WHERE）。每票：目的港/卡点天数/关联 PO 数/该票 open 风险最高严重度。
+        卡点天数＝世界时钟−该票最后里程碑日（无里程碑退 last_event_time，再退 ETD；全缺如实 null）。
+        纯读现查、cap 50 + total 如实（防静默截断惯例）。"""
+        tables = _tables(con)
+        payload: dict[str, Any] = {
+            "world": infer_world(db_path), "role": x_role,
+            "basis": ("卡点＝未报关（not_filed）且在途；卡点天数＝世界时钟−最后里程碑日"
+                      "（无里程碑退最后事件时间，再退离港日；全缺如实标空）；严重度＝该票"
+                      "未闭环风险最高档；按卡点天数降序。"),
+        }
+        if "shipments" not in tables:
+            payload.update({"total": 0, "count": 0, "items": [],
+                            "note": "该世界缺 shipments 表——无在途票据可查。"})
+            return _apply_role_masks(payload, x_role)
+        _, world_clock = _world_window(con, tables)
+        last_ms: dict[str, str] = {}
+        if "shipment_milestones" in tables:
+            last_ms = {r["shipment_id"]: r["last_time"] for r in con.execute(
+                "SELECT shipment_id, max(event_time) last_time FROM shipment_milestones "
+                "GROUP BY shipment_id")}
+        sev_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+        risk_by_ship: dict[str, dict] = {}
+        if "risk_events" in tables:
+            for r in con.execute("SELECT shipment_id, severity, count(*) n FROM risk_events "
+                                 "WHERE status='open' AND shipment_id IS NOT NULL "
+                                 "AND shipment_id != '' GROUP BY shipment_id, severity"):
+                cur = risk_by_ship.setdefault(r["shipment_id"], {"severity": None, "open_risks": 0})
+                cur["open_risks"] += r["n"]
+                if (cur["severity"] is None
+                        or sev_rank.get(r["severity"], -1) > sev_rank.get(cur["severity"], -1)):
+                    cur["severity"] = r["severity"]
+        items: list[dict] = []
+        for s in con.execute(
+                "SELECT shipment_id, destination_port, etd, last_event_time, po_ids "
+                "FROM shipments WHERE customs_status='not_filed' AND status='in_transit'"):
+            stuck_since = last_ms.get(s["shipment_id"]) or s["last_event_time"] or s["etd"]
+            stuck_days = None
+            if world_clock and stuck_since:
+                try:
+                    stuck_days = (date.fromisoformat(world_clock[:10])
+                                  - date.fromisoformat(str(stuck_since)[:10])).days
+                except ValueError:
+                    stuck_days = None      # 脏日期如实空，不硬算
+            risk = risk_by_ship.get(s["shipment_id"], {"severity": None, "open_risks": 0})
+            items.append({
+                "shipment_id": s["shipment_id"],
+                "destination_port": s["destination_port"],
+                "stuck_days": stuck_days,
+                "stuck_since": str(stuck_since)[:10] if stuck_since else None,
+                # po_ids 为管道分隔串（与 panorama/build_ontology 同一解析口径，非 JSON 列）
+                "po_count": len([p for p in str(s["po_ids"] or "").split("|") if p]),
+                "severity": risk["severity"],
+                "open_risks": risk["open_risks"],
+            })
+        items.sort(key=lambda r: (r["stuck_days"] is None, -(r["stuck_days"] or 0),
+                                  r["shipment_id"]))
+        payload.update({"total": len(items), "count": min(limit, len(items)),
+                        "items": items[:limit]})
         return _apply_role_masks(payload, x_role)
 
     return router

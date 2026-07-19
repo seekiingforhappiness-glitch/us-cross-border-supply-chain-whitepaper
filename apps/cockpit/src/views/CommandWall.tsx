@@ -9,7 +9,7 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
-import { headlineOf, summaryLines, todaysFocus, ZONE_ICON, ZONE_SHORT, type FocusItem, type SummaryLine } from "./zoneModel";
+import { headlineOf, summaryLines, todaysFocus, ZONE_ICON, zoneShort, type FocusItem, type SummaryLine } from "./zoneModel";
 
 // 七区指挥墙（V10 方案 C 默认首屏中央）——体征带的"放大态"（顶部体征带已移除，避免同信息两处）。
 // 每卡：区图标+区名 + headline 大数字 + 趋势（有数据才显示）+ 告警计数徽标 + 该区最要紧 2-3 行摘要
@@ -91,11 +91,12 @@ function Popover({ rect, label, onClose, children }: { rect: DOMRect; label: str
 }
 
 // U2 溯源浮层内容：口径白话 + 来源表/对象 + 样例 id（可跳透视镜）+ 完整血缘提示。
-function ProvBody({ zone, prov }: { zone: ZoneId; prov: ZoneProvenance }) {
+// F·P1：区名经 zoneShort 角色适配（非 manager 的"待我拍板"→"待批提案"，与卡面标题一致）。
+function ProvBody({ zone, role, prov }: { zone: ZoneId; role?: Role; prov: ZoneProvenance }) {
   return (
     <>
       <div className="cp-pop__head">
-        <Icon name="link" size={13} /> 数字溯源 · {ZONE_SHORT[zone]}
+        <Icon name="link" size={13} /> 数字溯源 · {zoneShort(zone, role)}
       </div>
       <div className="cp-pop__sect">
         <div className="cp-pop__k">口径（这个数怎么来的）</div>
@@ -282,7 +283,8 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                   <span className="cp-wall-card__icon" aria-hidden>
                     <Icon name={ZONE_ICON[z.zone]} size={17} />
                   </span>
-                  <span className="cp-wall-card__name">{ZONE_SHORT[z.zone]}</span>
+                  {/* F·P1（轮3）：非 manager 的"待我拍板"改"待批提案"（审批权在老板；zoneShort 角色适配） */}
+                  <span className="cp-wall-card__name">{zoneShort(z.zone, role)}</span>
                   {prov && (
                     <span
                       role="button"
@@ -409,7 +411,7 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
         >
           {pop.kind === "prov" ? (
             provenance?.[pop.zone] ? (
-              <ProvBody zone={pop.zone} prov={provenance[pop.zone]} />
+              <ProvBody zone={pop.zone} role={role} prov={provenance[pop.zone]} />
             ) : (
               <StateHint kind="empty" compact title="无溯源信息" reason="该指标未附溯源信封。" />
             )

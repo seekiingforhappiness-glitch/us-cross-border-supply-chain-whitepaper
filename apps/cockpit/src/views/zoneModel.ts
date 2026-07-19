@@ -42,6 +42,14 @@ export const ZONE_SHORT: Record<ZoneId, string> = {
 // headline 为比率的区（0-1 → 百分比）
 export const RATE_ZONES: ReadonlySet<ZoneId> = new Set<ZoneId>(["fulfillment", "suppliers"]);
 
+/** F·P1（轮3 老周/林律"无拍板权角色也被说等你拍板"）：区短名的角色适配——非 manager 没有审批权
+ *  （后端 403），"待我拍板"这个第一人称对他们不属实，改中性"待批提案"；manager/未知角色维持原名。
+ *  只改措辞不改数据：审批门控仍全在后端，前端不复制权限规则。 */
+export function zoneShort(zone: ZoneId, role?: Role): string {
+  if (zone === "decisions" && role && role !== "manager") return "待批提案";
+  return ZONE_SHORT[zone];
+}
+
 // ── 值渲染态（掩码/缺数/真实）────────────────────────────────────────────────
 export type ValState = "real" | "missing" | "masked";
 export interface SummaryLine {
@@ -340,7 +348,10 @@ function decisionsQueue(d: D): QueueSpec {
     // 花费）而非受影响订单行货值——影响面板另有一个货值合计，两口径并存无标注会被读成自相矛盾/数据错。
     columns: [{ label: "提案" }, { label: "风险" }, { label: "动作" }, { label: "指派" }, { label: "处置成本", num: true }],
     countLabel,
-    basis: "按处置成本（执行该方案的花费，非受影响订单行货值）降序、等待时长（API 口径）——最贵/等最久的在前",
+    // L·P3（轮3 老周"没有图例不知道 P2 算不算严重"）：basis 行补一句优先级图例（徽章渲染在通用
+    // WorkQueue，列头/徽章不支持 title，图例落在紧贴表格下方的本行）。
+    basis:
+      "按处置成本（执行该方案的花费，非受影响订单行货值）降序、等待时长（API 口径）——最贵/等最久的在前。行首优先级徽章：P0 最急 → P3 最缓，数字越小越要先处理",
     rows: pend.map((p) => ({
       key: p.task_id,
       badge: p.priority ? { text: p.priority, tone: p.priority === "P1" ? "red" : "amber" } : undefined,
@@ -366,11 +377,23 @@ function decisionsQueue(d: D): QueueSpec {
   };
 }
 
-function customersQueue(d: D): QueueSpec {
+function customersQueue(z: Zone): QueueSpec {
+  const d = z.detail as D;
   const top = (d.top_exposure as { customer_id: string; customer_name: string; exposure_usd: number | string; open_risks: number; affected_lines: number }[]) ?? [];
+  // H·P2（轮3 苏苏"标 13 告警只数出 5 行，剩下 8 个藏哪儿"）：后端本区载荷只带敞口 Top5
+  // （apps/api/cockpit.py::_zone_customers [:5]），全量逐家列表不在载荷里——不硬造"展开全部"假按钮，
+  // 头部如实标"Top N · 共 M 家"（M=headline_value=有风险敞口客户数，与卡片告警数同源同值）。
+  const total = typeof z.headline_value === "number" ? z.headline_value : null;
+  const countLabel =
+    total != null && total > top.length
+      ? `Top ${top.length} · 共 ${total} 家风险敞口客户`
+      : total != null
+        ? `共 ${total} 家风险敞口客户`
+        : undefined;
   return {
     columns: [{ label: "客户" }, { label: "敞口", num: true }, { label: "风险", num: true }, { label: "波及行", num: true }],
-    basis: "按敞口（去重订单行 Σ qty×单价）降序 Top（API 口径）",
+    countLabel,
+    basis: "按敞口（去重订单行 Σ qty×单价）降序取前 5（API 口径）——未上榜客户敞口更小，暂无逐家全量列表",
     rows: top.map((c) => ({
       key: c.customer_id,
       badge: { text: `${c.open_risks} 险`, tone: "red" },
@@ -385,9 +408,14 @@ function suppliersQueue(d: D): QueueSpec | null {
   if (isMissing(delivery) || !delivery) return null; // 缺收货域→无队列，聚合上下文承接
   const dv = delivery as { worst_suppliers: { supplier_id: string; supplier_name: string; pos_measured: number; rate: number | null }[] };
   const worst = dv.worst_suppliers ?? [];
+  // J·P2（轮3 老周/林律"列表 PO 数 153 vs 对象卡关系采购单 167 对不上"）：两数是两种口径并存，
+  // 非数据错——此列 pos_measured 只计"有收货记录、计入达成率分母"的采购单（后端 JOIN goods_receipts，
+  // 见 _zone_suppliers），对象卡关系区"采购单"是该供应商全部采购单（含未收货，SUP-0010 实证
+  // 167 全量 / 153 有收货）。列头点明 + basis 行白话讲清，不掩盖也不改后端。
   return {
-    columns: [{ label: "供应商" }, { label: "达成率", num: true }, { label: "PO 数", num: true }],
-    basis: "按交期达成率升序（最差在前，API 口径）",
+    columns: [{ label: "供应商" }, { label: "达成率", num: true }, { label: "PO 数（有收货）", num: true }],
+    basis:
+      "按交期达成率升序（最差在前，API 口径）。「PO 数（有收货）」只计有收货记录、计入达成率分母的采购单；对象卡关系区的「采购单」是全部采购单（含未收货），数字更大是口径差非数据错",
     rows: worst.slice(0, 20).map((s) => ({
       key: s.supplier_id,
       badge: s.rate == null ? undefined : s.rate < 0.7 ? { text: "低", tone: "red" } : s.rate < 0.85 ? { text: "关注", tone: "amber" } : undefined,
@@ -419,7 +447,7 @@ export function zoneQueue(z: Zone): QueueSpec | null {
     case "decisions":
       return decisionsQueue(z.detail as D);
     case "customers":
-      return customersQueue(z.detail as D);
+      return customersQueue(z);
     case "suppliers":
       return suppliersQueue(z.detail as D);
     case "inventory":
@@ -465,11 +493,14 @@ function decisionsFocus(zones: Zone[], role?: Role): FocusItem | null {
     const mine = pend.filter((p) => p.assignee_role === role).length;
     if (mine > 0) mineNote = `（你组 ${formatInt(mine)} 条）`;
   }
+  // F·P1（轮3 老周/林律）："等你拍板"只对 manager 属实（审批权在老板，其余角色批会被后端 403）——
+  // 非 manager 改"候老板审批"；数据（total/mineNote/金额）一字不动，纯措辞角色适配。
+  const verb = role && role !== "manager" ? "候老板审批" : "等你拍板";
   return {
     key: "focus-decisions",
     zone: "decisions",
-    text: `${formatInt(total)} 条提案等你拍板${mineNote}，最高处置成本 ${c.text}`,
-    source: "来自：待我拍板区当前值",
+    text: `${formatInt(total)} 条提案${verb}${mineNote}，最高处置成本 ${c.text}`,
+    source: `来自：${zoneShort("decisions", role)}区当前值`,
   };
 }
 

@@ -451,6 +451,62 @@ export interface AiFlow {
 export const fetchAiFlow = (role: Role, limit = 60, asOf?: string | null) =>
   apiGet<AiFlow>(`/cockpit/ai-flow?limit=${limit}${asOf ? `&as_of=${encodeURIComponent(asOf)}` : ""}`, role);
 
+// ═══════════════ /cockpit/risk-impact/{id}（付款锚风险归并，轮3-D）═══════════════
+// R19/R21 锚在付款不在订单行——本端点把 payment→单据（销售订单/供应商发票）→对手方（客户/供应商）
+// 归并成结构化行；非付款锚风险返回 anchor='so_line' + rows=[]（订单行归并走既有对象读链路）。
+// 金额掩码由后端按 X-Role 同源执行（amount_usd 对非成本角色是 MASK 字符串）。
+export interface PaymentImpactRow {
+  payment_id: string;
+  direction: string; // in=应收 | out=应付
+  counterparty_type: string; // customer | supplier
+  counterparty_id: string;
+  ref_type: string; // sales_order | supplier_invoice
+  ref_id: string;
+  amount_usd: number | string | null; // 非成本角色为 MASK 字符串
+  due_date: string | null;
+  status: string;
+  overdue_days: number | null; // 仅未回款应收有值（世界时钟−到期日）
+  is_anchor: boolean; // R21 的姊妹重复笔为 false
+}
+
+export interface RiskImpact {
+  world: string;
+  role: string;
+  risk_event_id: string;
+  rule_id: string;
+  anchor: "payment" | "so_line";
+  rows: PaymentImpactRow[];
+  note?: string; // rows 空时的白话原因（诚实空态，非 0 条冒充）
+  basis: string;
+}
+
+export const fetchRiskImpact = (riskEventId: string, role: Role) =>
+  apiGet<RiskImpact>(`/cockpit/risk-impact/${encodeURIComponent(riskEventId)}`, role);
+
+// ═══════════════ /cockpit/customs-queue（清关卡点逐票队列，轮3-G）═══════════════
+// 口径与履约区卡 customs_blocked 完全同源（not_filed 且在途）；卡点天数/严重度口径见 basis 白话。
+export interface CustomsQueueItem {
+  shipment_id: string;
+  destination_port: string | null;
+  stuck_days: number | null; // 世界时钟−最后里程碑日；数据全缺如实 null
+  stuck_since: string | null;
+  po_count: number;
+  severity: string | null; // 该票 open 风险最高档；无风险为 null
+  open_risks: number;
+}
+
+export interface CustomsQueue {
+  world: string;
+  role: string;
+  total: number;
+  count: number;
+  items: CustomsQueueItem[];
+  basis: string;
+  note?: string;
+}
+
+export const fetchCustomsQueue = (role: Role) => apiGet<CustomsQueue>(`/cockpit/customs-queue`, role);
+
 // ═══════════════════════════ /governance/gating（AI 可信度正脸，U3）═══════════════════════════
 // AI 放权档位摘要（display-only）：把 data/gating_report.json 翻成老板语言的"当前档位 + 白话为什么"。
 // display_only=true 意为"只算档不放权"——这条原样透传，绝不误读成"档位=已授权"。文件缺失/损坏时
