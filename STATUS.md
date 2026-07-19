@@ -14,8 +14,18 @@
 > （+2 理由用例）/security 288/lint 0/digest 不变。**环境教训**：新 backfill 的 simworld 必须
 > 补跑 `apply_seam_columns --db data/simworld.sqlite`（三运营表+接缝列），否则 sim 审批 500——
 > 已修并实证 sim 批准落库。**服务栈已迁本 worktree**（升级编排线=主线，:8100/:5174/:4174，
-> 热重载直接生效）。**批B**（②协调催办 HTTP 通道+驾驶舱=Opus）∥ **批C**（①finance 角色
-> 纵向切片=Opus）执行中；其余角色批D Sonnet 复制。
+> 热重载直接生效）。**批B+批C 已收官（03e87bd）**：②协调催办进驾驶舱——新
+> apps/api/collaboration_actions.py 人类通道（白名单=本体 permission_key ∩ COORD_TRANSITIONS
+> 双声明源交集零手写，五转移动作走 Command 总线幂等+audit，open 新线程留 Streamlit 如实导流；
+> 协作流卡按状态机渲染合法动作，manager ∉ COORD_PERMS 诚实只读；浏览器实测催办真闭环三处落账
+> +curl 越权 403 denied 落账）——李珊任务3 断头路打通。①finance 角色纵向切片——roleActors.ts
+> 升级角色注册表单一数据源（加角色=加一行：钮/粒度文案/短名/actor 一次配齐），前端零权限规则
+> 全 API X-Role 同源（钱区可见/UFLPA 掩码/审批 403"当前是财务 finance"白话/scope parity 含
+> finance 全绿）——陈会计四任务三解。顺手修 test_coordination_loop 快照锈蚀（四键仍逐值精确）。
+> 回归：pytest 143（+11）/coordination_loop/security 288/parity/lint 0/digest 9582dcb0 不变。
+> **V22 五项全部落地。批D 挂账**：其余角色（cs/procurement/compliance/sales）复制接入、
+> "我的任务"按角色过滤视图（涉 API 聚合语义）、open_coordination 进驾驶舱、协调写 helper
+> 下沉 api.ts、AI 工作流卡面 mode 徽标（需后端 ai-flow 补字段）。
 
 > **双线合流说明（2026-07-19，升级编排会话执行 merge）**：07-18/19 夜间两条会话线**并行且互不知情**
 > 地各自推进了 L-UX 循环——handoff 线（V21 三裁决落地 + L-UX-1 收环宣告）与升级编排线（轮1 复测
