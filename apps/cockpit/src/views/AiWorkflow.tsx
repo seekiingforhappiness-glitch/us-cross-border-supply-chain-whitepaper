@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  API_BASE_URL,
   fetchAiFlow,
   fetchCollaborationThreads,
+  getApiWorld,
   refToObjectRef,
   type AiFlow,
   type CollabThread,
@@ -10,6 +12,7 @@ import {
   type Role,
   type World,
 } from "../api";
+import { actorForRole } from "../roleActors";
 import Icon, { type IconName } from "../components/Icons";
 import StateHint from "../components/StateHint";
 import AiRuns from "./AiRuns";
@@ -157,10 +160,238 @@ function sevChip(sev: string | null | undefined): { cls: string; text: string } 
   return { cls, text: SEV_CN[sev] ?? sev };
 }
 
+// ═══════════════════ 协调操作区（V22②：催办进驾驶舱）═══════════════════
+// 缘起：L-UX 轮2 李珊任务3 完全失败——协作流只读断头路（"系统里没有任何地方能让我实际点一下催一下"）。
+// 五个对既有线程的写动作经人类协调通道 POST /collaboration/threads/{id}/actions/{name} 进驾驶舱。
+// 按线程当前状态只渲染**状态机合法**的动作（app/coordination_actions.py COORD_TRANSITIONS 的镜像；
+// 后端仍是权威——即使镜像漂移，后端会以 422 白话拒绝，绝不静默）。非法动作不渲染而非置灰报错；
+// resolved / dead_ended 终态不在表中 = 零动作渲染（只读）。
+type CoordActionId =
+  | "record_outreach"
+  | "record_response"
+  | "escalate_coordination"
+  | "resolve_coordination"
+  | "mark_dead_ended";
+
+const COORD_LEGAL: Record<string, CoordActionId[]> = {
+  awaiting: ["record_outreach", "record_response", "escalate_coordination", "resolve_coordination", "mark_dead_ended"],
+  responded: ["escalate_coordination", "resolve_coordination", "mark_dead_ended"],
+  escalated: ["record_response", "resolve_coordination", "mark_dead_ended"],
+};
+
+// 驾驶舱已适配角色中属于协调权限组的（COORD_PERMS.ManageCoordination={ops,cs,procurement,finance}
+// 的前端镜像 ∩ roleActors 已适配集）；老板 manager 不在组内 → 只读。后端 COORD_PERMS 仍是权威。
+const COORD_UI_ROLES: Role[] = ["ops", "finance"];
+
+const COORD_META: Record<CoordActionId, { label: string; hint: string }> = {
+  record_outreach: { label: "催办", hint: "再追一次对方，并重设下一步截止日" },
+  record_response: { label: "记回应", hint: "记录对方的回复内容" },
+  escalate_coordination: { label: "升级", hint: "升一级处理（如上升到对方主管），可顺带改截止日" },
+  resolve_coordination: { label: "达成", hint: "协调有结果——写下结论并归档" },
+  mark_dead_ended: { label: "谈崩", hint: "协调无解 / 放弃——写下原因并归档" },
+};
+
+interface CoordResult {
+  ok: boolean;
+  object_id: string | null;
+  side_effects: string[];
+  error: string | null;
+}
+
+// 本地写请求 helper：api.ts 本批不可改（另一代理并行在改），其 reqHeaders 未导出——此处与
+// postDecision 同构地带齐三头（X-Role / X-World 经导出的 getApiWorld() 取模块级世界单例，语义
+// 一致：未显式选世界则不发头；X-Actor 经 roleActors.actorForRole 同机制）+ Idempotency-Key
+// （每次点击一个新键；busy 态已挡双击连发）。错误处理同 postDecision：后端 detail 是白话中文
+// 原文，原样抛出不吞不美化。⚠ 建议后续下沉 api.ts（postCoordinationAction），消除这份同构复制。
+async function postCoordinationAction(
+  coordinationId: string,
+  action: CoordActionId,
+  body: Record<string, unknown>,
+  role: Role,
+): Promise<CoordResult> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Role": role,
+    "X-Actor": actorForRole(role),
+    "Idempotency-Key":
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  };
+  const w = getApiWorld();
+  if (w) headers["X-World"] = w;
+  const resp = await fetch(
+    `${API_BASE_URL}/collaboration/threads/${encodeURIComponent(coordinationId)}/actions/${action}`,
+    { method: "POST", headers, body: JSON.stringify(body) },
+  );
+  if (!resp.ok) {
+    let detail = `提交失败：HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string" && j.detail) detail = j.detail;
+    } catch {
+      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
+    }
+    throw new Error(detail);
+  }
+  return (await resp.json()) as CoordResult;
+}
+
+// 表单控件统一内联样式（styles.css 本批不可改——另一代理并行在改；全部取既有 CSS 变量，与主题一致）。
+const coordInput: React.CSSProperties = {
+  background: "var(--bg-1)",
+  border: "1px solid var(--line-strong)",
+  borderRadius: "var(--radius-sm)",
+  color: "var(--ink-0)",
+  fontFamily: "var(--font-ui)",
+  fontSize: 11,
+  padding: "4px 7px",
+};
+
+// 线程卡内嵌操作区：合法动作 chips（点选展开对应小表单）→ 提交 → 成功回执 + 通知父层软刷新
+// （状态 / 截止日变化就地可见）。失败显示后端白话错误原文。
+function CoordOps({ t, role, onActed }: { t: CollabThread; role: Role; onActed: () => void }) {
+  const legal = COORD_LEGAL[t.state ?? ""] ?? [];
+  const [act, setAct] = useState<CoordActionId | null>(null);
+  const [note, setNote] = useState("");
+  const [due, setDue] = useState("");
+  const [text, setText] = useState(""); // last_response / outcome 共用（同屏只开一个表单）
+  const [busy, setBusy] = useState(false);
+  const [receipt, setReceipt] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // 协调权限组 COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance}（本体声明）∌ manager。
+  // 驾驶舱已适配角色（manager/ops/finance）里运营与财务在组内——老板视角不渲染写动作（诚实只读，
+  // 不给必 403 的假按钮）；后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。
+  if (!COORD_UI_ROLES.includes(role) || legal.length === 0) {
+    return receipt ? <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--sev-green)" }}>{receipt}</div> : null;
+  }
+
+  const pick = (a: CoordActionId) => {
+    setErr(null);
+    setReceipt(null);
+    setAct((cur) => (cur === a ? null : a));
+  };
+
+  const needText = act === "record_response" || act === "resolve_coordination" || act === "mark_dead_ended";
+  const needDue = act === "record_outreach";
+  const canSubmit = !busy && !!act && (!needText || text.trim() !== "") && (!needDue || due !== "");
+
+  const submit = async () => {
+    if (!act || !canSubmit) return;
+    const body: Record<string, unknown> =
+      act === "record_outreach"
+        ? { next_action_due: due, note: note.trim() }
+        : act === "record_response"
+          ? { last_response: text.trim() }
+          : act === "escalate_coordination"
+            ? due
+              ? { next_action_due: due }
+              : {}
+            : { outcome: text.trim() }; // resolve_coordination / mark_dead_ended
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await postCoordinationAction(t.coordination_id, act, body, role);
+      setReceipt(res.side_effects[0] ?? "已完成");
+      setAct(null);
+      setNote("");
+      setDue("");
+      setText("");
+      onActed(); // 软刷新线程列表：本卡状态 / 截止日 / 跟催次数就地更新（卡片 key 稳定不重挂）
+    } catch (e) {
+      setErr((e as Error).message); // 后端白话错误原文（403 无权 / 422 非法转移…），不吞不美化
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    // 操作区在可点行内：拦截冒泡，点按钮/输入框不触发行的"打开关联对象"（含键盘事件）
+    <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} style={{ marginTop: 6 }}>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {legal.map((a) => (
+          <button
+            key={a}
+            className={`cp-story__replay ${act === a ? "is-active" : ""}`}
+            title={COORD_META[a].hint}
+            onClick={() => pick(a)}
+            disabled={busy}
+          >
+            {COORD_META[a].label}
+          </button>
+        ))}
+      </div>
+
+      {act && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginTop: 6 }}>
+          <span style={{ fontSize: 10.5, color: "var(--ink-2)" }}>{COORD_META[act].hint}</span>
+          {act === "record_outreach" && (
+            <>
+              <input
+                style={coordInput}
+                type="text"
+                placeholder="催办备注（如：已再次邮件跟催工厂）"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+              />
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "var(--ink-1)" }}>
+                新截止日
+                <input style={coordInput} type="date" value={due} onChange={(e) => setDue(e.target.value)} required />
+              </label>
+            </>
+          )}
+          {act === "escalate_coordination" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, color: "var(--ink-1)" }}>
+              新截止日（可选）
+              <input style={coordInput} type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+            </label>
+          )}
+          {needText && (
+            <textarea
+              style={{ ...coordInput, minHeight: 40, resize: "vertical" }}
+              placeholder={
+                act === "record_response"
+                  ? "对方回应内容（如：工厂确认可改期到 8/30 出货）"
+                  : act === "resolve_coordination"
+                    ? "结论（如：客户接受拆单先发，剩余月底补齐）"
+                    : "放弃 / 无解原因（如：工厂明确无法改期，转备选方案）"
+              }
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button className="cp-story__replay" onClick={submit} disabled={!canSubmit}>
+              {busy ? "提交中…" : `确认${COORD_META[act].label}`}
+            </button>
+            <button className="cp-story__toggle" onClick={() => pick(act)} disabled={busy}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {receipt && <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--sev-green)" }}>{receipt}</div>}
+      {err && <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--sev-red)" }}>{err}</div>}
+    </div>
+  );
+}
+
 // a11y + 可点化（P1，李珊任务3 完全失败——协作流 tab 纯只读、卡片不可点）：优先开该线程自己的
 // 任务（task_id 更具体），没有任务再退到该线程挂的风险（risk_event_id，分组头已显示同一 id）；
 // 两者都没有则不可点（不给假交互）。键盘可达同 WorkQueue 行标准：tabIndex/role/Enter·Space。
-function ThreadRow({ t, onOpenObject }: { t: CollabThread; onOpenObject: (r: ObjectRef) => void }) {
+function ThreadRow({
+  t,
+  role,
+  onOpenObject,
+  onActed,
+}: {
+  t: CollabThread;
+  role: Role;
+  onOpenObject: (r: ObjectRef) => void;
+  onActed: () => void;
+}) {
   const owner = t.owner || "我方";
   const counterparty = t.counterparty || t.counterparty_type || "对方";
   const esc = (t.escalation_level ?? 0) > 0;
@@ -178,6 +409,7 @@ function ThreadRow({ t, onOpenObject }: { t: CollabThread; onOpenObject: (r: Obj
       onKeyDown={
         clickable
           ? (e) => {
+              if (e.target !== e.currentTarget) return; // 操作区输入框里的 Enter/Space 不触发开卡
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 open();
@@ -201,6 +433,7 @@ function ThreadRow({ t, onOpenObject }: { t: CollabThread; onOpenObject: (r: Obj
         最后动态 {t.last_update || t.opened_at || "—"}
         {t.next_action_due ? ` · 待办截止 ${t.next_action_due}` : ""}
       </div>
+      <CoordOps t={t} role={role} onActed={onActed} />
     </div>
   );
 }
@@ -209,18 +442,26 @@ function CollabPanel({ role, world, onOpenObject }: { role: Role; world?: World 
   const [data, setData] = useState<CollaborationThreads | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
+  // 软刷新（V22② 操作回执后）：重取线程但**不清屏**——保留现有卡片就地换数据（卡片 key 稳定不重挂，
+  // 操作回执不丢），与硬重试 reload（错误态清屏加载）分开计数；用 ref 区分本次触发是软是硬。
+  const [refresh, setRefresh] = useState(0);
+  const softSeen = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
-    setData(null);
-    setErr(null);
+    const soft = refresh !== softSeen.current;
+    softSeen.current = refresh;
+    if (!soft) {
+      setData(null);
+      setErr(null);
+    }
     fetchCollaborationThreads(role)
       .then((d) => !cancelled && setData(d))
       .catch((e) => !cancelled && setErr((e as Error).message));
     return () => {
       cancelled = true;
     };
-  }, [role, world, reload]);
+  }, [role, world, reload, refresh]);
 
   if (err)
     return (
@@ -276,7 +517,13 @@ function CollabPanel({ role, world, onOpenObject }: { role: Role; world?: World 
                 <span className="cp-thread-group__count">{g.thread_count} 条</span>
               </div>
               {items.map((t) => (
-                <ThreadRow key={t.coordination_id} t={t} onOpenObject={onOpenObject} />
+                <ThreadRow
+                  key={t.coordination_id}
+                  t={t}
+                  role={role}
+                  onOpenObject={onOpenObject}
+                  onActed={() => setRefresh((n) => n + 1)}
+                />
               ))}
             </div>
           );
@@ -341,10 +588,10 @@ export default function AiWorkflow({
         <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
       ) : tab === "collab" ? (
         <div className="cp-collab-tab">
-          {/* 诚实导流（P1，李珊任务3 完全失败）：协作流当前纯只读、无法在驾驶舱内催办/记回应——
-              明说去处，别让人以为按钮丢了；不承诺接入时间点（"正在接入路上"不给期限）。 */}
+          {/* 诚实横幅（V22② 更新，缘起李珊任务3）：催办/记回应/升级/达成/谈崩已可在驾驶舱线程卡上
+              直接完成（协调权限组：运营；老板视角只读）；开新协调线程本批未接，如实指去处。 */}
           <div className="cp-collab-note">
-            <Icon name="chat" size={12} /> 催办、记录对方回应等协调操作，目前仍在 Streamlit 操作台完成；驾驶舱正在接入这部分能力。
+            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成（需协调角色：运营/财务；老板视角只读）；发起新协调线程仍在 Streamlit 操作台。
           </div>
           <CollabPanel role={role} world={world} onOpenObject={onOpenObject} />
         </div>

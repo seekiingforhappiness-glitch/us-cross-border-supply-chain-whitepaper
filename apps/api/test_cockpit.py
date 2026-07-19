@@ -528,6 +528,70 @@ def test_vitals_money_masked_for_ops(client):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# V22① finance 角色纵向切片：钱区可见 / 合规敏感字段掩码 / 审批 403 / API↔agent 口径同源
+# 一切数据范围由 apps/api 按 X-Role 同源执行（宪法不变量 5，前端不复制规则）——本组从 API 侧固化
+# finance 的数据范围（钱可见、合规域掩码、审批越权挡回、与 AI 工具面共用同一 _can_see_cost 判定）。
+# ═══════════════════════════════════════════════════════════════════════════
+def test_vitals_money_visible_for_finance(client):
+    """钱区金额对 finance 可见（陈会计核心诉求：财务连自己的钱都看不见）。费用异常敞口 headline、
+    应收/应付、14 天净流出三处金额都应是真数字（非 MASK），与 manager 同门（_can_see_cost=finance）。"""
+    fin = _zones(client.get("/cockpit/vitals", headers={"X-Role": "finance"}))
+    money = fin["money"]
+    # ① 费用异常敞口 headline（R4-R6 口径）对 finance 可见
+    assert money["headline_value"] != MASK and isinstance(money["headline_value"], (int, float)), \
+        "钱区 headline（费用异常敞口）对 finance 应是真金额"
+    assert money["detail"]["fee_exposure"]["value_usd"] != MASK
+    # ② 应收水位 + 逾期应收（R19）金额对 finance 可见——陈会计"逾期应收可从队列进入"的钱侧锚
+    recv = money["detail"]["receivables"]
+    assert recv["amount_usd"] != MASK and isinstance(recv["amount_usd"], (int, float))
+    assert recv["overdue"]["amount_usd"] != MASK, "逾期应收金额对 finance 应可见"
+    # ③ 14 天净流出预警（现金水位）金额对 finance 可见
+    assert money["detail"]["net_cash_14d"]["value_usd"] != MASK
+
+
+def test_objects_compliance_field_masked_for_finance(client, con):
+    """对象卡敏感字段脱敏：Supplier.uflpa_risk_flag 是**合规专属**字段（本体 sensitiveFieldRules
+    visibleTo=[compliance,manager]）——finance 虽是成本角色，仍**看不到**合规域敏感字段（掩码为
+    MASK，绝不返回 null 冒充"无风险"）。证明脱敏是逐字段声明驱动、不是"财务=看全部钱和别人的活"。"""
+    row = con.execute("SELECT supplier_id FROM suppliers WHERE uflpa_risk_flag IS NOT NULL "
+                      "AND uflpa_risk_flag != '' LIMIT 1").fetchone()
+    assert row, "库内应有带 uflpa_risk_flag 的供应商（datagen 产出）"
+    sid = row[0]
+    def flag(role):
+        return client.get(f"/objects/Supplier/{sid}", headers={"X-Role": role}).json()["uflpa_risk_flag"]
+    assert flag("finance") == MASK, "finance 对合规专属字段 uflpa_risk_flag 应掩码（不是财务的域）"
+    assert flag("compliance") != MASK, "compliance 见真值（visibleTo 含 compliance）"
+    assert flag("manager") != MASK, "manager 全域可见"
+
+
+def test_decisions_finance_forbidden_403(client, con):
+    """审批越权挡回：finance 不在任何冻结动作 executors（ApproveMitigation=[manager]）——点批准
+    应得 403，与后端 build_role_perms 同源。陈会计四任务对照(c)：财务点审批看到的是"需经理"而非放行。"""
+    tid = _ensure_pending_anchor(con, "finance")   # 自愈锚点：一条指派 finance 的待批提案
+    resp = client.post(
+        "/decisions/ApproveMitigation",
+        json={"task_id": tid, "decision": "approved", "comment": "finance 越权批（应 403）"},
+        headers={"X-Role": "finance", "X-Actor": "u-fin-us"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "finance" in (resp.json().get("detail") or ""), "403 白话应点名越权角色"
+
+
+def test_scope_parity_api_side_cost_oracle(client):
+    """API 面 ↔ AI 工具面口径同源（scope parity 的 API 侧断言，对应 app/test_scope_parity.py 的
+    Streamlit 侧）：驾驶舱钱区脱敏与 agent.tools._can_see_cost 是**同一把尺子**——凡 _can_see_cost 为真
+    的角色 API 就给真金额、为假就 MASK，两个方向都验，证明 UI 聚合与 AI 工具消费同一权限判定。"""
+    from agent.tools import _can_see_cost
+    for role in ("finance", "manager", "ops", "cs"):
+        headline = _zones(client.get("/cockpit/vitals", headers={"X-Role": role}))["money"]["headline_value"]
+        if _can_see_cost(role):
+            assert headline != MASK and isinstance(headline, (int, float)), \
+                f"{role}: _can_see_cost 为真，API 钱区 headline 应给真金额"
+        else:
+            assert headline == MASK, f"{role}: _can_see_cost 为假，API 钱区 headline 应掩码"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # panorama：结构 / 聚合规则 / 引用完整性 / 异常锚定守恒 / 金额掩码
 # ═══════════════════════════════════════════════════════════════════════════
 def test_panorama_structure_and_integrity(client, con):

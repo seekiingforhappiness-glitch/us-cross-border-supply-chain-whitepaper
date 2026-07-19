@@ -497,6 +497,19 @@ app.include_router(build_collaboration_router(get_db_path, get_ro_connection, _i
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 协作流人类协调通道（V22②）：POST /collaboration/threads/{coordination_id}/actions/{action_name}
+#   —— CL1 协调回路对既有线程的五个写动作（催办/记回应/升级/达成/谈崩）的「人类专用」HTTP 通道。
+# 与 /actions（AI 面）物理隔离：这五动作本体 exposed_as_tool=false/ai_executable=never，从不进 /actions
+# 白名单、从不进 MCP build_tool_defs——本通道是它们唯一 HTTP 暴露面，只对人开。同 decisions 注入式挂载
+# （collaboration_actions 不反向 import main → 零循环）；复用本模块 get_db_path（X-World 双世界）与 AS_OF。
+# 启动期 fail-fast（build_collaboration_actions_router 内）：协调写动作解析不到实现函数则拒起服务。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.collaboration_actions import build_collaboration_actions_router  # noqa: E402
+
+app.include_router(build_collaboration_actions_router(get_db_path, AS_OF))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ① runtime 治理 API（V19，spec 2026-07-17-wave2-final-smart-face §①）：
 #   GET/POST /runtime/runs{,/{id}{,/resume,/kill}} —— 持久 Agent runtime 的 HTTP 门面。
 # 同 governance/decisions/collaboration 注入式挂载（runtime 不反向 import main → 零循环导入）；

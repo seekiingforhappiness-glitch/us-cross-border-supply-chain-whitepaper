@@ -12,7 +12,7 @@ import {
   type PanoAlert,
   type Role,
 } from "../api";
-import { actorForRole } from "../roleActors";
+import { actorForRole, roleShort } from "../roleActors";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
 import { AiDispatchButton } from "./AiRuns";
@@ -120,7 +120,9 @@ export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { dec
           kind="no-permission"
           compact
           title="需经理角色才能拍板"
-          roleHint="切到「老板 manager」才能批 / 驳；当前是运营 ops，只能看不能批。"
+          // 「当前是X」用真实当前角色（V22① finance 接入前写死"运营 ops"，切财务会显错角色）——
+          // 目标角色"老板 manager"是权限事实（ApproveMitigation executors=[manager]）不随当前角色变。
+          roleHint={`切到「老板 manager」才能批 / 驳；当前是${roleShort(role)}，只能看不能批。`}
         />
         {onSwitchRole && (
           <button className="cp-role-switch" onClick={() => onSwitchRole("manager")}>
@@ -216,7 +218,9 @@ function CloseRiskButton({
           kind="no-permission"
           compact
           title="需运营角色才能关闭"
-          roleHint="切到「运营 ops」才能关闭风险；当前是老板 manager，只能看不能关。"
+          // 「当前是X」用真实当前角色（原写死"老板 manager"，财务/其余角色进来会显错）——目标角色
+          // "运营 ops"是权限事实（CloseRiskEvent executors=[ops]）不随当前角色变。
+          roleHint={`切到「运营 ops」才能关闭风险；当前是${roleShort(role)}，只能看不能关。`}
         />
         {onSwitchRole && (
           <button className="cp-role-switch" onClick={() => onSwitchRole("ops")}>

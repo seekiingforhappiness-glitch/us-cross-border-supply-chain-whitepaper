@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { Role, DataWindow, World } from "../api";
+import { ROLES, roleMeta } from "../roleActors";
 import Icon from "./Icons";
 
 // 顶栏常驻：世界切换钮（验证世界 ⇄ 模拟世界，U1）+ 世界时钟时间轴（可拖回放，A-2/V13②）+ 角色切换器。
@@ -18,11 +19,8 @@ interface Props {
   onRole: (r: Role) => void;
 }
 
-const ROLE_LABELS: Record<Role, string> = { manager: "老板 manager", ops: "运营 ops" };
-const ROLE_HINT: Record<Role, string> = {
-  manager: "汇总粒度 · 金额可见",
-  ops: "可操作粒度 · 金额脱敏",
-};
+// 角色钮文案/粒度说明改从 roleActors.ROLES 单一数据源取（V22① finance 接入）——原地写死的两档
+// 常量退役，加角色 = ROLES 加一行即多一枚钮 + 对应粒度文案，顶栏零改动。
 
 // 世界切换钮两档（U1）：验证世界=datagen 种子库（规则档案 R/P=1.000 对照源，静态快照）；
 // 模拟世界=14 个月连续活世界（时间回放完整威力）。颜色沿用既有 cp-world 语义（绿=验证、蓝=模拟）。
@@ -183,16 +181,17 @@ export default function TopBar({ activeWorld, onWorld, clock, windowRange, asOf,
         </span>
       )}
       <span className="cp-topbar__spacer" />
-      <span className="cp-role-hint">{ROLE_HINT[role]}</span>
+      <span className="cp-role-hint">{roleMeta(role).hint}</span>
       <div className="cp-roles" role="group" aria-label="角色缩放">
-        {(["manager", "ops"] as Role[]).map((r) => (
+        {ROLES.map((rm) => (
           <button
-            key={r}
-            className={`cp-role-btn ${r === role ? "is-active" : ""}`}
-            onClick={() => onRole(r)}
-            aria-pressed={r === role}
+            key={rm.id}
+            className={`cp-role-btn ${rm.id === role ? "is-active" : ""}`}
+            onClick={() => onRole(rm.id)}
+            aria-pressed={rm.id === role}
+            title={rm.hint}
           >
-            {ROLE_LABELS[r]}
+            {rm.label}
           </button>
         ))}
       </div>

@@ -201,8 +201,12 @@ def main():
     print("== ⑥ 独立权限组不碰 maker-checker + 协调写动作未注册为 agent 工具 ==")
     check("⑥ COORD_PERMS 为独立新权限组 {ManageCoordination:{ops,cs,procurement,finance}}",
           COORD_PERMS == EXPECTED_COORD_PERMS, str(COORD_PERMS))
+    # V22② 修快照锈蚀：本检查的意图是「四键未被削弱」（见名称），但旧断言是整字典相等——
+    # 财务回路后 ROLE_PERMS 切片合法新增了 ProposeCollection/RecordPayment 键，整字典相等必假失败。
+    # 改为恰核对四键各自的角色集（仍逐值精确，未放松任何一键），新增键不再误伤本检查。
     check("⑥ ROLE_PERMS 四键未被削弱（ApproveMitigation 仍 manager、CloseRiskEvent 仍 ops）",
-          ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+          all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
     check("⑥ FORBIDDEN_TOOLS 仍含 approve/close（红线未削弱）",
           {"approve_mitigation", "close_risk_event"} <= FORBIDDEN_TOOLS)
     sess = AgentSession(db_path=str(tmp), role="ops")

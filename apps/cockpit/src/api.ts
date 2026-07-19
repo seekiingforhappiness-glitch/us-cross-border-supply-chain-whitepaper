@@ -7,8 +7,11 @@
 // get_db_path 依赖（verify→data/ontology.sqlite、sim→data/simworld.sqlite），不重启进程即切库。
 export const API_BASE_URL = "/api";
 
-// 角色缩放：X-Role 头全局生效（体征带脱敏 + 全景粒度）。二稿起步两档：老板/运营专员。
-export type Role = "manager" | "ops";
+// 角色缩放：X-Role 头全局生效（体征带脱敏 + 全景粒度）。三档：老板/运营/财务（V22① finance 补齐）。
+// 为什么在此扩：Role 是全舱透传的头值类型，权限/脱敏由 apps/api 按 X-Role 同源执行（宪法不变量 5），
+// 前端只多认一个合法角色字符串、不复制任何权限规则；后端 7 角色齐备，本批只把 finance 接上 UI。
+// 后续 cs/procurement/compliance/sales 接入=在此并集追加 + roleActors.ts ROLES 加一行（数据驱动）。
+export type Role = "manager" | "ops" | "finance";
 
 // 世界切换（U1）：验证世界（datagen 种子库，R/P=1.000 对照源）⇄ 模拟世界（14 个月连续活世界，
 // 时间回放完整威力）。X-World 头值 verify/sim 与 apps/api::_WORLD_DB_ALIASES 契约一致。

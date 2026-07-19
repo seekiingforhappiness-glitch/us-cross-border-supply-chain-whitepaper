@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchObject, formatUsd, postDecision, traverse, type ObjectFields, type Role } from "../api";
-import { actorForRole } from "../roleActors";
+import { actorForRole, roleShort } from "../roleActors";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
 import { humanizeFieldValue } from "./objectLabels";
@@ -318,7 +318,9 @@ export default function AdmissionDecisionBar({
             kind="no-permission"
             compact
             title="需经理角色才能拍板"
-            roleHint="顶栏切到「老板 manager」才能批准报价 / 驳回 / 要补件；当前是运营 ops，只能看不能批。"
+            // 「当前是X」用真实当前角色（原写死"运营 ops"，财务等角色进来会显错）——目标"老板 manager"
+            // 是权限事实（ApproveQuoteDecision executors=[manager]）不随当前角色变。
+            roleHint={`顶栏切到「老板 manager」才能批准报价 / 驳回 / 要补件；当前是${roleShort(role)}，只能看不能批。`}
           />
         </div>
       ) : mode === null ? (
