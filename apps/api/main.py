@@ -532,3 +532,17 @@ app.include_router(build_runtime_router(get_db_path, _infer_world, AS_OF))
 from apps.api.evidence import build_evidence_router                      # noqa: E402
 
 app.include_router(build_evidence_router(get_db_path, get_ro_connection, _infer_world))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# V23④ 证据包导出（决策日志 V23④，Daniel 批"做导出"）：
+#   GET /risk-events/{id}/evidence-package?format=json|html —— 单风险证据包（对象快照/影响链/关联任务/
+#   时间线/协调/先例/元信息七块现算，脱敏跟随 X-Role，导出行为落 action_log）。
+# 同 cockpit/evidence/runtime 注入式挂载（evidence_export 不反向 import main → 零循环导入）；复用本模块
+# get_db_path（X-World 双世界 + 审计写连接）/get_ro_connection（GET mode=ro 读七块）/_infer_world（world
+# 信封 + sim 水印）/AS_OF（导出审计 as_of_date，单一仿真时钟来源）。
+# 红线：读七块纯 SELECT；唯一写=导出留痕落 action_log（控制面审计，同 runtime._audit，不入本体 actions 声明）。
+# ═══════════════════════════════════════════════════════════════════════════
+from apps.api.evidence_export import build_evidence_export_router        # noqa: E402
+
+app.include_router(build_evidence_export_router(get_db_path, get_ro_connection, _infer_world, AS_OF))

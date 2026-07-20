@@ -38,7 +38,7 @@ streamlit run app/streamlit_app.py                  # 改代码后【完整重�
 
 - **对象-关系-动作网络**：世界是对象（Shipment/PurchaseOrder/Warehouse…），对象间有关系（可 explain_path），
   改变世界只能走**动作**（五要素：权限/前置/成功/失败/审计），不在按钮里、在动作层。
-- **一条风险队列被 5 场景共用**：R1-R21 十八种规则的风险都流进**同一个** `RiskEvent→Task` 闭环，
+- **一条风险队列被 5 场景共用**：R1-R23 二十三种规则的风险都流进**同一个** `RiskEvent→Task` 闭环，
   走同一套派单/提案/审批(maker-checker)/关闭/审计。RiskEvent 锚点是多态的（shipment/po/supplier/warehouse）。
 - **对象即工作台**：6 个核心决策对象有富工作台 + 只懂该对象的 agent；其余 27 对象走自动标准视图。
 - **跨场景连成一张网**：采购收货→上架→库存→预留驱动履约→延误时查目的仓现货→拆单先发+余量改期。
@@ -47,10 +47,10 @@ streamlit run app/streamlit_app.py                  # 改代码后【完整重�
 
 | 层 | 目录 | 干什么 |
 | --- | --- | --- |
-| 造世界 | `datagen/` | 各场景独立随机流；R1-R21 注入 + ground truth（**只存 `data/truth/`、引擎禁读**） |
+| 造世界 | `datagen/` | 各场景独立随机流；R1-R23 注入 + ground truth（**只存 `data/truth/`、引擎禁读**） |
 | 管道 | `pipeline/` | 判重/乱序消解/ER/MDM/DQ；状态只从事件流推导 |
 | 本体 | `ontology/` + `data/ontology.sqlite` | 33 对象 · 状态机 · 动作五要素 · 角色权限（v0.8.0） |
-| 引擎 | `engine/` | R1-R21 检测 + 评估器；as_of 时间旅行安全；真值禁读 |
+| 引擎 | `engine/` | R1-R23 检测 + 评估器；as_of 时间旅行安全；真值禁读 |
 | 应用 | `app/` | 角色导航 + 行级数据范围 + maker-checker + 6 富工作台 + 27 标准视图 |
 | AI | `agent/` | 对象级 agent（继承 UI 范围 · 审批永不注册 · 越权动作层挡回）+ 确定性简报 |
 
@@ -61,7 +61,7 @@ streamlit run app/streamlit_app.py                  # 改代码后【完整重�
 - **§5 真值只读**：ground truth 在 `data/truth/`，引擎**禁读**，改代码不许碰真值凑指标；
   数据改动后 `data/truth/` 的 md5 必须逐字节可证不变（否则你扰动了检测基线）。
 - **controller 纪律**：子代理报告**不可信，只信输出**——每次独立重跑验证（本项目多次靠这抓到真 bug/假阳性）。
-- **四条红线**（每次改动都要守）：R1-R21 全 P/R=1.000 不扰动 · agent 不越权 · 真值 md5 不变 · maker-checker/FORBIDDEN 不削弱。
+- **四条红线**（每次改动都要守）：R1-R23 全 P/R=1.000 不扰动 · agent 不越权 · 真值 md5 不变 · maker-checker/FORBIDDEN 不削弱。
 - **streamlit 改代码后完整重启**，别热重载（旧模块驻留会造成假 ImportError）。
 
 ## 6. 安全改一处的套路

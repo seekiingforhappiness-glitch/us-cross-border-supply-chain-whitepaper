@@ -1,4 +1,4 @@
-# GENERATED FROM ontology v0.11.3 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
+# GENERATED FROM ontology v0.11.4 — DO NOT EDIT，重跑 python3 -m pipeline.generate_models
 # -*- coding: utf-8 -*-
 """桥3 结构生成产物：本体 35 对象的 Pydantic 模型（数据契约校验用）。
 
@@ -176,8 +176,8 @@ class ShipmentAllocation(_Base):
 class RiskEvent(_Base):
     """RiskEvent — GENERATED, 表 risk_events。"""
     risk_event_id: str
-    type: Literal['delay_breach', 'docs_missing', 'stalled', 'rate_overbilling', 'duplicate_charge', 'unplanned_charge', 'supplier_delay', 'short_receipt', 'qc_failure', 'price_qty_mismatch', 'invoice_over_receipt', 'prepayment_exposure', 'qualification_expired', 'single_source', 'maverick_spend', 'stockout', 'unfulfillable', 'shrinkage', 'overdue_receivable', 'cash_watch', 'payment_anomaly']
-    rule_id: Literal['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15', 'R16', 'R17', 'R18', 'R19', 'R20', 'R21']
+    type: Literal['delay_breach', 'docs_missing', 'stalled', 'rate_overbilling', 'duplicate_charge', 'unplanned_charge', 'supplier_delay', 'short_receipt', 'qc_failure', 'price_qty_mismatch', 'invoice_over_receipt', 'prepayment_exposure', 'qualification_expired', 'single_source', 'maverick_spend', 'stockout', 'unfulfillable', 'shrinkage', 'overdue_receivable', 'cash_watch', 'payment_anomaly', 'performance_degradation', 'qualification_expiry_warning']
+    rule_id: Literal['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'R13', 'R14', 'R15', 'R16', 'R17', 'R18', 'R19', 'R20', 'R21', 'R22', 'R23']
     severity: Literal['medium', 'high', 'critical']
     shipment_id: Optional[str] = None
     po_id: Optional[str] = None

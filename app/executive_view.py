@@ -13,15 +13,18 @@ from __future__ import annotations
 # 未结风险谓词：与 streamlit_app / render_kpi_tab 全一致（resolved/escalated 视为已了结）。
 OPEN_RISK = "status NOT IN ('resolved','escalated')"
 
-# 场景 → 风险规则区间（与 ontology R1-R18 对应；rule_id 为真源，避免依赖 type 拼写）。
+# 场景 → 风险规则区间（与 ontology R1-R23 对应；rule_id 为真源，避免依赖 type 拼写）。
 DELAY_RULES = ("R1", "R2", "R3")            # 延误运营：delay_breach / docs_missing / stalled
 COST_RULES = ("R4", "R5", "R6")             # 费用稽核：rate_overbilling / duplicate / unplanned
 PROCUREMENT_RULES = ("R7", "R8", "R9", "R10", "R11",  # 采购：三方对账 + 预付款 + 资质 + 采购治理
-                     "R12", "R13", "R14", "R15")
+                     "R12", "R13", "R14", "R15",
+                     "R22", "R23")          # V23①：供应商绩效劣化 + 资质过期预警（供应商域归采购
+                                            # 场景卡，恒等式 R1-R23 全覆盖不留漏网规则）
 WAREHOUSE_RULES = ("R16", "R17", "R18")     # 仓储库存：stockout / unfulfillable / shrinkage
 FINANCE_RULES = ("R19", "R20", "R21")       # 资金流：overdue_receivable / cash_breach / payment_anomaly
 # （F1 2026-07-14 上线资金流后本模块一直缺该场景块——R19-R21 的 open 风险不入任何场景卡，
-#   经理看到的总未结数与分场景之和对不上；L-UX 轮3 发版门全跑时暴露，2026-07-19 补齐。）
+#   经理看到的总未结数与分场景之和对不上；L-UX 轮3 发版门全跑时暴露，2026-07-19 补齐。
+#   V23① 增 R22/R23 时按同教训第一时间入 procurement 场景，恒等式测试同步跟改。）
 
 
 def _scalar(conn, sql, params=()):
@@ -70,7 +73,7 @@ def build_executive_summary(conn):
         "disputed_invoices": _scalar(
             conn, "SELECT count(*) FROM invoices WHERE status='disputed'"),
     }
-    # ---- 采购（R7-R15）----
+    # ---- 采购（R7-R15 + V23① R22/R23）----
     procurement = {
         "open_risk": _open_risk_in(conn, PROCUREMENT_RULES),
         "three_way_recon": _open_risk_in(conn, ("R10", "R11")),   # 三方对账异常
@@ -78,6 +81,8 @@ def build_executive_summary(conn):
         "qualification_expired": _open_risk_in(conn, ("R13",)),   # 资质过期
         "single_source": _open_risk_in(conn, ("R14",)),           # 单一来源
         "maverick_spend": _open_risk_in(conn, ("R15",)),          # maverick 采购
+        "perf_degradation": _open_risk_in(conn, ("R22",)),        # 供应商绩效劣化（V23①）
+        "qual_expiry_warning": _open_risk_in(conn, ("R23",)),     # 资质过期预警（V23①）
     }
     # ---- 仓储库存（R16-R18）----
     warehouse = {

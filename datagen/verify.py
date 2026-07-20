@@ -897,6 +897,102 @@ def main():
     print(f"  资金流: Payment={len(pays)}  真值 R19={fin_by_rule['R19']} R20={fin_by_rule['R20']} "
           f"R21={fin_by_rule['R21']}  账期档={sorted({int(s['payment_terms_days']) for s in sup_rows.values()})}")
 
+    print("== 13. 供应商风险感知 R22/R23（V23①，纯派生真值）==")
+    # 独立 oracle 二号：从 raw CSV（非 world 内存 dict——与 datagen/supplier_risk.py 不同数据通路）
+    # 按规则语义重推，真值集合必须逐一相等。零注入零随机流：本段只验"派生对不对"，不验注入计数。
+    src_cfg = cfg["supplier_risk"]
+    sr_gt = load(truth_dir, "expected_supplier_risks")
+    pos_raw = load(raw_dir, "srm_purchase_orders")
+    grn_raw = load(raw_dir, "srm_goods_receipts")
+    pol_raw = load(raw_dir, "srm_po_lines")
+    qual_raw = load(raw_dir, "srm_supplier_qualifications")
+    sr_as_of = cfg["window"]["as_of"]
+    from datetime import date as _d2, timedelta as _td2
+    warn_hi2 = (_d2.fromisoformat(sr_as_of)
+                + _td2(days=src_cfg["qual_warning_days"])).isoformat()
+
+    check("供应商风险真值 rule 仅 R22/R23",
+          all(r["rule_id"] in ("R22", "R23") for r in sr_gt))
+    sup_ids_v = {r["supplier_id"] for r in load(raw_dir, "srm_suppliers")}
+    qual_ids_v = {q["qualification_id"] for q in qual_raw}
+    check("R22 锚 supplier_id ∈ suppliers 且 qualification 空；R23 锚 qualification ∈ quals",
+          all((r["supplier_id"] in sup_ids_v and not r["qualification_id"])
+              if r["rule_id"] == "R22"
+              else (r["qualification_id"] in qual_ids_v and r["supplier_id"] in sup_ids_v)
+              for r in sr_gt))
+
+    # R22 独立重推：PO 首收货日（≤as_of，窗口可选）vs PO 头 expected_ready_date
+    fr = {}
+    for g in grn_raw:
+        if g["received_date"] > sr_as_of:
+            continue
+        if g["po_id"] not in fr or g["received_date"] < fr[g["po_id"]]:
+            fr[g["po_id"]] = g["received_date"]
+    if src_cfg["perf_window_days"]:
+        ws = (_d2.fromisoformat(sr_as_of)
+              - _td2(days=src_cfg["perf_window_days"])).isoformat()
+        fr = {p: d for p, d in fr.items() if d >= ws}
+    po_hdr = {p["po_id"]: p for p in pos_raw}
+    po_val = {}
+    for l in pol_raw:
+        po_val[l["po_id"]] = po_val.get(l["po_id"], 0.0) + int(l["qty"]) * float(l["unit_price_usd"])
+    sperf = {}
+    for pid in sorted(fr):
+        sid = po_hdr[pid]["supplier_id"]
+        s = sperf.setdefault(sid, {"n": 0, "ok": 0, "late_val": 0.0})
+        s["n"] += 1
+        if fr[pid] <= po_hdr[pid]["expected_ready_date"]:
+            s["ok"] += 1
+        else:
+            s["late_val"] += po_val.get(pid, 0.0)
+    r22_oracle = {}
+    for sid, s in sperf.items():
+        if s["n"] < src_cfg["perf_min_pos"]:
+            continue
+        rate = s["ok"] / s["n"]
+        if rate < src_cfg["perf_threshold_rate"]:
+            sev = "critical" if rate < src_cfg["perf_critical_rate"] else "high"
+            r22_oracle[sid] = (sev, round(s["late_val"], 2))
+    gt_r22 = {r["supplier_id"]: (r["severity"], float(r["anomaly_value_usd"]))
+              for r in sr_gt if r["rule_id"] == "R22"}
+    check("R22 真值 == 独立 oracle（达成率<阈 且 样本≥min）→ 阈内/小样本不入、真值完整",
+          set(gt_r22) == set(r22_oracle)
+          and all(gt_r22[s][0] == r22_oracle[s][0]
+                  and abs(gt_r22[s][1] - r22_oracle[s][1]) < 0.02 for s in gt_r22),
+          f"diff: {sorted(set(gt_r22) ^ set(r22_oracle))}")
+    # 灰区证明：存在"达成率低于 1 但仍 ≥ 阈值（或样本不足）"的供应商未入真值——阈值真在筛人
+    near = [sid for sid, s in sperf.items()
+            if s["n"] >= src_cfg["perf_min_pos"]
+            and src_cfg["perf_threshold_rate"] <= s["ok"] / s["n"] < 1.0
+            and sid not in gt_r22]
+    check(f"R22 灰区存在（阈上有瑕疵供应商 {len(near)} 家未报警，阈值非全捞）", len(near) > 0)
+
+    # R23 独立重推：逐证过期/临期 + 未补新证（同类 valid_to 更晚且 ≥ as_of 即已补）
+    by_sc = defaultdict(list)
+    for q in qual_raw:
+        by_sc[(q["supplier_id"], q["cert_type"])].append(q)
+    r23_oracle = {}
+    for q in qual_raw:
+        newer = any(x["qualification_id"] != q["qualification_id"]
+                    and x["valid_to"] > q["valid_to"] and x["valid_to"] >= sr_as_of
+                    for x in by_sc[(q["supplier_id"], q["cert_type"])])
+        if newer:
+            continue
+        if q["valid_to"] < sr_as_of:
+            r23_oracle[q["qualification_id"]] = "high"
+        elif sr_as_of <= q["valid_to"] <= warn_hi2:
+            r23_oracle[q["qualification_id"]] = "medium"
+    gt_r23 = {r["qualification_id"]: r["severity"] for r in sr_gt if r["rule_id"] == "R23"}
+    check("R23 真值 == 独立 oracle（过期high/临期medium，已续证不报）→ 真值完整",
+          gt_r23 == r23_oracle, f"diff: {sorted(set(gt_r23) ^ set(r23_oracle))}")
+    renewed = [q["qualification_id"] for q in qual_raw
+               if q["valid_to"] < sr_as_of and q["qualification_id"] not in r23_oracle]
+    check(f"R23 已续证豁免存在（{len(renewed)} 张过期证因同类续证不报）", len(renewed) > 0)
+    print(f"  供应商风险: 真值 R22={len(gt_r22)}（{sorted(gt_r22)}） "
+          f"R23={len(gt_r23)}（过期 {sum(1 for v in gt_r23.values() if v == 'high')}/"
+          f"临期 {sum(1 for v in gt_r23.values() if v == 'medium')}）  "
+          f"灰区: 阈上瑕疵 {len(near)} 家、已续证豁免 {len(renewed)} 张")
+
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")
     sys.exit(1 if FAILS else 0)
 

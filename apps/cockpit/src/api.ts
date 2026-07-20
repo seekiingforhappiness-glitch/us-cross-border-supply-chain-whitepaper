@@ -1089,3 +1089,31 @@ export interface ProposalEvidence {
 /** 提案证据包（纯读；非 2xx 抛错，调用方降级为"证据暂不可用"，绝不阻断审批按钮）。 */
 export const fetchProposalEvidence = (taskId: string, role: Role) =>
   apiGet<ProposalEvidence>(`/proposals/${encodeURIComponent(taskId)}/evidence`, role);
+
+// ═══════════ /risk-events/{id}/evidence-package（V23④ 证据包导出）═══════════
+// 单风险证据包（七块：对象快照/影响链/关联任务/时间线/协调/先例/元信息），json|html 两格式。
+// 为什么走 fetch→Blob 而非直接 window.open(url)：脱敏/世界/经手人全靠 X-Role/X-World/X-Actor 请求头
+// （宪法不变量 5：权限由 API 同源执行），window.open 发不了自定义头——直开会丢角色掩码语义。
+// 故先带头 fetch 拿响应体，再转 Blob URL 交给新窗口/下载锚点；导出行为已在后端落 action_log
+// （ExportEvidencePackage，actor=X-Actor 如实），前端不再另记。非 2xx 抛白话中文原文（不吞不美化）。
+export async function fetchEvidencePackageBlob(
+  riskEventId: string,
+  role: Role,
+  fmt: "json" | "html",
+): Promise<Blob> {
+  const resp = await fetch(
+    `${API_BASE_URL}/risk-events/${encodeURIComponent(riskEventId)}/evidence-package?format=${fmt}`,
+    { headers: reqHeaders(role, { "X-Actor": actorForRole(role) }) },
+  );
+  if (!resp.ok) {
+    let detail = `导出失败：HTTP ${resp.status}`;
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string" && j.detail) detail = j.detail;
+    } catch {
+      /* 非 JSON 响应：保留 HTTP 码兜底文案 */
+    }
+    throw new Error(detail);
+  }
+  return await resp.blob();
+}

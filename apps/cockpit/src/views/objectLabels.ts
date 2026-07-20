@@ -318,6 +318,7 @@ const RISK_TYPE_TO_RULE: Record<string, string> = {
   single_source: "R14", maverick_spend: "R15",
   stockout: "R16", unfulfillable: "R17", shrinkage: "R18",
   overdue_receivable: "R19", cash_watch: "R20", payment_anomaly: "R21",
+  performance_degradation: "R22", qualification_expiry_warning: "R23",
 };
 const RISK_TYPE_CN: Record<string, string> = Object.fromEntries(
   Object.entries(RISK_TYPE_TO_RULE).map(([type, ruleId]) => [type, RULE_CN[ruleId] ?? type]),

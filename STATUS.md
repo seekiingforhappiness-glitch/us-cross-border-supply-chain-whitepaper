@@ -4,6 +4,25 @@
 
 ## 当前位置（最新）
 
+> **V23 四道裁决全量落地（2026-07-20 上午，Opus×3/Sonnet×1 四批+主会话复核，API 断连 8 次
+> 全部续命完成）**：①**R22 供应商绩效劣化+R23 资质过期预警**感知层——引擎新规则+真值双 oracle
+> （生成派生+verify 原始 CSV 独立重推互证）+新评估器 R/P=1.000+三路上浮（供应商区/风险队列/
+> Supplier 卡关系区，"最差供应商零覆盖"痛点闭环）；**旧真值 9 文件 md5 逐字节不变**（两次重建
+> 对照表在案）；参数表（阈值 70%/critical 60%/最小样本 5/临期窗 30 天）入 config 候微调；
+> R22 口径=驾驶舱同款 SQL 与画面数字同源。②**COORD 扩 compliance**（本体 executors 六动作，
+> 全链自动跟随，浏览器真实发起 COORD-0033 实证）。③**脱敏二期收紧**（masker 组式规则按对象
+> 类型作用域，Invoice.total_usd 补声明，七角色×全出口残留矩阵实测，批D 洞 2849.9 已堵；
+> InvoiceLine.unit_price_usd 与 SupplierInvoice 采购侧同族残留候裁）。④**证据包导出**
+> （GET /risk-events/{id}/evidence-package json|html，七块装配脱敏三层复用、cs 全掩码实证、
+> 导出落审计、sim 水印、零新依赖）。回归：pytest 196/全评估器 R1-R23 P/R=1.000/security 288/
+> lint 0/tsc+build 净。**db_digest 新基线 157d6862**（V23① 合法演进：+7 风险+7 审计，两次
+> 重建同指纹；旧基线 9582dcb0 退役）。**挂账**：R22/R23 sim 世界接入（sim 检测器逐规则手工
+> 镜像非低成本）、R22 质量维度二期、R23 锚标签皱纹（QUAL 显示在"受影响订单行"）、
+> ux_copy RULE_CN 缺 R19-R23（Streamlit 侧）、action_log 不在 digest 豁免（verify 库导出
+> 审计会变 digest——维持现状，活系统语义在案）。
+> **V24 角色化首屏 spec 已立**（docs/superpowers/specs/2026-07-20-role-based-cockpit.md，
+> Daniel"各角色页面完全一样，立即修复"）——实现批接续执行中。
+
 > **L-UX 轮3 收官（2026-07-19 傍晚，采购/合规/客服三 Sonnet 陌生人首测批D 新角色 + Opus/Sonnet
 > 修复双批 + 主会话复核）**：报告 docs/research/2026-07-19-ux-stranger-round3.md（含修复对照）。
 > **修复 11 项落地**：A ai-flow 文本金额按 _can_see_cost 同源脱敏（$•••，收紧执行缺口，合规/ops

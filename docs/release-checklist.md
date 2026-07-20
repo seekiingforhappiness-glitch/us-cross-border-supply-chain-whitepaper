@@ -36,7 +36,8 @@ python3 -m pipeline.build_ontology && python3 -m pipeline.evaluate
 # ③ 检测 + 五评估器（R1–R18 全 P/R=1.000）
 python3 -m engine.detect
 python3 -m engine.evaluate && python3 -m engine.evaluate_cost \
-  && python3 -m engine.evaluate_procurement && python3 -m engine.evaluate_warehouse
+  && python3 -m engine.evaluate_procurement && python3 -m engine.evaluate_warehouse \
+  && python3 -m engine.evaluate_finance && python3 -m engine.evaluate_supplier_risk
 python3 -m datagen.seed_demo_ops
 python3 -m pipeline.apply_seam_columns    # 波2-2b 接缝列链尾幂等步（tasks/risk_events 等引擎表补 version/tenant_id）
 # 重建确定性门（尺子=业务逻辑指纹，遥测表豁免见 pipeline/db_digest.py 头注）：两次全链重建

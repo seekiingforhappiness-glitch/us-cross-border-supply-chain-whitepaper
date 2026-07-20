@@ -35,6 +35,7 @@ RULE_CN = {
     "R10": "价量不符", "R11": "开票超实收", "R12": "预付款敞口",
     "R13": "供应商资质过期", "R14": "单一来源断供", "R15": "绕流程采购(maverick)",
     "R16": "断货", "R17": "不可履约", "R18": "盘点差异",
+    "R22": "供应商绩效劣化", "R23": "资质过期预警",
 }
 RULE_LEGEND = "　".join(f"{k}={v}" for k, v in RULE_CN.items())
 
@@ -193,8 +194,10 @@ def humanize_side_effects(side_effects):
 
 
 # ========== P1-4③ 根因（root_cause）人话模板 ==========
-# 只翻译 engine/rules.py 的 R1-R3（英文技术表述，delay/docs/stalled）；R4-R18 的 root_cause 在引擎
-# 实现里本就是中文人话（cost/procurement/warehouse/sourcing 规则自带），故不在此重复处理。
+# 只翻译 engine/rules.py 的 R1-R3（英文技术表述，delay/docs/stalled）；R4-R23 的 root_cause 在引擎
+# 实现里本就是中文人话（cost/procurement/warehouse/sourcing/finance/supplier_risk 规则自带——
+# R22/R23 根因模板见 engine/supplier_risk_rules.py，含供应商名/达成率/迟交单列表/证书到期日），
+# 故不在此重复处理。
 _R1_RE = re.compile(r"^eta_current\+(\d+)d buffers breaches promise by (\d+)d$")
 _R2_RE = re.compile(r"^missing ([\w,]+) with eta within (\d+)d$")
 _R3_RE = re.compile(r"^in_transit with no milestone for (\d+)d$")

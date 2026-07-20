@@ -100,6 +100,8 @@ X-Role 脱敏（沿既有两层，见各端点）：
   缺陷率Top      avg(goods_receipt_lines.defect_ppm) 按供应商降序 Top5（grn_lines→grns→po→supplier）
   单一依赖       count(*) WHERE rule_id='R14' AND status='open'
   对账差异       count(*),sum(affected_value_usd) WHERE rule_id IN('R7'..'R13') AND status='open'
+  绩效劣化       count(*),sum(affected_value_usd) WHERE rule_id='R22'（V23① 供应商级慢性交期）
+  资质预警       count(*) WHERE rule_id='R23'（V23① 逐证过期/临期未续）
 【库存 inventory】
   安全库存击穿   inventory_positions WHERE available_qty<safety_stock（计数+明细清单缺口降序）
   盘点差异       cycle_counts WHERE variance!=0 计数+Σ|variance|（simworld 缺 cycle_counts 表→
@@ -377,6 +379,7 @@ def _as_of_envelope(requested: str | None, effective: str | None, world_clock: s
                          "money.payables.overdue", "money.net_cash_14d", "decisions.overdue_tasks"]
     sim_replayable = ["money.fee_exposure", "customers.risk_exposure_set",
                       "suppliers.single_source_r14", "suppliers.recon_diff_r7_r13",
+                      "suppliers.perf_degradation_r22", "suppliers.qual_expiry_r23",
                       "inventory.rescuable_risk_set", "ai.trend",
                       "fulfillment.trend", "panorama.alert_anchoring"]
     current_only = ["fulfillment.otd", "fulfillment.customs_blocked", "fulfillment.delay_histogram",
@@ -777,7 +780,11 @@ def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
     · 单一依赖：SELECT count(*) FROM risk_events WHERE rule_id='R14' AND status='open'。
     · 对账差异：SELECT count(*), sum(affected_value_usd) FROM risk_events
       WHERE rule_id IN ('R7','R8','R9','R10','R11','R12','R13') AND status='open'。
-    alert_count = open R7-R14 计数。trend：无逐日快照 → null。
+    · 绩效劣化（V23① R22）：count(*), sum(affected_value_usd) WHERE rule_id='R22'——供应商级
+      慢性交期劣化（口径与本区交期达成率同源）。
+    · 资质预警（V23① R23）：count(*) WHERE rule_id='R23'——逐证过期/临期未续。
+    alert_count = open R7-R14 + R22 + R23 计数（侦察结论：本区口径是显式规则清单不自动吃新
+    rule_id，故 V23① 在此显式接入）。trend：无逐日快照 → null。
     回放（replay_risk，仅 sim）：单一依赖 R14 + 对账差异 R7-R13 按 _risk_active 时点重建（活跃风险计数/
     金额=可回放，affected_value_usd 是风险行快照）；交期达成率/缺陷率是 GRN 累计存量，不动、如实标存量。
     合规维度（K·P1）：role∈COMPLIANCE_ROLES 时 worst_suppliers 行附 uflpa_risk_flag(规整bool)/
@@ -850,14 +857,24 @@ def _zone_suppliers(con, tables: set[str], replay_risk: bool = False,
     ph = ",".join("?" * len(_RECON_RULES))
     recon = _one(con, f"SELECT count(*) c, sum(affected_value_usd) v FROM risk_events "
                       f"WHERE rule_id IN ({ph}) AND {rfrag}", (*_RECON_RULES, *rp))
+    # V23① R22/R23：供应商级绩效劣化 + 逐证资质预警（本区口径是显式规则清单，不自动吃新
+    # rule_id——此处显式接入；回放语义与 R14/recon 同款走 _risk_active 时点重建）。
+    r22 = _one(con, f"SELECT count(*) c, sum(affected_value_usd) v FROM risk_events "
+                    f"WHERE rule_id='R22' AND {rfrag}", rp)
+    r23 = _one(con, f"SELECT count(*) c FROM risk_events "
+                    f"WHERE rule_id='R23' AND {rfrag}", rp)["c"]
 
     zone = {
         "zone": "suppliers", "headline_label": "交期达成率",
-        "headline_value": headline, "trend": None, "alert_count": r14 + recon["c"],
+        "headline_value": headline, "trend": None,
+        "alert_count": r14 + recon["c"] + r22["c"] + r23,
         "detail": {"delivery_hit_rate": delivery, "defect_top": defect_top,
                    "single_source_r14": {"value": r14},
                    "recon_diff_r7_r13": {"open_risks": recon["c"],
-                                         "amount_usd": round(recon["v"] or 0.0, 2)}},
+                                         "amount_usd": round(recon["v"] or 0.0, 2)},
+                   "perf_degradation_r22": {"open_risks": r22["c"],
+                                            "amount_usd": round(r22["v"] or 0.0, 2)},
+                   "qual_expiry_r23": {"open_risks": r23}},
     }
     if role in COMPLIANCE_ROLES:               # K·P1：合规维度摘要（其他角色载荷不含此键）
         if comp_ok:

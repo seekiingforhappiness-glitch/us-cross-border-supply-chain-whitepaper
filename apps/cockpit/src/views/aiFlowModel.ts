@@ -19,6 +19,7 @@ export const RULE_CN: Record<string, string> = {
   R13: "供应商资质过期", R14: "单一来源断供", R15: "绕流程采购",
   R16: "断货", R17: "不可履约", R18: "盘点差异",
   R19: "逾期应收", R20: "现金水位", R21: "重复或不符付款",
+  R22: "供应商绩效劣化", R23: "资质过期预警",
 };
 // 规则 type（英文枚举）兜底表（detect note 同时给 code 与 type，code 未命中时退 type）
 export const RULE_TYPE_CN: Record<string, string> = {
@@ -28,6 +29,8 @@ export const RULE_TYPE_CN: Record<string, string> = {
   // 误写作 "cash_runway"（全仓库 grep 唯一出现处），从未真实匹配过——顺手订正，不改变任何行为
   // （RULE_CN 按 rule_id 已优先命中，这条 fallback 平时不会被触达；订正只会让它开始正确匹配）。
   overdue_receivable: "逾期应收", cash_watch: "现金水位", payment_anomaly: "重复或不符付款",
+  // V23① R22/R23（供应商风险感知，engine/supplier_risk_rules.py emit 的 type 一手源）
+  performance_degradation: "供应商绩效劣化", qualification_expiry_warning: "资质过期预警",
 };
 
 // ── 处置动作码 → 中文动词（英文码取自 app/streamlit_app.py::_APPROVE_HUMAN_TEMPLATES；

@@ -17,7 +17,7 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import AdmissionDecisionBar from "./AdmissionDecisionBar";
-import { DecisionButtons, PAY_ANCHOR_RULES, payRowStatus, REF_TYPE_CN, REF_TYPE_OBJ } from "./ImpactPanel";
+import { DecisionButtons, ExportEvidenceButton, PAY_ANCHOR_RULES, payRowStatus, REF_TYPE_CN, REF_TYPE_OBJ } from "./ImpactPanel";
 import {
   fieldGroup,
   fieldLabel,
@@ -525,6 +525,21 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
                   队列被截断/从别处进来的任务也能就地拍板。成功后 refetchFields（approval_status 变→本区
                   自动收起）+ onActed 刷新体征。DecisionButtons 只用 decision.taskId，proposedAction 仅作
                   上下文透传（此处金额无需，置 null）。 */}
+              {/* V23④ 证据包导出：RiskEvent 对象卡入口（与 ImpactPanel 同一组件、同一后端通道）。
+                  读级动作、所有角色可用——脱敏由后端按 X-Role 同源执行（cs 导出的包内金额即掩码值）。 */}
+              {target.type === "RiskEvent" && (
+                <div className="cp-action">
+                  <div className="cp-action__t">
+                    <Icon name="propose" size={13} /> 证据包
+                  </div>
+                  <ExportEvidenceButton riskId={target.id} role={role} />
+                  <div className="cp-action__note">
+                    导出该风险的证据包（快照/影响链/任务审批/时间线/协调/先例/导出元信息）——html 版新窗口打开可打印为
+                    PDF，JSON 版下载留档。包内脱敏跟随当前角色；每次导出留审计。
+                  </div>
+                </div>
+              )}
+
               {target.type === "Task" && String(fields.approval_status) === "pending" && (
                 <div className="cp-action">
                   <div className="cp-action__t">

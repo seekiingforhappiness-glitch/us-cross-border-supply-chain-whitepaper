@@ -192,6 +192,8 @@ function suppliersSummary(d: D): SummaryLine[] {
   const defect = d.defect_top;
   const recon = d.recon_diff_r7_r13 as { open_risks: number; amount_usd: number | string } | undefined;
   const r14 = d.single_source_r14 as { value: number } | undefined;
+  const r22 = d.perf_degradation_r22 as { open_risks: number; amount_usd: number | string } | undefined;
+  const r23 = d.qual_expiry_r23 as { open_risks: number } | undefined;
   const out: SummaryLine[] = [];
   // 最差交期供应商（缺收货域则退为对账差异）
   if (!isMissing(delivery) && delivery) {
@@ -201,6 +203,13 @@ function suppliersSummary(d: D): SummaryLine[] {
   }
   if (out.length === 0 && recon) {
     out.push({ label: "对账差异", value: `${recon.open_risks} 起 ${formatUsd(recon.amount_usd)}`, state: isMasked(recon.amount_usd) ? "masked" : "real", tone: recon.open_risks > 0 ? "neg" : undefined });
+  }
+  // V23① R22/R23：有告警才占摘要位（AI 检出的供应商风险优先于缺陷率 Top 上卡面）
+  if (r22 && r22.open_risks > 0) {
+    out.push({ label: "绩效劣化", value: `${formatInt(r22.open_risks)} 家 ${formatUsd(r22.amount_usd)}（R22）`, state: isMasked(r22.amount_usd) ? "masked" : "real", tone: "neg" });
+  }
+  if (r23 && r23.open_risks > 0) {
+    out.push({ label: "资质预警", value: `${formatInt(r23.open_risks)} 证（R23）`, state: "real", tone: "neg" });
   }
   // 缺陷率 Top（缺收货域则退为单一依赖）
   if (!isMissing(defect) && defect) {

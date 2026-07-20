@@ -2,6 +2,7 @@ import { useEffect, useState, type CSSProperties } from "react";
 import {
   COUNTERPARTY_TYPES,
   COUNTERPARTY_TYPE_CN,
+  fetchEvidencePackageBlob,
   fetchObject,
   fetchRiskImpact,
   formatInt,
@@ -434,6 +435,73 @@ function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role;
   );
 }
 
+// ── V23④ 证据包导出入口（决策日志 V23④，缘起轮3合规陌生人"审计轨迹导不出去没法交差"）──────
+// 导出是**读级**动作：全部有读权限的角色可用（COORD/合规/客服…都能导），不做角色门控——脱敏由后端按
+// X-Role 同源执行，导出的包里就是该角色看到的掩码值（cs 导出=金额掩码），前端不复制权限规则。
+// html 版新窗口打开（可浏览器打印为 PDF）+ json 版下载链接。为什么 fetch→Blob URL 而非直开 URL：
+// window.open 发不了 X-Role/X-World/X-Actor 头，直开会丢角色掩码/世界语义（见 api.ts 同注）。
+// 导出行为的审计（action_log: ExportEvidencePackage）由后端落，前端不再另记。
+// export：ObjectCard 的 RiskEvent 对象卡复用同一组件（单一来源，同 DecisionButtons 先例）。
+export function ExportEvidenceButton({ riskId, role }: { riskId: string; role: Role }) {
+  const [busy, setBusy] = useState<null | "html" | "json">(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const doExport = async (fmt: "html" | "json") => {
+    if (busy) return;
+    setBusy(fmt);
+    setErr(null);
+    // html 版必须在用户手势的**同步栈内**先开空白窗（await 之后再 window.open 会被浏览器弹窗拦截器
+    // 拦下——手势上下文过 await 即失效，浏览器实测确认），拿到窗口句柄后再异步把 Blob URL 导航进去。
+    // 极端环境开不出窗（win=null，强拦截器）→ 退化为下载 .html 文件（内容同一份，不丢功能）。
+    const win = fmt === "html" ? window.open("", "_blank") : null;
+    try {
+      const blob = await fetchEvidencePackageBlob(riskId, role, fmt);
+      const url = URL.createObjectURL(blob);
+      if (fmt === "html" && win) {
+        win.location.href = url; // 新窗口载入自包含单文件（浏览器可直接打印为 PDF）
+      } else {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `evidence-${riskId}.${fmt}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      // Blob URL 延迟释放：新窗口/下载已拿到内容后回收（60s 足够，避免内存驻留）
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      win?.close(); // 失败时收掉预开的空白窗，不留孤儿标签页
+      setErr((e as Error).message); // 后端白话中文原文（风险查无/世界不符…），不吞不美化
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="cp-coord-open">
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button
+          className="cp-coord-open__toggle"
+          onClick={() => doExport("html")}
+          disabled={busy !== null}
+          title="生成该风险的证据包（对象快照/影响链/任务审批/时间线/协调/先例），新窗口打开，可打印为 PDF"
+        >
+          <Icon name="propose" size={12} /> {busy === "html" ? "生成中…" : "导出证据包"}
+        </button>
+        <button
+          className="cp-coord-open__toggle"
+          onClick={() => doExport("json")}
+          disabled={busy !== null}
+          title="下载结构化 JSON 版证据包（同一份数据、同一套角色脱敏）"
+        >
+          <Icon name="link" size={12} /> {busy === "json" ? "下载中…" : "下载 JSON"}
+        </button>
+      </div>
+      {err && <div className="cp-coord-open__err">{err}</div>}
+    </div>
+  );
+}
+
 export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActed, onSwitchRole }: { focus: ImpactFocus; role: Role; onOpenObject: (r: ObjectRef) => void; onClose: () => void; onActed?: () => void; onSwitchRole?: (r: Role) => void }) {
   const alerts = [...focus.alerts].sort((a, b) => (SEV_RANK[b.severity] ?? 1) - (SEV_RANK[a.severity] ?? 1));
   const members = focus.members ?? [];
@@ -857,6 +925,14 @@ export default function ImpactPanel({ focus, role, onOpenObject, onClose, onActe
                 />
               </>
             )
+          )}
+          {/* V23④ 证据包导出：读级动作、所有角色可用（脱敏跟随角色由后端同源执行）。风险 id 已知即
+              渲染——待拍板提案态用 focusAlert 的风险号（risk 可能尚未加载完）。 */}
+          {(risk || focusAlert) && (
+            <ExportEvidenceButton
+              riskId={risk ? String(risk.risk_event_id) : String(focusAlert!.risk_event_id)}
+              role={role}
+            />
           )}
           <div className="cp-action__note">
             {focus.decision

@@ -80,18 +80,21 @@ def main():
           summary["cost"]["disputed_invoices"] ==
           _scalar(con, "SELECT count(*) FROM invoices WHERE status='disputed'"))
 
-    print("== ④ 采购（R7-R15）与底表一致 ==")
+    print("== ④ 采购（R7-R15 + V23① R22/R23）与底表一致 ==")
     p = summary["procurement"]
-    check("采购 open_risk == 直查 R7-R15", p["open_risk"] == _open_in(con, PROCUREMENT_RULES))
+    check("采购 open_risk == 直查 R7-R15+R22/R23", p["open_risk"] == _open_in(con, PROCUREMENT_RULES))
     check("三方对账异常 == 直查 R10+R11", p["three_way_recon"] == _open_in(con, ("R10", "R11")))
     check("预付款敞口 == 直查 R12", p["prepayment_exposure"] == _open_in(con, ("R12",)))
     check("资质过期 == 直查 R13", p["qualification_expired"] == _open_in(con, ("R13",)))
     check("单一来源 == 直查 R14", p["single_source"] == _open_in(con, ("R14",)))
     check("maverick == 直查 R15", p["maverick_spend"] == _open_in(con, ("R15",)))
+    check("绩效劣化 == 直查 R22", p["perf_degradation"] == _open_in(con, ("R22",)))
+    check("资质预警 == 直查 R23", p["qual_expiry_warning"] == _open_in(con, ("R23",)))
     # 采购分项计数不应超过场景总数（内部自洽）
     check("采购分项 ≤ 采购 open_risk 总数",
           p["three_way_recon"] + p["prepayment_exposure"] + p["qualification_expired"]
-          + p["single_source"] + p["maverick_spend"] <= p["open_risk"])
+          + p["single_source"] + p["maverick_spend"] + p["perf_degradation"]
+          + p["qual_expiry_warning"] <= p["open_risk"])
 
     print("== ⑤ 仓储库存（R16-R18）与底表一致 ==")
     w = summary["warehouse"]
@@ -120,9 +123,10 @@ def main():
     cr = summary["cross"]
     total = _scalar(con, f"SELECT count(*) FROM risk_events WHERE {OPEN_RISK}")
     check("总未结风险 == 直查", cr["total_open_risk"] == total, f"{cr['total_open_risk']} != {total}")
-    # 全域自洽：6 场景 open 之和（R1-R21 全覆盖）== 总未结风险
+    # 全域自洽：6 场景 open 之和（R1-R23 全覆盖）== 总未结风险
     # （2026-07-19 修锈蚀+补真缺口：F1 资金流上线后本断言"五场景 R1-R18"必失败——
-    #   经 executive_view 补 finance 场景块后恢复全覆盖恒等式，断言升级为六场景。）
+    #   经 executive_view 补 finance 场景块后恢复全覆盖恒等式，断言升级为六场景。
+    #   V23① R22/R23 入 procurement 场景元组，恒等式覆盖同步升至 R1-R23。）
     fin = summary["finance"]
     check("资金流 open_risk == 直查", fin["open_risk"] == _scalar(
         con, f"SELECT count(*) FROM risk_events WHERE {OPEN_RISK} AND rule_id IN ('R19','R20','R21')"),
@@ -131,7 +135,7 @@ def main():
           + fin["payment_anomaly"] == fin["open_risk"], str(fin))
     scenario_sum = (summary["delay"]["open_risk"] + summary["cost"]["open_risk"]
                     + p["open_risk"] + w["open_risk"] + fin["open_risk"])
-    check("六场景 open 之和 == 总未结风险（R1-R21 全覆盖）",
+    check("六场景 open 之和 == 总未结风险（R1-R23 全覆盖）",
           scenario_sum == total, f"{scenario_sum} != {total}")
     for s in ("open", "due_today", "overdue"):
         e = _scalar(con, "SELECT count(*) FROM tasks WHERE sla_state=?", (s,))

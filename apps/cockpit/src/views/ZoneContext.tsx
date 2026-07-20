@@ -334,6 +334,9 @@ function SuppliersCtx({ d }: { d: D }) {
   const defect = d.defect_top;
   const r14 = d.single_source_r14 as { value: number };
   const recon = d.recon_diff_r7_r13 as { open_risks: number; amount_usd: number | string };
+  // V23① R22/R23（可选键：旧载荷/缺列世界无此键时不渲染，不编造 0）
+  const r22 = d.perf_degradation_r22 as { open_risks: number; amount_usd: number | string } | undefined;
+  const r23 = d.qual_expiry_r23 as { open_risks: number } | undefined;
   return (
     <>
       <Card title="质量缺陷率 Top（defect ppm）">
@@ -369,6 +372,12 @@ function SuppliersCtx({ d }: { d: D }) {
         <Metric label="单一供应商依赖（R14）" value={formatInt(r14.value)} tone={r14.value > 0 ? "neg" : undefined} />
         <Metric label="发票对账差异（R7-R13）" value={`${recon.open_risks} 起`} tone={recon.open_risks > 0 ? "neg" : undefined} />
         <Metric label="对账差异金额" value={formatUsd(recon.amount_usd)} />
+        {r22 && (
+          <Metric label="供应商绩效劣化（R22）" value={`${r22.open_risks} 家 · ${formatUsd(r22.amount_usd)}`} tone={r22.open_risks > 0 ? "neg" : undefined} />
+        )}
+        {r23 && (
+          <Metric label="资质过期预警（R23）" value={`${r23.open_risks} 证`} tone={r23.open_risks > 0 ? "neg" : undefined} />
+        )}
       </Card>
     </>
   );

@@ -22,6 +22,7 @@ from . import procurement as PROC
 from . import warehouse as WH
 from . import sourcing as SRC
 from . import finance as FIN
+from . import supplier_risk as SUPR
 from .design_cases import apply_design_cases
 from .noise import apply_noise, apply_doc_refs
 from .oracle import sweep
@@ -59,6 +60,9 @@ def build(cfg):
     # 消费 supplier_invoices(proc)/invoices(cost)/sos+lines(world) 生成 Payment；对既有数据零扰动。
     fin_rng = random.Random(cfg["seed"] + cfg["finance"]["seed_offset"])
     FIN.build_finance_world(w, cfg, fin_rng)
+    # V23① 供应商风险 R22/R23 真值：**纯派生**（无 rng 参数，零随机流消耗——物理上不可能扰动
+    # 既有数据）；从采购世界既有事实独立推导，落新增 truth 文件，旧 9 文件逐字节不变。
+    SUPR.build_supplier_risk_truth(w, cfg)
     # v0.6 专题二 H3：milestone 单证号（booking_no/container_no）填充 + doc_ref_typo。
     # 独立随机流（seed+3000），须在 cost 建柜之后（primary 柜号已就位）。
     doc_rng = random.Random(cfg["seed"] + 3000)
@@ -297,6 +301,12 @@ def write_outputs(w, expected, noise, cfg, raw_dir, truth_dir, sqlite_path=None)
     _dump(truth / "expected_finance_risks.csv", fin["anomalies"],
           ["expected_finance_risk_id", "rule_id", "type", "payment_id", "ref_type", "ref_id",
            "direction", "counterparty_id", "severity", "anomaly_value_usd", "note"])
+    # V23① 供应商风险 ground truth（R22/R23；独立新增文件——supplier/qualification 锚点不入
+    # 既有 schema，纯派生零注入，故既有 9 真值文件逐字节不变，守 §5 铁律与 V23① 红线。
+    # 仅 datagen/verify/evaluate_supplier_risk 可读，引擎检测禁读）
+    _dump(truth / "expected_supplier_risks.csv", w["supplier_risk"]["anomalies"],
+          ["expected_supplier_risk_id", "rule_id", "type", "supplier_id", "qualification_id",
+           "cert_type", "severity", "anomaly_value_usd", "note"])
 
     # ground truth
     _dump(truth / "expected_risk_events.csv", expected,

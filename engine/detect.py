@@ -23,19 +23,21 @@ from .procurement_rules import detect_procurement_risks
 from .warehouse_rules import detect_warehouse_risks
 from .sourcing_rules import detect_sourcing_risks
 from .finance_rules import detect_finance_risks
+from .supplier_risk_rules import detect_supplier_risks
 from .graph import upsert_relationship
 
 DB = "data/ontology.sqlite"
 ONTOLOGY_PATH = "ontology/control-tower-ontology.json"
 
 # 规则 id 分组（与 detect_*_risks() 的函数边界一一对应，供台账按组写 fingerprint/status）——
-# 六组共 3+3+7+3+2+3=21 条，对齐 manual R1-R21 全量。
+# 七组共 3+3+7+3+2+3+2=23 条，对齐 R1-R23 全量（V23① 增 R22/R23 供应商风险感知组）。
 TOWER_RULES = ("R1", "R2", "R3")
 COST_RULES = ("R4", "R5", "R6")
 PROCUREMENT_RULES = ("R7", "R8", "R9", "R10", "R11", "R12", "R13")
 WAREHOUSE_RULES = ("R16", "R17", "R18")
 SOURCING_RULES = ("R14", "R15")
 FINANCE_RULES = ("R19", "R20", "R21")
+SUPPLIER_RULES = ("R22", "R23")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -294,11 +296,32 @@ def _fp_payments_paid(con, as_of_str):
     ])
 
 
+def _fp_supplier_perf(con, as_of_str):
+    """R22：purchase_orders 头（supplier/expected_ready）+ goods_receipts(received_date≤as_of) +
+    po_lines 行金额——detect_supplier_risks() R22 段实际读取的三张切片（V23①）。"""
+    return _fingerprint(con, [
+        ("""SELECT po_id, supplier_id, expected_ready_date FROM purchase_orders
+            ORDER BY po_id""", ()),
+        ("""SELECT grn_id, po_id, received_date FROM goods_receipts
+            WHERE received_date <= ? ORDER BY grn_id""", (as_of_str,)),
+        ("SELECT po_line_id, po_id, qty, unit_price_usd FROM po_lines ORDER BY po_line_id", ()),
+    ])
+
+
+def _fp_qual_warning(con, as_of_str):
+    """R23：supplier_qualifications 全量（valid_from/valid_to 与 as_of 比较在规则内做，
+    切片本身不按 as_of 过滤——与 R13 的 _fp_qualification 同口径选择）。"""
+    return _fingerprint(con, [
+        ("""SELECT qualification_id, supplier_id, cert_type, valid_from, valid_to
+            FROM supplier_qualifications ORDER BY qualification_id""", ()),
+    ])
+
+
 def _write_ledger(con, as_of, run_ts, rule_version, cands, rule_fingerprints):
     """G-Ledger 落账成功路径：cands 是本次 detect 产出的规则候选列表（函数内部按 rule_id
     分组计数），rule_fingerprints 是 {rule_id: input_fingerprint} 映射，须覆盖本次要写的
     全部 rule_id（含候选数为 0 的规则——一次 detect 对每个 rule_id 固定写一行，不因未命中而
-    漏行，凑够 R1..R21 共 21 行）。status 恒 'ok'：detect_*_risks() 若抛异常，由调用方 except
+    漏行，凑够 R1..R23 共 23 行）。status 恒 'ok'：detect_*_risks() 若抛异常，由调用方 except
     分支改走 _write_ledger_error，不会进入本函数。纯 INSERT + 独立 commit，不touch risk_events/
     action_log/sales_order_lines 等既有表——红线：台账是纯 append 的旁路。"""
     counts = {}
@@ -696,6 +719,65 @@ def apply_finance_candidates(con, cands, as_of):
     return created
 
 
+def apply_supplier_risk_candidates(con, cands, as_of):
+    """V23① 供应商风险 RiskEvent 写库（R22/R23）。与采购/仓储/资金流写库同构：不合并、不牵动
+    订单行（每锚点唯一 → 恒 create）。R22 锚 supplier_id 列（同 R13/R14 先例，每供应商至多一条）；
+    R23 锚 qualification_id 载于 affected_so_line_ids 通用列（同仓储/资金流"通用列承载受影响
+    业务对象 id"先例），supplier_id 列同置（panorama 供应商节点锚定 + Supplier 对象卡
+    risk_on_supplier 反向遍历自动吃到）。RSK 序号续既有事件之后（append，不扰动 R1-R21 序号）。
+    审计时间戳用 as_of（D8）。返回 created。"""
+    cur = con.cursor()
+    ts = f"{as_of.isoformat()}T00:00:00Z"
+    seq = cur.execute("SELECT count(*) FROM risk_events").fetchone()[0]
+    created = 0
+    for c in sorted(cands, key=lambda x: (x["rule_id"], x["anchor"])):
+        # 洞1.3 幂等：自然键——R22 = (rule_id, supplier_id)（供应商级至多一条 open），
+        # R23 = (rule_id, affected_so_line_ids=json([qualification_id]))（逐证一条）。
+        # 命中非终态既有事件则 UPDATE（复用 id、不新增行、不动 seq），未命中才 INSERT 续号。
+        if c["rule_id"] == "R22":
+            anchor_json = "[]"
+            ex = cur.execute("""SELECT risk_event_id FROM risk_events
+                                WHERE rule_id='R22' AND supplier_id=?
+                                  AND status NOT IN ('resolved','escalated')""",
+                             (c["supplier_id"],)).fetchone()
+        else:
+            anchor_json = json.dumps([c["anchor"]])
+            ex = cur.execute("""SELECT risk_event_id FROM risk_events
+                                WHERE rule_id='R23' AND affected_so_line_ids=?
+                                  AND status NOT IN ('resolved','escalated')""",
+                             (anchor_json,)).fetchone()
+        if ex:
+            rid = ex["risk_event_id"]
+            cur.execute("""UPDATE risk_events SET severity=?, affected_value_usd=?, root_cause=?
+                           WHERE risk_event_id=?""",
+                        (c["severity"], c["affected_value_usd"], c["root_cause"], rid))
+            result = "merged"
+        else:
+            seq += 1
+            rid = f"RSK-{seq:04d}"
+            cur.execute("""INSERT INTO risk_events (risk_event_id, type, rule_id, severity,
+                           shipment_id, affected_so_line_ids, affected_value_usd, detected_at,
+                           root_cause, status, resolved_at, outcome, resolution_summary,
+                           affected_invoice_line_ids, po_id, supplier_id, affected_po_line_ids,
+                           warehouse_id, affected_sku_ids)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (rid, c["type"], c["rule_id"], c["severity"], None,
+                         anchor_json, c["affected_value_usd"], c["detected_at"],
+                         c["root_cause"], "open", None, None, None, None, None,
+                         c["supplier_id"], None, None, None))
+            result = "created"
+            created += 1
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id,
+                       params_json, as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    ("engine", "system", "CreateRiskEvent", rid,
+                     json.dumps({"rule_id": c["rule_id"], "supplier_id": c["supplier_id"],
+                                 "anchor": c["anchor"], "severity": c["severity"]},
+                                ensure_ascii=False),
+                     as_of.isoformat(), ts, result))
+    con.commit()
+    return created
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/datagen.yaml")
@@ -784,13 +866,26 @@ def main():
               "R21": _fp_payments_paid(con, as_of_str)}
     _write_ledger(con, as_of, run_ts, rule_version, fin_cands, fin_fp)
     fin_created = apply_finance_candidates(con, fin_cands, as_of)
+
+    # V23① 供应商风险 R22/R23：独立检测与写库路径（supplier/qualification 锚点，不合并、
+    # 不牵动订单行）。RSK 序号 append 末尾（不扰动 R1-R21 序号）。
+    try:
+        sup_cands = detect_supplier_risks(con, as_of, cfg)
+    except Exception as e:
+        _write_ledger_error(con, as_of, run_ts, rule_version, SUPPLIER_RULES, e)
+        raise
+    sup_fp = {"R22": _fp_supplier_perf(con, as_of_str),
+              "R23": _fp_qual_warning(con, as_of_str)}
+    _write_ledger(con, as_of, run_ts, rule_version, sup_cands, sup_fp)
+    sup_created = apply_supplier_risk_candidates(con, sup_cands, as_of)
     by_rule = {}
-    for c in cands + cost_cands + proc_cands + wh_cands + src_cands + fin_cands:
+    for c in cands + cost_cands + proc_cands + wh_cands + src_cands + fin_cands + sup_cands:
         by_rule[c["rule_id"]] = by_rule.get(c["rule_id"], 0) + 1
     print(json.dumps({"as_of": as_of.isoformat(),
                       "candidates": len(cands) + len(cost_cands) + len(proc_cands)
-                      + len(wh_cands) + len(src_cands) + len(fin_cands),
-                      "created": created + proc_created + wh_created + src_created + fin_created,
+                      + len(wh_cands) + len(src_cands) + len(fin_cands) + len(sup_cands),
+                      "created": created + proc_created + wh_created + src_created + fin_created
+                      + sup_created,
                       "merged": merged,
                       "by_rule": by_rule, "invoice_status": inv_dist},
                      ensure_ascii=False))

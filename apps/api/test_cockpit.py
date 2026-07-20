@@ -291,7 +291,15 @@ def test_vitals_suppliers_matches_sql(client, con):
         SELECT count(*) c, round(sum(affected_value_usd),2) v FROM risk_events
         WHERE rule_id IN ('R7','R8','R9','R10','R11','R12','R13') AND status='open'""").fetchone()
     assert z["detail"]["recon_diff_r7_r13"] == {"open_risks": recon["c"], "amount_usd": recon["v"]}
-    assert z["alert_count"] == r14 + recon["c"]
+    # V23① R22/R23 供应商风险感知：绩效劣化（count+金额）与资质预警（count）逐值对 SQL
+    r22 = con.execute("""
+        SELECT count(*) c, round(coalesce(sum(affected_value_usd), 0.0), 2) v FROM risk_events
+        WHERE rule_id='R22' AND status='open'""").fetchone()
+    assert z["detail"]["perf_degradation_r22"] == {"open_risks": r22["c"], "amount_usd": r22["v"]}
+    r23 = con.execute("SELECT count(*) FROM risk_events "
+                      "WHERE rule_id='R23' AND status='open'").fetchone()[0]
+    assert z["detail"]["qual_expiry_r23"] == {"open_risks": r23}
+    assert z["alert_count"] == r14 + recon["c"] + r22["c"] + r23
     # 交期达成率整体值：独立单条 SQL 复算（PO 首张 GRN ≤ expected_ready_date）
     row = con.execute("""
         SELECT count(*) m, sum(CASE WHEN g.first_recv <= po.expected_ready_date

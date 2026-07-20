@@ -139,6 +139,19 @@ finance:                        # F1 资金流域（V8-②）——独立随机�
     r21_dup: 3                   # 重复付款（同 ref 两条 paid，锚 duplicate payment_id）
     r21_mismatch: 4              # 金额不符（paid amount ≠ 单据金额）
 
+supplier_risk:                  # V23① R22/R23 供应商风险感知层——纯派生规则：零新随机流、零注入、
+                                # 零新噪声；真值由独立 oracle 从既有采购数据推导（datagen/supplier_risk.py），
+                                # 旧 truth 文件逐字节不变。阈值保守缺省，参数表候 Daniel 微调。
+  perf_threshold_rate: 0.70     # R22：供应商 PO 级交期达成率 < 此值 → 绩效劣化。
+                                #   口径=驾驶舱供应商区同款（PO 首张 GRN 收货日 ≤ PO 头 expected_ready_date
+                                #   记达成；分母=有收货的 PO），双处一致避免"驾驶舱一个数、告警另一个数"。
+  perf_critical_rate: 0.60      # R22：达成率 < 此值 → critical，否则 high（0.60 ≤ rate < 0.70）。
+  perf_min_pos: 5               # R22：最小样本——有收货的 PO 数 ≥ 此值才评（防小样本误伤）。
+  perf_window_days: 0           # R22：观察窗口天数；0=全历史，>0 时只计首收货日 ∈ [as_of−N, as_of] 的 PO。
+  qual_warning_days: 30         # R23：valid_to ∈ [as_of, as_of+此天数] → 临期 medium；
+                                #   valid_to < as_of → 过期 high；同类更新证（valid_to 更晚且 ≥ as_of）
+                                #   已补 → 不报（"未补新证"门）。
+
 scoring:                        # v0.6 专题一 Y1 风险评分模型（H1/H2）
   split_ratio: 0.7              # 按 shipment_id 的 sha256 十六进制排序取前 70% 训练
   lr: 0.5                       # 全批量梯度下降步长
