@@ -331,6 +331,18 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V23 — L-UX 轮3 四道裁决（2026-07-20，Daniel 原话"1新增规则可以 2同意 3收紧 4做导出"）。**
+①**新增规则域批准**：R22 供应商绩效劣化（慢性交期/质量劣化，如 Yiwu Sunrise 53.6% 达成率
+零覆盖的补位）+ R23 资质过期预警（过期/临期资质主动上浮）——合规/采购域从"零 AI 覆盖"
+接入检测-提案链。红线：R1-R21 P/R=1.000 不回归；truth 目录旧文件字节不变（新规则真值以
+**新增表**方式落地，独立 oracle 从现有数据推导，不注入新噪声不改旧真值）；阈值参数进
+config 用保守缺省，实现后参数表候 Daniel 微调。②**COORD_PERMS 扩 compliance**：本体
+ManageCoordination roles 加 compliance，桥2 生成链自动跟随，UI/测试同步——合规获协调
+发起/跟进权。③**脱敏声明二期=收紧**：cs 客户敞口金额与 UFLPA 对采购均**不放开**（维持
+现状）；对象读端点组式规则跳过的洞**堵上**（Invoice/CostScenario 金额字段在 /objects
+读端点按既有声明执行掩码），全面残留审计一次做完。④**证据包导出批准**：单风险/任务证据包
+（对象快照+时间线+审计+先例）可导出文件，脱敏跟随请求角色，导出行为本身留审计。
+
 **V22 — L-UX 轮2 五道裁决全批 + 健壮性/UX 打包授权（2026-07-19，Daniel 原话"5项都要。
 以后这种明显提升健壮性和用户体验的，自己决定就好了"）。**
 五项全部批准执行：①**驾驶舱补全角色视图**（finance 优先——陌生人实测痛点最硬，其后
