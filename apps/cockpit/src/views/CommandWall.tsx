@@ -405,7 +405,7 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                 </div>
 
                 <div className="cp-wall-card__headline">
-                  <span className={`cp-wall-card__big num ${hl.state === "real" ? "" : hl.state === "masked" ? "is-masked" : "is-missing"}`}>
+                  <span className={`cp-wall-card__big num ${hl.state === "real" ? "" : hl.state === "masked" ? "is-masked" : "is-missing"} ${rh?.tone === "neg" ? "is-neg" : ""}`}>
                     {hl.state === "masked" && <Icon name="lock" size={14} />}
                     {hl.text}
                   </span>

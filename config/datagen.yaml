@@ -148,7 +148,7 @@ supplier_risk:                  # V23① R22/R23 供应商风险感知层——�
   perf_critical_rate: 0.60      # R22：达成率 < 此值 → critical，否则 high（0.60 ≤ rate < 0.70）。
   perf_min_pos: 5               # R22：最小样本——有收货的 PO 数 ≥ 此值才评（防小样本误伤）。
   perf_window_days: 0           # R22：观察窗口天数；0=全历史，>0 时只计首收货日 ∈ [as_of−N, as_of] 的 PO。
-  qual_warning_days: 30         # R23：valid_to ∈ [as_of, as_of+此天数] → 临期 medium；
+  qual_warning_days: 40         # R23：valid_to ∈ [as_of, as_of+此天数] → 临期 medium；
                                 #   valid_to < as_of → 过期 high；同类更新证（valid_to 更晚且 ≥ as_of）
                                 #   已补 → 不报（"未补新证"门）。
 

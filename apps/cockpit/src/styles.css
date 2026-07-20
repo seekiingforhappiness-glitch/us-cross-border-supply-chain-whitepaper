@@ -1685,6 +1685,8 @@ body {
 }
 /* V24② 角色化口径副行的告警变体（如合规卡"资质异常 N 家"N>0）——比默认 amber 更重的红。
    manager 墙的副行从不带 is-neg，故此规则对 manager 画面零影响（byte-identical 保持）。 */
+/* V25裁决2：现金击穿大数字标红（仅 finance cash 卡 roleHeadline tone=neg 时；manager 不触发）。 */
+.cp-wall-card__big.is-neg { color: var(--sev-red, #e5484d); }
 .cp-wall-card__subnote.is-neg {
   color: var(--sev-red);
 }

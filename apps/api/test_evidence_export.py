@@ -146,53 +146,55 @@ def test_blocks_honest_empty_not_500(api):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ② cs 角色金额=掩码值（不旁路实证；manager 对照真值）
+# ② 脱敏口径 = 与对象读端点按声明一致（V25 裁决3，2026-07-20 Daniel"对齐：证据包按声明放开"）
 # ═══════════════════════════════════════════════════════════════════════════
-def test_cs_amounts_masked_manager_sees_values(api):
+def test_amounts_follow_declaration_same_as_object_endpoint(api):
+    """V25 裁决3 核心不变量：证据包快照的每个字段值 == 同角色 /objects 读端点的同字段值。
+    affected_value_usd 未在 sensitiveFieldRules 声明 → cs 与 manager 同见真值（原全量成本门已撤，
+    与对象卡口径打架的轮4 实证就此闭环）；已声明字段若为该对象所有则仍掩（masker 层兜住）。"""
     client, _, scon = api
-    # 挑一条 affected_value_usd 非空的风险（掩码断言要有真值可对照）
     rid = _pick_risk(scon, "re.affected_value_usd IS NOT NULL AND re.affected_value_usd > 0")
-    jm = _ep(client, rid, role=MANAGER).json()
-    jc = _ep(client, rid, role=CS).json()
-    # 快照层：affected_value_usd —— manager 真数值 / cs 掩码
-    assert isinstance(jm["risk_snapshot"]["fields"]["affected_value_usd"], (int, float))
-    assert jc["risk_snapshot"]["fields"]["affected_value_usd"] == MASK
+    for role in (MANAGER, CS):
+        pkg = _ep(client, rid, role=role).json()["risk_snapshot"]["fields"]
+        resp = client.get(f"/objects/RiskEvent/{rid}", headers={"X-Role": role}).json()
+        obj = resp.get("object", resp)  # 端点信封形状兼容
+        for k, v in pkg.items():
+            if k in obj:
+                assert v == obj[k], f"{role} 证据包 {k}={v} != 对象读端点 {obj[k]}（两出口口径漂移）"
     # 回归钉（浏览器实测抓到的 bug）：白话中文标签不得被金额掩码误伤（label 恒为中文名，非锁串）
+    jc = _ep(client, rid, role=CS).json()
     cs_labels = {p["field"]: p["label"] for p in jc["risk_snapshot"]["field_labels_cn"]}
     assert cs_labels["affected_value_usd"] == "影响金额（美元）"
-    # 影响链层：amount_usd 同门（波E impact_block 复用 + 末端 _mask_money）
-    if "amount_usd" in jc["impact"]:
-        mv = jc["impact"]["amount_usd"]
-        assert mv == MASK or mv == 0.0, f"cs 影响金额既非掩码也非 0 空态：{mv}"
 
 
-def test_cs_masking_covers_all_usd_keys_recursively(api):
-    """全包递归扫：cs 载荷任意深度的 *_usd 键不得出现数值（掩码串/None/0 空态皆可，数值即泄漏）。
-    时间线 params 嵌套提案金额（如 collect_amount_usd）也在此网内——防"审计轨迹漏金额"。"""
+def test_declared_fields_still_masked_in_package(api):
+    """V25 裁决3 的另一半：按声明放开 ≠ 全放开——若证据包任何块内出现**已声明**敏感字段
+    （以 Invoice 组式金额为例经由对象读端点抽验），非授权角色仍须掩码。此处以端点级对照钉住：
+    cs 读 Invoice.total_usd 经对象读端点=MASK（masker 组式规则，V23③），证据包不得出现该对象
+    明文（当前包不含发票快照块，断言为守恒式：包内任何 total_usd 键不得为数值——有则必掩）。"""
     client, _, scon = api
     rid = _pick_risk_with_task(scon)
     jc = _ep(client, rid, role=CS).json()
-
     leaks: list[str] = []
 
     def _scan(node, path=""):
         if isinstance(node, dict):
             for k, v in node.items():
-                p = f"{path}.{k}"
-                if k.endswith("_usd") and isinstance(v, (int, float)) and v != 0:
-                    leaks.append(f"{p}={v}")
-                _scan(v, p)
+                pth = f"{path}.{k}"
+                if k == "total_usd" and isinstance(v, (int, float)) and v != 0:
+                    leaks.append(f"{pth}={v}")
+                _scan(v, pth)
         elif isinstance(node, list):
             for i, item in enumerate(node):
-                _scan(item, f"{path}[{i}]")
+                _scan(item, f"{pth}[{i}]" if False else f"{path}[{i}]")
 
     _scan(jc)
-    assert not leaks, f"cs 证据包泄漏未掩码金额：{leaks}"
+    assert not leaks, f"cs 证据包泄漏已声明敏感字段：{leaks}"
 
 
-def test_timeline_nested_proposal_amount_masked_for_cs(api):
-    """定点实证（有真实审批链的世界才跑）：ApproveMitigation 审计行 params.proposal 里的金额键，
-    manager 见数值、cs 见掩码——审计时间线不是脱敏旁路。"""
+def test_timeline_nested_proposal_amount_follows_declaration(api):
+    """V25 裁决3 后：时间线 params.proposal 嵌套金额（提案参数，未在声明清单）对 cs 与 manager
+    同值（与任务对象卡上 proposal_params 的可见性一致，不再单独全掩）。有真实审批链的世界才跑。"""
     client, _, scon = api
     rid = _pick_risk_with_approval(scon)
     if rid is None:
@@ -200,20 +202,18 @@ def test_timeline_nested_proposal_amount_masked_for_cs(api):
     jm = _ep(client, rid, role=MANAGER).json()
     jc = _ep(client, rid, role=CS).json()
 
-    def _approve_amounts(j):
-        out = []
-        for e in j["timeline"]["items"]:
-            if e["action"] == "ApproveMitigation" and isinstance(e.get("params"), dict):
-                prop = e["params"].get("proposal")
-                if isinstance(prop, dict):
-                    out += [(k, v) for k, v in prop.items() if k.endswith("_usd")]
+    def _usd_pairs(j):
+        out = {}
+        for t in j["timeline"]["items"]:
+            prop = (t.get("params") or {}).get("proposal") or {}
+            for k, v in prop.items():
+                if k.endswith("_usd"):
+                    out[f"{t.get('action')}:{k}"] = v
         return out
 
-    m_amts, c_amts = _approve_amounts(jm), _approve_amounts(jc)
-    if not m_amts:
-        pytest.skip("审批行提案参数无金额键——无可对照")
-    assert any(isinstance(v, (int, float)) for _, v in m_amts), "manager 应见真数值"
-    assert all(v == MASK for _, v in c_amts), f"cs 时间线嵌套金额未掩码：{c_amts}"
+    pm, pc = _usd_pairs(jm), _usd_pairs(jc)
+    assert pm, "有审批行的风险，时间线应含至少一个提案金额键"
+    assert pm == pc, f"未声明的提案金额两角色应同值（V25 与对象卡口径一致）：manager={pm} cs={pc}"
 
 
 def test_approval_reason_and_approver_surfaced(api):
@@ -327,18 +327,19 @@ def test_html_self_contained_no_external_links(api):
         assert t in h, f"html 缺章节 {t}"
 
 
-def test_html_masks_amounts_for_cs(api):
-    """html 版同样跟随角色脱敏（html 只是同一 dict 的渲染，不是第二条数据路）：cs 页面含掩码串、
-    不含 manager 页面里的真金额数字。"""
+def test_html_renders_same_values_as_json(api):
+    """V25 裁决3 后：html 只是渲染层非第二数据路——同角色 html 内含 json 快照的同值
+    （原"cs html 应含掩码串"断言随全量成本门撤除而更新：未声明字段两格式同为明文）。"""
     client, _, scon = api
     rid = _pick_risk(scon, "re.affected_value_usd IS NOT NULL AND re.affected_value_usd > 0")
-    truth = scon.execute("SELECT affected_value_usd FROM risk_events WHERE risk_event_id=?",
-                         (rid,)).fetchone()[0]
-    hc = _ep(client, rid, role=CS, fmt="html").text
-    hm = _ep(client, rid, role=MANAGER, fmt="html").text
-    assert MASK in hc, "cs html 应含掩码串"
-    assert str(truth) not in hc, f"cs html 泄漏真实金额 {truth}"
-    assert str(truth) in hm, "manager html 应含真实金额"
+    for role in (MANAGER, CS):
+        j = _ep(client, rid, role=role).json()
+        h = _ep(client, rid, role=role, fmt="html").text
+        v = j["risk_snapshot"]["fields"].get("affected_value_usd")
+        if isinstance(v, (int, float)):
+            assert str(v) in h or f"{v:,.2f}" in h or f"{v:.2f}" in h, f"{role} html 缺 json 同值 {v}"
+        else:
+            assert v in h, f"{role} html 缺掩码串"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

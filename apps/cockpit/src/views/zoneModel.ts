@@ -82,7 +82,7 @@ export type WallBlockId = ZoneId | "admission";
  *  · "customs" = 清关卡点口径（未报关且在途的票数为主数字，准交率 OTD 降副行）——仅 compliance 的
  *    "清关卡点"履约卡用；其余履约卡（ops 在途异常 / cs 履约准交 / sales 客户履约）标题本就与 OTD 相符，
  *    仍用默认 OTD。缘由：标题"清关卡点"配大数字 96.9% 会被读成"清关通过率 96.9%"（其实是准交率），贴错标签。 */
-export type WallCaliber = "compliance" | "customs";
+export type WallCaliber = "compliance" | "customs" | "transit" | "cash";
 export interface WallBlock {
   /** 区块 id：zone id（复用区卡）或 "admission"（准入组合块）。合法集见 VALID_BLOCK_IDS。 */
   id: WallBlockId;
@@ -120,7 +120,7 @@ export const ROLE_WALL: Record<Role, WallBlock[]> = {
   // 规格 ops③"逾期协调线程"无独立区卡 → 由右栏协作流 tab 承载（见歧义清单）。
   ops: [
     zb("decisions", "我组处置 · 超时告警"),
-    zb("fulfillment", "在途异常 · 延误 / 清关卡点"),
+    zb("fulfillment", "在途异常 · 延误 / 清关卡点", "transit"),
     zb("inventory", "库存救援 · 现货救延误"),
     zb("suppliers", "供应商交期风向（只读）"),
   ],
@@ -142,7 +142,7 @@ export const ROLE_WALL: Record<Role, WallBlock[]> = {
   // ②我组处置（R21 对账直达）。规格 finance 的费用异常队列/发票漏斗/逾期应收榜同源于 money 区卡。
   // 不渲染库存/供应商交期榜。
   finance: [
-    zb("money", "现金水位 · 应收应付 / 费用异常"),
+    zb("money", "现金水位 · 应收应付 / 费用异常", "cash"),
     zb("decisions", "我组处置 · 对账"),
   ],
   // 合规：合规面（RejectOrRequestMoreInfo 持有者、V23② 协调权）。①准入案队列（卡点步骤显性）
@@ -211,6 +211,7 @@ export interface RoleHeadline {
   text: string;
   state: ValState;
   label: string; // hllabel 覆盖（口径诚实的白话标签）
+  tone?: "neg"; // V25裁决2：现金击穿标红
   /** headline 下的口径副行（如"全司 21 条候老板审批" / 资质异常家数）——如实并存，点破两口径。 */
   sublines?: { text: string; title?: string; tone?: "neg" }[];
 }
@@ -286,6 +287,36 @@ export function roleHeadline(b: { id: WallBlockId; caliber?: WallCaliber }, z: Z
       state: "real",
       label: "清关卡点票（未报关且在途）",
       sublines: [{ text: `准交率 OTD ${otd.text}`, title: "全司准交率（到达行 actual≤promised 占比）——本卡次要口径，主数字是清关卡点票数" }],
+    };
+  }
+  // V25裁决1：ops「在途异常」卡——主数字改异常票数（在途延误+清关卡点合计），OTD 降副行。
+  if (b.id === "fulfillment" && b.caliber === "transit") {
+    const c = (z.detail as D).customs_blocked as { value: number } | undefined;
+    const delayed = typeof z.alert_count === "number" ? z.alert_count : null;
+    if (delayed === null || !c || typeof c.value !== "number") {
+      return null; // 任一口径缺数就退回默认 headline（不拼假的合计）
+    }
+    const otd = headlineOf(z);
+    return {
+      text: formatInt(delayed + c.value),
+      state: "real",
+      label: "在途异常票（延误+清关卡点）",
+      sublines: [{ text: `准交率 OTD ${otd.text}`, title: "全司准交率——本卡次要口径，主数字是在途异常总票数（在途延误+未报关卡点）" }],
+    };
+  }
+  // V25裁决2：finance「现金水位」卡——主数字改未来14天净流出（掩码跟随 cell），费用敞口降副行。
+  if (b.id === "money" && b.caliber === "cash") {
+    const nc = (z.detail as D).net_cash_14d;
+    if (nc === undefined || isMissing(nc)) return null; // 无该域数据退回默认（费用敞口）
+    const v = nc as { value_usd: number | string; window_days: number; breach: boolean };
+    const vc = cell(v.value_usd, formatUsd);
+    const fee = headlineOf(z);
+    return {
+      text: vc.text,
+      state: vc.state,
+      label: `未来${v.window_days}天净现金流${v.breach ? " · 击穿阈值" : ""}`,
+      tone: v.breach && vc.state === "real" ? "neg" : undefined,
+      sublines: [{ text: `费用异常敞口 ${fee.text}`, title: "R4-R6 未闭环费用异常合计——本卡次要口径，主数字是现金水位" }],
     };
   }
   return null;

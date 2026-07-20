@@ -21,7 +21,7 @@
   ⑦ export_meta     导出元信息（导出人 X-Actor / 角色 / 时间 as_of / 世界 verify|sim）——sim 显著标"模拟数据"。
 
 红线（本模块的存在理由）：
-  · **脱敏跟随请求角色、复用既有掩码层、不开新洞**：对象快照走 SensitiveFieldMasker(object_type)（对象读
+  · **脱敏跟随请求角色、按声明执行（V25 裁决3 与对象读端点对齐）**：对象快照走 SensitiveFieldMasker(object_type)（对象读
     端点同款）；聚合金额（affected_value_usd / impact.amount_usd / 先例 impact_usd / 提案 est_cost_usd 等
     _usd 键）走 cockpit._mask_money（成本门 _can_see_cost，与波E build_evidence 同规、V21① 边界内全量掩、
     不套自队例外）；自由文本 "$金额" 走 cockpit._mask_text_amounts（轮3-A 收紧同款）。三层皆复用、无第二份规则。
@@ -339,10 +339,11 @@ def build_evidence_package(con: sqlite3.Connection, risk_event_id: str, role: st
         },
     }
 
-    # ── 末端统一脱敏（复用既有掩码层，顺序：金额聚合门 → 自由文本门；对象快照已在各块内过 masker）──
-    if not _can_see_cost(role):
-        _mask_money(package)               # 全量掩 _usd 键（role=None：V21① 边界内不套自队例外，同 evidence.py）
-        _mask_text_amounts(package)        # 自由文本 "$金额" → $•••（轮3-A 收紧同款）
+    # ── 脱敏口径（V25 裁决3，2026-07-20 Daniel"对齐：证据包按声明放开"）：
+    # 原末端全量成本门（_mask_money+_mask_text_amounts）掩过了头——affected_value_usd 等**未声明**
+    # 敏感的运营影响金额在对象卡明文、在证据包却被掩，同一事实两出口口径打架（轮4 合规陌生人实证）。
+    # 现与对象读端点对齐：**只按本体 sensitiveFieldRules 声明掩**（各块内 masker 已执行，含组式规则），
+    # 未声明字段与对象卡一致明文。已声明字段（Invoice.total_usd 等）若入包仍掩（masker 层兜住）。
     return package
 
 
