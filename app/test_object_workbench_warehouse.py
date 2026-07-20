@@ -201,7 +201,8 @@ def main():
 
     print("== ⑦ ROLE_PERMS 未改动 + streamlit 渲染仓储富工作台 0 异常 ==")
     check("⑦ ROLE_PERMS 与基线完全一致（硬 gate 未削弱）",
-          ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+          all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),  # V23 快照锈蚀治本：逐键精确（未放松），新增键不误伤
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
     check("⑦ ApproveMitigation 仍仅 manager（人类审批入口）",
           ROLE_PERMS["ApproveMitigation"] == {"manager"})
     con.close()

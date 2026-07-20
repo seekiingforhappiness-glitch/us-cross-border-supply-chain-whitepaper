@@ -18,8 +18,9 @@
     （V22② 余量清偿）——它不是状态机转移，不能挂到按 coordination_id 操作的路由，见 post_open_coordination。
   · AI 面零暴露：这五个动作本体 exposed_as_tool=false / ai_executable=never，从不进 /actions 白名单、
     从不进 MCP build_tool_defs——本通道是它们唯一的 HTTP 暴露面，只对人开、与 AI 面物理隔离。
-  · 权限 = COORD_PERMS["ManageCoordination"]（{ops,cs,procurement,finance}），越权走 coordination_actions
-    自己的 _denied 语义（写 action_log denied 审计），本层只据同一份权限数据选 HTTP 状态码、不重建鉴权。
+  · 权限 = COORD_PERMS["ManageCoordination"]（{ops,cs,procurement,finance,compliance}，V23② 加合规），
+    越权走 coordination_actions 自己的 _denied 语义（写 action_log denied 审计），本层只据同一份权限
+    数据选 HTTP 状态码、不重建鉴权。
 
 不建第二写路径：写入原样走 app.coordination_actions 既有函数（状态机 / 权限 / 审计逻辑一字不改，
 与 /decisions 复用同一 execute_command 写总线）。路由工厂由 main.py 尾部注入挂载（同 cockpit /

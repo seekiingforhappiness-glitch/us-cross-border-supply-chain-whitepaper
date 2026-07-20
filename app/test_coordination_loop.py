@@ -30,7 +30,8 @@ from agent.tools import AgentSession, FORBIDDEN_TOOLS
 FAILS = []
 COORD_TOOLS = {"open_coordination", "record_outreach", "record_response",
                "escalate_coordination", "resolve_coordination", "mark_dead_ended"}
-EXPECTED_COORD_PERMS = {"ManageCoordination": {"ops", "cs", "procurement", "finance"}}
+# V23② Daniel 批：合规获协调发起/跟进权（本体 executors 加 compliance，运行时随本体重算）。
+EXPECTED_COORD_PERMS = {"ManageCoordination": {"ops", "cs", "procurement", "finance", "compliance"}}
 EXPECTED_ROLE_PERMS = {  # maker-checker 四键——本次不得改动
     "AssignTask": {"ops", "system"},
     "ProposeMitigation": {"ops", "cs", "finance", "procurement"},
@@ -199,7 +200,7 @@ def main():
           f"{n_join}/{n_all}")
 
     print("== ⑥ 独立权限组不碰 maker-checker + 协调写动作未注册为 agent 工具 ==")
-    check("⑥ COORD_PERMS 为独立新权限组 {ManageCoordination:{ops,cs,procurement,finance}}",
+    check("⑥ COORD_PERMS 为独立新权限组 {ManageCoordination:{ops,cs,procurement,finance,compliance}}（V23②）",
           COORD_PERMS == EXPECTED_COORD_PERMS, str(COORD_PERMS))
     # V22② 修快照锈蚀：本检查的意图是「四键未被削弱」（见名称），但旧断言是整字典相等——
     # 财务回路后 ROLE_PERMS 切片合法新增了 ProposeCollection/RecordPayment 键，整字典相等必假失败。

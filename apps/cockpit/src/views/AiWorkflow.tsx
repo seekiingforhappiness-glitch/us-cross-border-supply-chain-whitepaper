@@ -179,10 +179,11 @@ const COORD_LEGAL: Record<string, CoordActionId[]> = {
   escalated: ["record_response", "resolve_coordination", "mark_dead_ended"],
 };
 
-// 驾驶舱已适配角色中属于协调权限组的（COORD_PERMS.ManageCoordination={ops,cs,procurement,finance}
-// 的前端镜像 ∩ roleActors 已适配集）——批D cs/procurement 接入 UI 后镜像与后端权限组**严格同集**；
-// 老板 manager、compliance、sales 均不在组内 → 只读。后端 COORD_PERMS 仍是权威（越权走 403+denied 审计）。
-const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance"];
+// 驾驶舱已适配角色中属于协调权限组的（COORD_PERMS.ManageCoordination={ops,cs,procurement,finance,
+// compliance} 的前端镜像 ∩ roleActors 已适配集）——V23② compliance 接入（Daniel 批：合规获协调发起/
+// 跟进权，缘起轮3合规陌生人"发现问题后系统内无处置入口"）后镜像与后端权限组**严格同集**；
+// 老板 manager、sales 仍不在组内 → 只读。后端 COORD_PERMS 仍是权威（越权走 403+denied 审计）。
+const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance", "compliance"];
 
 const COORD_META: Record<CoordActionId, { label: string; hint: string }> = {
   record_outreach: { label: "催办", hint: "再追一次对方，并重设下一步截止日" },
@@ -218,9 +219,9 @@ function CoordOps({ t, role, onActed }: { t: CollabThread; role: Role; onActed: 
   const [receipt, setReceipt] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // 协调权限组 COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance}（本体声明）——批D 后
-  // 驾驶舱七角色与该权限组严格同集：运营/客服/采购/财务在组内可写，老板/合规/销售不渲染写动作
-  // （诚实只读，不给必 403 的假按钮）；后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。
+  // 协调权限组 COORD_PERMS.ManageCoordination = {ops,cs,procurement,finance,compliance}（本体声明，
+  // V23② 加合规）——驾驶舱七角色与该权限组严格同集：运营/客服/采购/财务/合规在组内可写，老板/销售
+  // 不渲染写动作（诚实只读，不给必 403 的假按钮）；后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。
   if (!COORD_UI_ROLES.includes(role) || legal.length === 0) {
     return receipt ? <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--sev-green)" }}>{receipt}</div> : null;
   }
@@ -546,11 +547,11 @@ export default function AiWorkflow({
         <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
       ) : tab === "collab" ? (
         <div className="cp-collab-tab">
-          {/* 诚实横幅（V22② 余量清偿后更新，缘起李珊任务3）：催办/记回应/升级/达成/谈崩可在下方线程卡直接完成；
-              发起新协调线程也已进驾驶舱——在「影响分析」面板的「处置任务」区块点「发起协调」（需任务上下文锚定）。
-              协调权限组：运营/客服/采购/财务；老板/合规/销售视角只读。 */}
+          {/* 诚实横幅（V23② compliance 接入后更新，缘起李珊任务3+轮3合规陌生人）：催办/记回应/升级/达成/谈崩
+              可在下方线程卡直接完成；发起新协调线程也已进驾驶舱——在「影响分析」面板的「处置任务」区块点
+              「发起协调」（需任务上下文锚定）。协调权限组：运营/客服/采购/财务/合规；老板/销售视角只读。 */}
           <div className="cp-collab-note">
-            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成；发起新协调线程请到「影响分析」面板的「处置任务」区块点「发起协调」（需协调角色：运营/客服/采购/财务；其余角色只读）。
+            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成；发起新协调线程请到「影响分析」面板的「处置任务」区块点「发起协调」（需协调角色：运营/客服/采购/财务/合规；其余角色只读）。
           </div>
           <CollabPanel role={role} world={world} onOpenObject={onOpenObject} />
         </div>

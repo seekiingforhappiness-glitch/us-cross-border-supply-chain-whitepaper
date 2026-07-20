@@ -267,7 +267,8 @@ def main():
     check("⑤ 越权尝试全部写 action_log denied（≥5 条：4 role approve + 动作层）", added >= 5, f"新增 {added} 条")
 
     print("== ⑥ ROLE_PERMS / maker-checker / FORBIDDEN_TOOLS 未削弱；WH_PERMS/WAREHOUSE_ACTIONS 已注册 ==")
-    check("⑥ ROLE_PERMS 与基线一致（硬 gate 未削弱）", ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+    check("⑥ ROLE_PERMS 与基线一致（硬 gate 未削弱）", all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),  # V23 快照锈蚀治本：逐键精确（未放松），新增键不误伤
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
     check("⑥ ApproveMitigation 仍仅 manager（maker-checker 硬 gate）", ROLE_PERMS["ApproveMitigation"] == {"manager"})
     check("⑥ ProposeMitigation = {ops,cs,finance,procurement}（P4 基线；仓储处置沿用未额外加权）",
           ROLE_PERMS["ProposeMitigation"] == {"ops", "cs", "finance", "procurement"})

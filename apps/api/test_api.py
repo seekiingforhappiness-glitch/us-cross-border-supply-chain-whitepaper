@@ -226,6 +226,62 @@ def test_sensitive_field_masked_by_role(client, seed_anchors):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ④b 组式脱敏规则（决策日志 V23③ 收紧）：Invoice/CostScenario 金额字段在 /objects 读端点
+#     按对象类型作用域对无权角色掩码；批D 实证漏洞（cs/sales 可读 total_usd 真值）现堵。
+# ═══════════════════════════════════════════════════════════════════════════
+_COST_BLIND_ROLES = ["ops", "cs", "sales", "compliance", "procurement"]  # 非 finance/manager：金额须掩
+_COST_VISIBLE_ROLES = ["finance", "manager"]                            # 成本可见角色：金额明文
+
+
+def test_invoice_total_usd_group_masked_by_role(client, con):
+    """V23③：/objects/Invoice.total_usd 对非 finance/manager 掩码、对 finance/manager 明文（单对象 +
+    列表端点同口径）。原声明未含 total_usd + masker 跳过组式规则 → 对象读端点裸奔，本用例钉死修复。"""
+    row = _first_row(con, "SELECT * FROM invoices WHERE total_usd IS NOT NULL "
+                          "ORDER BY invoice_id LIMIT 1")
+    iid = row["invoice_id"]
+    truth = MODEL_BY_TYPE["Invoice"].model_validate(dict(row)).model_dump(mode="json")
+    for role in _COST_BLIND_ROLES:
+        r = client.get(f"/objects/Invoice/{iid}", headers={"X-Role": role})
+        assert r.status_code == 200
+        assert r.json()["total_usd"] == MASK, f"Invoice.total_usd 对 {role} 应掩码（V23③）"
+    for role in _COST_VISIBLE_ROLES:
+        r = client.get(f"/objects/Invoice/{iid}", headers={"X-Role": role})
+        assert r.json()["total_usd"] == truth["total_usd"], f"Invoice.total_usd 对 {role} 应明文"
+    # 列表端点同口径（组式规则对 list 逐元素作用，单对象/列表不分叉）
+    lst = client.get("/objects/Invoice", params={"invoice_id": iid}, headers={"X-Role": "cs"})
+    assert lst.json()["items"][0]["total_usd"] == MASK, "列表端点 Invoice.total_usd 对 cs 应掩码"
+
+
+def test_cost_scenario_group_masked_by_role(client, con):
+    """V23③：/objects/CostScenario 全部报价/成本/毛利字段（本体组式 fields）对非 finance/manager
+    掩码、对 finance/manager 明文。断言字段集从本体现取，不誊抄清单。"""
+    onto = load_ontology()
+    fields = next(r["fields"] for r in onto["sensitiveFieldRules"]
+                  if r.get("object") == "CostScenario" and r.get("fields"))
+    row = _first_row(con, "SELECT * FROM cost_scenarios ORDER BY cost_scenario_id LIMIT 1")
+    csid = row["cost_scenario_id"]
+    truth = MODEL_BY_TYPE["CostScenario"].model_validate(dict(row)).model_dump(mode="json")
+    r_ops = client.get(f"/objects/CostScenario/{csid}", headers={"X-Role": "ops"}).json()
+    r_fin = client.get(f"/objects/CostScenario/{csid}", headers={"X-Role": "finance"}).json()
+    for f in fields:
+        if truth.get(f) is not None:
+            assert r_ops[f] == MASK, f"CostScenario.{f} 对 ops 应掩码（V23③）"
+        assert r_fin[f] == truth[f], f"CostScenario.{f} 对 finance 应明文"
+
+
+def test_group_rule_does_not_overmask_same_named_fields(client, con):
+    """V23③ 关键护栏：组式规则**按对象类型作用域**，绝不因同名列误掩非声明对象的运营金额。
+    Sku.unit_price_usd（商品目录价，与 Invoice 组 unit_price_usd 同名）对 ops 必须明文可见。"""
+    row = _first_row(con, "SELECT sku_id, unit_price_usd FROM skus "
+                          "WHERE unit_price_usd IS NOT NULL ORDER BY sku_id LIMIT 1")
+    sid, price = row["sku_id"], row["unit_price_usd"]
+    r = client.get(f"/objects/Sku/{sid}", headers={"X-Role": "ops"})
+    assert r.status_code == 200
+    assert r.json()["unit_price_usd"] == price, \
+        "Sku.unit_price_usd 属商品目录价、非声明敏感——组式规则按类型作用域不得误掩"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # GET /objects/{type}/{id}/links/{link} —— traverse 正例 / declared_only 422 / 未知关系 422
 # ═══════════════════════════════════════════════════════════════════════════
 def test_traverse_link_positive(client, seed_anchors):

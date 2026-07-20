@@ -42,7 +42,9 @@ LEGACY_WH_PERMS = {
     "ReleaseReservation": {"ops", "system"},
     "RecordCycleCount": {"ops", "system"},
 }
-LEGACY_COORD_PERMS = {"ManageCoordination": {"ops", "cs", "procurement", "finance"}}
+# V23② Daniel 批准的权限变更（合规获协调发起/跟进权，本体 executors 加 compliance）后基线随之更新——
+# 落死的是「本体解释生成 == 人批口径」，不是「本体永不再变」；权限变更须先入决策日志再改此基线（同源守护）。
+LEGACY_COORD_PERMS = {"ManageCoordination": {"ops", "cs", "procurement", "finance", "compliance"}}
 
 # build_role_perms 的完整键集（enforcement=role_dict 动作按 permission_key 归组）= 5 字典并集。
 LEGACY_ROLE_PERMS_KEYS = (

@@ -31,8 +31,9 @@ MANAGER_TABS = ALL_TABS - {"coord"}
 # 审计日志(log)口径收敛：给有审阅需要的 ops(运营)/compliance(治理)/manager(监督)——按 data_scope 过滤。
 # 采购工作台(po)：P4 起以专职「采购 procurement」为主场（po 落地页）；财务仍可见做供票/价量；经理全域。
 # P4：ops 去掉 po「回归纯物流」。
-# 协调收件箱(coord)：CL1 呈现层切片——仅给 COORD_PERMS 的 ops/cs/finance/procurement（放各自主战场后），
-# 与 coordination_actions.COORD_PERMS 严格同集；sales/compliance/manager 不加（本切片不放宽协调写权限）。
+# 协调收件箱(coord)：CL1 呈现层切片——给 COORD_PERMS 的 ops/cs/finance/procurement/compliance
+# （放各自主战场后；compliance 为 V23② Daniel 批新增，缘起轮3合规陌生人"发现问题后系统内无处置
+# 入口"），与 coordination_actions.COORD_PERMS 严格同集；sales/manager 不加（本切片不放宽协调写权限）。
 # 知识图谱(kg)：纯只读呈现层（本体地图+对象邻域 trace，无任何写动作/agent 工具）——挂 manager（监督者）
 # 与 ops（理解者），紧跟对象详情(obj)；实例级查询过 data_scope（ops 区域过滤、manager 全量）。
 # P0-1：finance 补挂 task（陌生人测试王姐/财务断头路——有提案权却无任务台入口）；cs/procurement 本就有。
@@ -42,7 +43,7 @@ EXPECTED_WORKSPACE = {
     "finance":     ["cost", "task", "po", "coord", "adm", "obj"],
     "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
-    "compliance":  ["adm", "risk", "obj", "log"],
+    "compliance":  ["adm", "risk", "coord", "obj", "log"],
     "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "kg", "dq", "adm", "log"],
 }
 
@@ -106,12 +107,12 @@ def main():
           str(sorted(r for r in ROLES if "log" in ROLE_WORKSPACE[r])))
     check("审计日志(log)对 cs/finance/sales 不可见（无审阅需要）",
           not any("log" in ROLE_WORKSPACE[r] for r in ("cs", "finance", "sales")))
-    check("协调收件箱(coord)仅 COORD_PERMS 4 角色可见（ops/cs/finance/procurement）",
+    check("协调收件箱(coord)仅 COORD_PERMS 5 角色可见（ops/cs/finance/procurement/compliance，V23②）",
           sorted(r for r in ROLES if "coord" in ROLE_WORKSPACE[r])
-          == ["cs", "finance", "ops", "procurement"],
+          == ["compliance", "cs", "finance", "ops", "procurement"],
           str(sorted(r for r in ROLES if "coord" in ROLE_WORKSPACE[r])))
-    check("协调收件箱(coord)对 sales/compliance/manager 不可见（与 COORD_PERMS 严格同集，不放宽写权限）",
-          not any("coord" in ROLE_WORKSPACE[r] for r in ("sales", "compliance", "manager")))
+    check("协调收件箱(coord)对 sales/manager 不可见（与 COORD_PERMS 严格同集，不放宽写权限）",
+          not any("coord" in ROLE_WORKSPACE[r] for r in ("sales", "manager")))
     check("知识图谱(kg)仅 manager（监督者）+ ops（理解者）可见——纯只读呈现层切片",
           sorted(r for r in ROLES if "kg" in ROLE_WORKSPACE[r]) == ["manager", "ops"],
           str(sorted(r for r in ROLES if "kg" in ROLE_WORKSPACE[r])))

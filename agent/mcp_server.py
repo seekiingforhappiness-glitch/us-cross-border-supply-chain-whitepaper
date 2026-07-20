@@ -158,9 +158,14 @@ class SensitiveFieldMasker:
     键作 proposal_params 兄弟）；assignee_role 缺失/空 → 自队例外 False（兜底保守，照旧脱敏）。本体
     JSON 该规则声明保留 [ops,manager] 不动（红线：不碰本体结构），语义以本代码为单一权威源。
 
-    CostScenario '*_usd and margin fields' 是**模式规则**（非具名列），且成本字段脱敏已由被复用的
-    Session 读方法用 COST_FIELDS/INVOICE_COST_FIELDS 在会话层执行（门槛1: 本次不动）——故此处跳过该
-    模式规则，避免对遍地皆是的 *_usd 列（affected_value_usd 等运营必读字段）盲目脱敏。
+    组式规则（V23③ 收紧，Invoice/CostScenario 的 plural fields）：这些金额/毛利字段名在本体内**跨对象
+    重名**（amount_usd 也在 Payment/供票行、unit_price_usd 也在 Sku/PO 行/报价），故绝不能按字段名递归
+    匹配（会误脱敏 Sku 目录价等运营必读列，本体设计者显式警告）。改由 mask_value(data, object_type=...)
+    **按对象类型作用域**消费：仅当调用方显式声明对象类型（/objects 读端点）时，才对该类型顶层对象掩其
+    组式 fields（见 _mask_group）。V23③ 前对象读端点跳过该组致 Invoice.total_usd / CostScenario 成本字段
+    对非授权角色裸奔（决策日志 V23③ Daniel 裁"收紧"）；现堵此洞。不传 object_type 的既有出口行为不变
+    ——cockpit 聚合层另有 _mask_money、collaboration 无内联发票/成本对象、MCP 读工具经 Session 层
+    COST_FIELDS/INVOICE_COST_FIELDS 已在会话层掩（发票 total_usd 亦然）。
 
     与 Session 既有 tier 脱敏叠加是幂等的（会话已 MASK → 再判仍 MASK；会话给真值且角色可见 → 不动）。"""
 
@@ -169,11 +174,15 @@ class SensitiveFieldMasker:
         self.mask = mask
         self.flat: dict[str, set[str]] = {}          # 具名列 → 可见角色集
         self.nested: dict[str, dict[str, set[str]]] = {}  # 承载列 → {子键: 可见角色集}
+        self.groups: dict[str, tuple[tuple[str, ...], set[str]]] = {}  # 对象类型 → (组式 fields, 可见角色集)（V23③）
         for rule in ontology.get("sensitiveFieldRules", []):
-            field = rule.get("field")
-            if not field or "margin" in field:       # 跳过 CostScenario 模式规则（会话层承载）
-                continue
             visible = set(rule.get("visibleTo", []))
+            obj_type, group_fields = rule.get("object"), rule.get("fields")
+            if obj_type and group_fields:             # 组式规则（plural fields，按对象类型作用域，V23③）
+                self.groups[obj_type] = (tuple(group_fields), visible)
+            field = rule.get("field")
+            if not field or "margin" in field:        # 具名/嵌套解析：组式规则的 field 缺省或为通配串 → 不入 flat/nested
+                continue
             if "." in field:                          # 嵌套：proposal_params.est_cost_usd
                 col, sub = field.split(".", 1)
                 self.nested.setdefault(col, {})[sub] = visible
@@ -183,10 +192,16 @@ class SensitiveFieldMasker:
     def _blocked(self, visible: set[str]) -> bool:
         return self.role not in visible
 
-    def mask_value(self, data):
+    def mask_value(self, data, object_type: str | None = None):
         """递归脱敏：dict 按 key 匹配具名规则 / 嵌套规则；list 逐元素递归。返回原对象（就地改）。
         V21①：命中嵌套承载列（proposal_params）时，把**同一行的 assignee_role 兄弟键**传给
-        _mask_nested，供提案金额自队例外判定（无该键 → None → 自队例外 False，照旧脱敏）。"""
+        _mask_nested，供提案金额自队例外判定（无该键 → None → 自队例外 False，照旧脱敏）。
+        V23③ 组式规则（收紧）：object_type 非空时先按对象类型作用域掩组式 fields（仅 /objects 读端点
+        显式传入类型——Invoice.total_usd / CostScenario 成本毛利字段等），再走既有具名/嵌套递归；作用域
+        限定该类型顶层对象，杜绝跨对象误脱敏。递归内部调用不传 object_type（嵌套值类型未知，只走
+        具名/嵌套规则），故 cockpit/collaboration/MCP 等不传 object_type 的既有出口行为逐字节不变。"""
+        if object_type is not None:
+            self._mask_group(data, object_type)
         if isinstance(data, dict):
             assignee_role = data.get("assignee_role")
             for key, val in list(data.items()):
@@ -203,6 +218,23 @@ class SensitiveFieldMasker:
             for item in data:
                 self.mask_value(item)
         return data
+
+    def _mask_group(self, data, object_type: str) -> None:
+        """对象级组式规则脱敏（V23③ 收紧）：把 object_type 声明的组式 fields 对无权角色掩码，
+        仅作用于顶层对象（list → 逐元素、均为该类型；dict → 该行）。**按对象类型作用域**——不递归进
+        未知类型嵌套结构，避免 amount_usd/unit_price_usd 之类同名列误伤 Sku/Payment/供票行（本体
+        设计者显式警告）。无该类型组式规则 / 角色可见 → 不掩（就地改，无返回）。"""
+        spec = self.groups.get(object_type)
+        if not spec or self.role in spec[1]:          # 无组式规则 / 角色在可见集 → 不掩
+            return
+        fields = spec[0]
+        if isinstance(data, list):
+            for item in data:
+                self._mask_group(item, object_type)
+        elif isinstance(data, dict):
+            for f in fields:
+                if data.get(f) is not None:
+                    data[f] = self.mask
 
     def _flat_blocked(self, key: str, visible: set[str], assignee_role) -> bool:
         """具名字段脱敏判定。V21①：驾驶舱待批队列的提案金额 amount_usd（=同一行带 assignee_role）走

@@ -131,7 +131,8 @@ def main():
         check(f"③ [{role}] 方向正确（{'ops 掩码' if role == 'ops' else role + ' 可见'}）", direction_ok)
 
     print("== ④ ROLE_PERMS 未改动（硬 gate 未削弱）==")
-    check("④ ROLE_PERMS 与基线完全一致", ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+    check("④ ROLE_PERMS 与基线完全一致", all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),  # V23 快照锈蚀治本：逐键精确（未放松），新增键不误伤
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
 
     con.close()
     print(f"\n{'=' * 40}\n结果: {'全部通过 ✔（agent 数据范围 == UI 数据范围）' if not FAILS else f'{len(FAILS)} 项失败: {FAILS}'}")

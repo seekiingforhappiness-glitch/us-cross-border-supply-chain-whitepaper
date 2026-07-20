@@ -10,7 +10,8 @@ import type { Role } from "./api";
 // 顶栏能切进去的角色，数据范围均经 API X-Role 同源验证（本文件 hint 文案依据侦察 ontology
 // sensitiveFieldRules + agent/tools.py _can_see_cost 写就，见各行注释；apps/api/test_cockpit.py
 // 有对应断言钉死）。cs/procurement 额外接入协调写权限（AiWorkflow.tsx COORD_UI_ROLES）；
-// compliance/sales 与协调权限组（COORD_PERMS）无关，驾驶舱内保持只读。
+// V23②（Daniel 批：合规获协调发起/跟进权，缘起轮3合规陌生人"发现问题后系统内无处置入口"）
+// compliance 同样接入协调写权限；sales 与协调权限组（COORD_PERMS）仍无关，驾驶舱内保持只读。
 //
 // 权限边界（宪法不变量 5）：这张表**不含任何权限/脱敏规则**——谁能看多少钱、哪些字段掩码，全由
 // apps/api 按 X-Role 同源执行；前端只透传角色头 + 呈现返回值。label/hint 是纯展示文案，不是权限声明。
@@ -28,12 +29,15 @@ export interface RoleMeta {
    * 取各角色 region=US 的规范首位（非 named 变体）。⚠ 原型级身份，真实系统换 SSO / OIDC 登录主体。
    *
    * 批D 侦察缺口（如实记录，未编造）：DEMO_ROSTER 里**没有 compliance / sales 的 Owner 条目**
-   * （app/actions.py 逐行核对确认）——这两个角色本批在驾驶舱只读（不在 COORD_PERMS，无冻结动作
-   * executors），其 actor 值只用于展示文案（如"经手身份 X"）、从不会真正进入写请求（写按钮均按
-   * role==='ops'/'manager' 等条件单独把关，与此值无关）。这里按既有 `u-<角色码>-us` 命名惯例合成
-   * 展示占位符，与真实 roster 条目视觉一致但**无 DEMO_ROSTER 背书**；后端 app/data_scope.py
-   * resolve_actor() 对此早有文档化容错（"无匹配 → (None, DEFAULT_DEMO_REGION)，只影响视图"）。
-   * 若未来给这两角色开写权限，须先在 DEMO_ROSTER 补真实 Owner，此占位符须同步替换。
+   * （app/actions.py 逐行核对确认）。sales 本批仍在驾驶舱只读（不在 COORD_PERMS），其 actor 值只用于
+   * 展示文案、从不进入写请求。compliance 自 V23② 起接入 COORD_PERMS（协调写权限），其 actor 值
+   * （u-compliance-us）现在**会**真实进入协调写请求的 X-Actor 头（审计留痕『谁做的』）——但
+   * DEMO_ROSTER 仍无对应条目：这是按既有 `u-<角色码>-us` 命名惯例合成的占位符，**无 DEMO_ROSTER
+   * 背书**。侦察确认这不阻塞功能：coordination_actions 的 actor 字段本身是自由字符串（只落
+   * action_log 审计 / execute_command 幂等键，不查 DEMO_ROSTER）；唯一受影响面是
+   * app/data_scope.py resolve_actor() 的 region 派生，其"无匹配 → (None, DEFAULT_DEMO_REGION)"
+   * 容错早已文档化，只影响视图粒度不影响写操作成功与否。若未来要给 compliance 一个有 DEMO_ROSTER
+   * 背书的身份（如需要精确 region 归属），须先补 Owner 条目——本批未做（超出 COORD_PERMS 扩权范围）。
    */
   actor: string;
 }
@@ -55,7 +59,8 @@ export const ROLES: RoleMeta[] = [
   { id: "procurement", label: "采购 procurement", short: "采购 procurement", hint: "采购粒度 · 自队提案金额可见 · 他队与合规字段掩码", actor: "u-proc-us" },
   // compliance（批D）：本体 sensitiveFieldRules 声明 Supplier.uflpa_risk_flag 对 compliance 可见
   // （供应商强迫劳动合规旗标），AdmissionCase 准入域可读（ADMISSION_READ_ROLES 含 compliance）；
-  // 但不在 _COST_VISIBLE，钱区/成本情景仍掩码。compliance 不在 COORD_PERMS，驾驶舱协调流保持只读。
+  // 但不在 _COST_VISIBLE，钱区/成本情景仍掩码。compliance 自 V23② 起在 COORD_PERMS 内，本批同步
+  // 接入协调流写操作（催办/记回应/升级/达成/谈崩 + 发起协调），与 cs/procurement 同款。
   { id: "compliance", label: "合规 compliance", short: "合规 compliance", hint: "合规粒度 · 供应商合规与准入可见 · 金额脱敏", actor: "u-compliance-us" },
   // sales（批D）：本体 sensitiveFieldRules 8 条规则逐条核对，无一条 visibleTo 含 sales——当前**无
   // 任何专属可见敏感字段**（如实记录，非猜测；sales 的准入建案权 CreateAdmissionCase 是写动作非

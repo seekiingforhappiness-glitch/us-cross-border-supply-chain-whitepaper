@@ -30,7 +30,9 @@ def _perm_slice(*keys):
 
 
 # 独立新权限组（不碰既有 ROLE_PERMS 四键）：六个协调动作 A20-A25 共享组键 ManageCoordination
-# （本体 permission_key=ManageCoordination），本体生成后仍为单键 → {ops,cs,procurement,finance}。
+# （本体 permission_key=ManageCoordination），本体生成后仍为单键 → {ops,cs,procurement,finance,
+# compliance}（V23② Daniel 批：合规获协调发起/跟进权，缘起轮3合规陌生人"发现问题后系统内无处置
+# 入口"——本体 executors 加一行，运行时/lint/前端随本体重算，零硬编码需改）。
 COORD_PERMS = _perm_slice("ManageCoordination")
 COUNTERPARTY_TYPES = {"supplier", "forwarder", "customs_broker", "bank", "customer"}
 COORD_ACTIVE = ("awaiting", "responded", "escalated")     # 活跃（非终态）

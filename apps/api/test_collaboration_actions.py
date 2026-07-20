@@ -25,6 +25,9 @@ SIMWORLD_DB_PATH 指向副本、摘掉 dependency_overrides、清 ONTOLOGY_DB �
   ⑦ 安全红线不变量：OpenCoordination（开新线程，本批不做）→ 404；未知动作 → 404；五动作从不进 AI 工具面
      build_tool_defs；五动作在 /actions（AI 面）维持 404；Pascal / snake 两种拼法都可路由（RecordResponse
      Pascal 成功路径顺带覆盖第二动作）。
+  ⑧ compliance 角色成功路径（V23② Daniel 批：合规获协调发起/跟进权，本体 executors 加 compliance）：
+     催办（既有线程转移动作）与发起新协调线程（OpenCoordination）均验证 200 + 落库 + 审计 actor=compliance，
+     与 ops 路径同构；manager 仍 403（③/⑨ 不变，越权集未被放宽）。
 """
 from __future__ import annotations
 
@@ -44,6 +47,9 @@ SIM_DB = REPO_ROOT / "data" / "simworld.sqlite"
 
 OPS_ACTOR = "u-ops-us"          # demo 运营演员（ops ∈ ManageCoordination，协调通道 happy path）
 MANAGER_ACTOR = "u-manager-us"  # demo 经理演员（manager ∉ ManageCoordination——用于越权 403 路径）
+COMPLIANCE_ACTOR = "u-compliance-us"  # demo 合规演员（V23② Daniel 批：compliance ∈ ManageCoordination
+# ——本体 executors 加合规后新增的正向路径；DEMO_ROSTER 无此 owner 条目，同 cockpit roleActors.ts
+# 占位符命名惯例，actor 只落 action_log 审计 / execute_command 幂等键，不查 DEMO_ROSTER，不影响写入）。
 SIM = {"X-World": "sim"}
 VERIFY = {"X-World": "verify"}
 COORD_ACTIONS = ("RecordOutreach", "RecordResponse", "EscalateCoordination",
@@ -139,6 +145,40 @@ def test_sim_record_outreach_success_updates_due_and_audits(api):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# ①b V23② compliance 角色成功路径：合规现为 COORD_PERMS.ManageCoordination 新成员，对既有线程的
+# 催办（转移动作）必须像 ops/cs/procurement/finance 一样走通 → 200 + 落库 + 审计（actor=compliance）。
+# ═══════════════════════════════════════════════════════════════════════════
+def test_sim_record_outreach_compliance_role_success(api):
+    client, _vcon, scon = api
+    assert "compliance" in COORD_PERMS["ManageCoordination"], \
+        "V23② 本体 executors 应已含 compliance（本用例的前提）"
+    t = _thread_in_state(scon, "awaiting", exclude=_used_sim_ids)
+    _used_sim_ids.add(t["coordination_id"])
+    new_due = "2026-08-24"
+    assert t["next_action_due"] != new_due
+    before_ok = _audit_count(scon, "RecordOutreach", t["coordination_id"], "ok")
+
+    r = client.post(
+        f"/collaboration/threads/{t['coordination_id']}/actions/record_outreach",
+        json={"next_action_due": new_due, "note": "合规催办（V23② 测试）"},
+        headers={**SIM, "X-Role": "compliance", "X-Actor": COMPLIANCE_ACTOR})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["object_id"] == t["coordination_id"]
+
+    after = scon.execute("SELECT * FROM coordination_threads WHERE coordination_id=?",
+                         (t["coordination_id"],)).fetchone()
+    assert after["next_action_due"] == new_due
+    assert after["followup_count"] == t["followup_count"] + 1
+
+    assert _audit_count(scon, "RecordOutreach", t["coordination_id"], "ok") == before_ok + 1
+    log = scon.execute(
+        "SELECT actor, role FROM action_log WHERE action='RecordOutreach' AND target_object_id=? "
+        "AND result='ok' ORDER BY log_id DESC LIMIT 1", (t["coordination_id"],)).fetchone()
+    assert log["actor"] == COMPLIANCE_ACTOR and log["role"] == "compliance"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ② verify 成功路径：同款催办 → 200 + 落库 + 审计（双世界写通道都真实可用）
 # ═══════════════════════════════════════════════════════════════════════════
 def test_verify_record_outreach_success(api):
@@ -222,6 +262,10 @@ def test_idempotency_key_replay_executes_once(api):
     payload = {"next_action_due": "2026-08-28", "note": "幂等双发（测试）"}
     hdrs = {**SIM, "X-Role": "ops", "X-Actor": OPS_ACTOR, "Idempotency-Key": key}
     url = f"/collaboration/threads/{t['coordination_id']}/actions/record_outreach"
+    # 现查审计基线（同文件其余用例的一贯手法）：活演示库（V22② 起真实浏览器操作会真写入
+    # data/simworld.sqlite）可能已给锚点线程留过历史 RecordOutreach 审计，断言绝对值 1 不安全
+    # ——只有断「本次双发只净增 1 条」才与锚点的历史无关（幂等语义本身就是关于净增量，非绝对值）。
+    before_ok = _audit_count(scon, "RecordOutreach", t["coordination_id"], "ok")
 
     r1 = client.post(url, json=payload, headers=hdrs)
     assert r1.status_code == 200, r1.text
@@ -235,8 +279,8 @@ def test_idempotency_key_replay_executes_once(api):
         "幂等键命中重放不得重复执行（followup_count 只允许 +1）"
     assert scon.execute("SELECT count(*) FROM commands WHERE idempotency_key=?",
                         (key,)).fetchone()[0] == 1, "commands 台账同键恰一行（claim-first 占坑）"
-    assert _audit_count(scon, "RecordOutreach", t["coordination_id"], "ok") == 1, \
-        "该线程成功审计恰一行——重放未二次走动作函数"
+    assert _audit_count(scon, "RecordOutreach", t["coordination_id"], "ok") == before_ok + 1, \
+        "重放净增恰一条成功审计——重放未二次走动作函数"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -342,6 +386,35 @@ def test_open_coordination_success_creates_thread_and_audits(api):
     assert log["actor"] == OPS_ACTOR, "审计 actor 必须是 X-Actor 透传的真实操作人"
     assert scon.execute("SELECT count(*) FROM commands WHERE action='OpenCoordination'"
                         ).fetchone()[0] == cmd_before + 1, "发起协调必须经 execute_command 落 commands 台账"
+
+
+def test_open_coordination_compliance_role_success(api):
+    """V23② compliance 角色成功用例：合规现为 COORD_PERMS.ManageCoordination 新成员，发起协调必须
+    像 ops 一样走通 → 200 + 落库 + owner 缺省=发起人 + 审计（actor=compliance），与 ops 路径同构。"""
+    client, _vcon, scon = api
+    task = _a_task(scon)
+    n_before = scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0]
+
+    r = client.post(
+        "/collaboration/threads",
+        json={"task_id": task["task_id"], "counterparty_type": "customs_broker",
+              "counterparty_ref": "CB·报关行A", "ask": "补交清关合规文件（V23② 测试）",
+              "next_action_due": "2026-08-31"},
+        headers={**SIM, "X-Role": "compliance", "X-Actor": COMPLIANCE_ACTOR})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["object_id"], body
+    cid = body["object_id"]
+
+    row = scon.execute("SELECT * FROM coordination_threads WHERE coordination_id=?",
+                       (cid,)).fetchone()
+    assert row is not None and row["state"] == "awaiting" and row["owner"] == COMPLIANCE_ACTOR
+    assert scon.execute("SELECT count(*) FROM coordination_threads").fetchone()[0] == n_before + 1
+
+    assert _audit_count(scon, "OpenCoordination", cid, "ok") == 1
+    log = scon.execute("SELECT actor, role FROM action_log WHERE action='OpenCoordination' "
+                       "AND target_object_id=? AND result='ok'", (cid,)).fetchone()
+    assert log["actor"] == COMPLIANCE_ACTOR and log["role"] == "compliance"
 
 
 def test_open_coordination_idempotent_replay_creates_once(api):

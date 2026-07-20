@@ -334,7 +334,8 @@ def main():
           f"{focused['count']} < {unfocused['count']}; scope={focused.get('focus_scope')}")
 
     print("== ⑥ ROLE_PERMS / PROC_PERMS / FORBIDDEN_TOOLS 未削弱 ==")
-    check("⑥ ROLE_PERMS 与基线一致（硬 gate 未削弱）", ROLE_PERMS == EXPECTED_ROLE_PERMS, str(ROLE_PERMS))
+    check("⑥ ROLE_PERMS 与基线一致（硬 gate 未削弱）", all(ROLE_PERMS.get(k) == v for k, v in EXPECTED_ROLE_PERMS.items()),  # V23 快照锈蚀治本：逐键精确（未放松），新增键不误伤
+          str({k: ROLE_PERMS.get(k) for k in EXPECTED_ROLE_PERMS}))
     check("⑥ ApproveMitigation 仍仅 manager", ROLE_PERMS["ApproveMitigation"] == {"manager"})
     check("⑥ PROC_PERMS：收货=ops、匹配发票=finance（含 system）", PROC_PERMS == EXPECTED_PROC_PERMS,
           str(PROC_PERMS))

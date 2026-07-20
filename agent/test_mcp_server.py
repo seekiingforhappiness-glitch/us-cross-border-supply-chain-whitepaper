@@ -205,6 +205,40 @@ def test_own_team_amount_masking(db: Path) -> None:
     check(pay["amount_usd"] == MASK, "Payment.amount_usd(无 assignee)对 ops 照旧掩码（不误放宽）")
 
 
+def test_group_field_masking(db: Path) -> None:
+    print("\n②c V23③ 组式规则脱敏（对象类型作用域：Invoice.total_usd / CostScenario 金额；对象读端点消费）")
+    onto = load_ontology()
+
+    def masked(obj_type, obj, role):
+        d = copy.deepcopy(obj)
+        M.SensitiveFieldMasker(onto, role).mask_value(d, object_type=obj_type)
+        return d
+
+    inv = {"invoice_id": "INV-1", "total_usd": 9005.38, "status": "open"}
+    cs = {"cost_scenario_id": "CS-1", "quote_price_usd": 14595.26, "gross_margin_rate": -0.0308}
+    # Invoice.total_usd：非 finance/manager 掩、finance/manager 明文（批D 洞：cs 曾可读真值）
+    check(masked("Invoice", inv, "ops")["total_usd"] == MASK, "ops: Invoice.total_usd 掩码（V23③）")
+    check(masked("Invoice", inv, "cs")["total_usd"] == MASK, "cs: Invoice.total_usd 掩码（批D 洞堵上）")
+    check(masked("Invoice", inv, "finance")["total_usd"] == 9005.38, "finance: Invoice.total_usd 明文")
+    check(masked("Invoice", inv, "manager")["total_usd"] == 9005.38, "manager: Invoice.total_usd 明文")
+    # CostScenario 报价/毛利字段
+    check(masked("CostScenario", cs, "ops")["quote_price_usd"] == MASK,
+          "ops: CostScenario.quote_price_usd 掩码")
+    check(masked("CostScenario", cs, "sales")["gross_margin_rate"] == MASK,
+          "sales: CostScenario.gross_margin_rate 掩码")
+    check(masked("CostScenario", cs, "finance")["quote_price_usd"] == 14595.26,
+          "finance: CostScenario 金额明文")
+    # 护栏1：同名列不跨对象误掩（object_type=Sku 无组式规则 → unit_price_usd 保持明文）
+    sku = {"sku_id": "SKU-1", "unit_price_usd": 6.5}
+    check(masked("Sku", sku, "ops")["unit_price_usd"] == 6.5,
+          "Sku.unit_price_usd 对 ops 明文（组式规则按类型作用域，不误掩同名目录价）")
+    # 护栏2：不传 object_type（cockpit/collaboration/MCP 出口）→ 组式规则不触发，行为逐字节不变
+    noop = copy.deepcopy(inv)
+    M.SensitiveFieldMasker(onto, "ops").mask_value(noop)
+    check(noop["total_usd"] == 9005.38,
+          "无 object_type：组式规则不触发（cockpit/collaboration/MCP 既有出口不变）")
+
+
 def test_audit_and_readonly(db: Path) -> None:
     print("\n③ 审计入库（call_type='mcp_tool'）+ 业务连接物理只读 + 迁移幂等")
     ship, risks = _pick_in_transit_with_risk(db)
@@ -376,6 +410,7 @@ def main() -> int:
         test_role_filter(db)
         test_field_masking(db)
         test_own_team_amount_masking(db)
+        test_group_field_masking(db)
         test_audit_and_readonly(db)
         test_frozen_and_schema(db)
         test_protocol(db)

@@ -30,9 +30,10 @@ TAB_LABELS = {
 # 过滤（render_log_tab）：非 manager 只看本区域数据范围内对象的审计，manager 看全量（口径收敛）。
 # 采购工作台(po)：P4 起以专职「采购 procurement」为主场（po 落地页）；财务仍可见 po 做供票/价量对账；
 # 经理全域可见。P4：ops 去掉 po「回归纯物流」——采购三方对账归采购角色，采购提案→经理审批→运营关闭三方分离。
-# 协调收件箱(coord)：CL1 协调回路的呈现层入口——放在各角色主战场之后。仅给 COORD_PERMS 的
-# 4 角色（ops/cs/finance/procurement），与 coordination_actions.COORD_PERMS 一致；manager/sales/
-# compliance 不加（本切片不放宽协调写权限，导航与权限组严格同集）。写动作仍由动作层独立 gate。
+# 协调收件箱(coord)：CL1 协调回路的呈现层入口——放在各角色主战场之后。给 COORD_PERMS 的
+# 5 角色（ops/cs/finance/procurement/compliance，V23② Daniel 批：合规获协调发起/跟进权，
+# 缘起轮3合规陌生人"发现问题后系统内无处置入口"），与 coordination_actions.COORD_PERMS 一致；
+# manager/sales 不加（本切片不放宽协调写权限，导航与权限组严格同集）。写动作仍由动作层独立 gate。
 # 知识图谱(kg)：纯只读呈现层（本体地图 + 对象邻域 trace），零写动作零 agent 工具——挂 manager
 # （监督者）与 ops（理解者）两个工作台，紧跟对象详情(obj)；实例级查询过 data_scope（ops 区域过滤）。
 # 任务处理台(task)：凡有 ProposeMitigation 提案权的角色（ROLE_PERMS：ops/cs/finance/procurement）都必须
@@ -45,7 +46,7 @@ ROLE_WORKSPACE = {
     "finance":     ["cost", "task", "po", "coord", "adm", "obj"],
     "procurement": ["po", "task", "coord", "obj"],
     "sales":       ["adm", "obj"],
-    "compliance":  ["adm", "risk", "obj", "log"],
+    "compliance":  ["adm", "risk", "coord", "obj", "log"],
     "manager":     ["kpi", "risk", "task", "cost", "po", "obj", "kg", "dq", "adm", "log"],
 }
 

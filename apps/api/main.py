@@ -339,7 +339,7 @@ def list_objects(type: str, request: Request,
         sql = f'SELECT * FROM "{table}"' + (f" WHERE {where_sql}" if where_sql else "") + " LIMIT ?"
         rows = con.execute(sql, (*qp.values(), limit)).fetchall()
         items = [model.model_validate(dict(r)).model_dump(mode="json") for r in rows]
-        masker.mask_value(items)
+        masker.mask_value(items, object_type=type)   # V23③：组式规则按对象类型作用域掩（Invoice/CostScenario 金额）
         # world 信封字段（U1）：既有字段全不动，仅附加所连世界标识；单对象端点无信封故不加（保对象契约）。
         return {"type": type, "world": _infer_world(db_path),
                 "count": len(items), "limit": limit, "items": items}
@@ -361,7 +361,7 @@ def list_objects(type: str, request: Request,
     # 满页才给下页游标（末行主键）；不足一页即到底（next_cursor=None）。游标取自原始行主键，不受脱敏影响。
     next_cursor = rows[-1][pk] if len(rows) == limit else None
     items = [model.model_validate(dict(r)).model_dump(mode="json") for r in rows]
-    masker.mask_value(items)
+    masker.mask_value(items, object_type=type)       # V23③：组式规则按对象类型作用域掩（Invoice/CostScenario 金额）
     return {"type": type, "world": _infer_world(db_path),
             "count": len(items), "limit": limit, "items": items, "next_cursor": next_cursor}
 
@@ -390,7 +390,7 @@ def get_object(type: str, id: str,
         obj["_validation_warnings"] = [
             {"field": ".".join(str(p) for p in e["loc"]), "problem": e["msg"]}
             for e in exc.errors()]
-    SensitiveFieldMasker(get_ontology_dict(), x_role).mask_value(obj)
+    SensitiveFieldMasker(get_ontology_dict(), x_role).mask_value(obj, object_type=type)  # V23③：组式规则按类型作用域掩
     return obj
 
 

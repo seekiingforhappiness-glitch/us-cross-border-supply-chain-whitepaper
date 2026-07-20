@@ -1508,7 +1508,8 @@ def render_coord_tab():
         st.info("当前无进行中的协调（线程均已达成 resolved 或谈崩 dead_ended）。")
         return
 
-    # 写动作只由 COORD_PERMS 角色发起（本 tab 仅对这 4 角色可见故恒成立，但仍以 role 判定为准，不放宽）
+    # 写动作只由 COORD_PERMS 角色发起（本 tab 仅对这 5 角色可见故恒成立，V23② 加 compliance，
+    # 但仍以 role 判定为准，不放宽）
     can_act = role in COORD_PERMS["ManageCoordination"]
     if not can_act:
         st.caption("（当前角色不在 COORD_PERMS，仅可查看协调进度，不能发起协调写动作。）")

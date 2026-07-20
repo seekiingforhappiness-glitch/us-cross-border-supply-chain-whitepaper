@@ -355,11 +355,12 @@ function CloseRiskButton({
 }
 
 // 发起新协调线程（V22② 余量清偿，缘起李珊任务3 断头路的最后一环——催办已进驾驶舱，发起也补上）。
-// 协调权限组 COORD_PERMS.ManageCoordination={ops,cs,procurement,finance}（本体声明）的前端镜像——与
-// AiWorkflow.tsx::COORD_UI_ROLES 严格同集；老板/合规/销售不在组内 → 不渲染（诚实，不给必 403 的假按钮）。
+// 协调权限组 COORD_PERMS.ManageCoordination={ops,cs,procurement,finance,compliance}（本体声明，V23②
+// 加合规，缘起轮3合规陌生人"发现问题后系统内无处置入口"）的前端镜像——与 AiWorkflow.tsx::COORD_UI_ROLES
+// 严格同集；老板/销售不在组内 → 不渲染（诚实，不给必 403 的假按钮）。
 // 后端仍是权威（绕过 UI 直接 POST 会 403 + denied 审计）。锚在**具体 Task**（有任务上下文才能锚定协调，
 // 与 CL1 语义一致：协调是某处置任务派生的对外往返）。owner 不在表单——后端缺省用发起人身份。
-const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance"];
+const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance", "compliance"];
 
 function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role; onOpened?: () => void }) {
   const [open, setOpen] = useState(false);
