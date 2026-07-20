@@ -15,6 +15,7 @@ resolution_memory/ai_activity 全带 source='sim'；模拟审批人显式命名 
 """
 import hashlib
 import json
+import sqlite3
 from datetime import date, timedelta
 
 from . import generators as G
@@ -165,6 +166,84 @@ def _economics(world, c, rng):
     return ("chase_docs", {"docs": world["shipments"][c["shipment_id"]]["missing_docs"]},
             {"verdict": f"补件避免清关滞留，涉险货值 ${c['affected_value_usd']}",
              "value_at_risk_usd": c["affected_value_usd"], "cost_usd": 0})
+
+
+# ============================ R22/R23 供应商风险感知接入（V23①，post-enrich 一次性）============
+# 与 R1-R6/R16 的运行时逐日检测不同：R22/R23 判据读的供应商 5 表（suppliers/purchase_orders/
+# goods_receipts/po_lines/supplier_qualifications）由 enrich() 在回填结束后才补灌，故本族检测是
+# **回填后一次性**跑（as-of=世界 as_of），口径同验证世界的 as_of 全量 detect（非逐 cadence）。
+#
+# 判定逻辑单一来源：直接 import engine.supplier_risk_rules.detect_supplier_risks（纯 leaf 模块，仅
+# 依赖 datetime，无 pipeline/agent 耦合——不同于 detectors.py 里 R1-R6 因 engine 检测器读本体专属表
+# 而必须等价镜像；R22/R23 引擎函数只吃一个 sqlite con，故把 sim 内存世界的供应商 5 表 marshal 进
+# 内存 sqlite 直接喂它，告警口径与验证世界逐字节同源，不复制判定/阈值）。阈值参数由 caller 从
+# config/datagen.yaml supplier_risk 段读入（单一参数源，不复述进 sim/config.yaml）。
+#
+# R22/R23 属感知层——与验证世界 V23① 口径一致：只建风险事件 + 记 detect 活动流，**不造提案**
+# （无 economics/disposition，提案动作验证世界也未做，范围控制）。风险事件 RSK-SIM 续号、
+# source='sim'、锚点列同验证世界 detect.apply_supplier_risk_candidates：R22 锚 supplier_id 列
+# （affected_so_line_ids 留 "[]"）；R23 锚 qualification_id 载 affected_so_line_ids 通用列 +
+# supplier_id 同置（供 SUP 卡 risk_on_supplier 反向遍历吃到）。
+def run_supplier_risk(world, as_of, supplier_risk_cfg):
+    """回填后接入 R22/R23：把供应商世界喂给 engine 纯函数，落 sim 风险事件（不提案）。"""
+    if not _cfg(world).get("enabled") or not supplier_risk_cfg:
+        return                                          # ai_loop 关 / 无参数 → 不接入（不报错）
+    from engine.supplier_risk_rules import detect_supplier_risks
+    con = _supplier_slice_con(world)
+    try:
+        cands = detect_supplier_risks(con, as_of, {"supplier_risk": supplier_risk_cfg})
+    finally:
+        con.close()
+    # 确定性排序（同验证世界 apply_supplier_risk_candidates）：rule_id 后 anchor → RSK-SIM 续号稳定。
+    for c in sorted(cands, key=lambda x: (x["rule_id"], x["anchor"])):
+        rid = G._nid(world, "rsk", "RSK-SIM", 5)
+        if c["rule_id"] == "R22":
+            anchor_json = "[]"                          # R22 锚 supplier_id 列，通用列留空
+        else:
+            anchor_json = json.dumps([c["anchor"]])     # R23 锚 qualification_id 载通用列
+        world["risk_events"][rid] = {
+            "risk_event_id": rid, "type": c["type"], "rule_id": c["rule_id"],
+            "severity": c["severity"], "shipment_id": "",
+            "affected_so_line_ids": anchor_json,
+            "affected_value_usd": c["affected_value_usd"], "detected_at": c["detected_at"],
+            "root_cause": c["root_cause"], "status": "open", "resolved_at": "",
+            "outcome": "", "resolution_summary": "",
+            "affected_invoice_line_ids": "[]",
+            "po_id": "", "supplier_id": c["supplier_id"], "affected_po_line_ids": "[]",
+            "warehouse_id": "", "source": "sim"}
+        _log_ai(world, as_of, AI_ACTOR, "detect", rid, None,
+                f"{c['rule_id']} {c['type']} sev={c['severity']} ${c['affected_value_usd']}")
+
+
+def _supplier_slice_con(world):
+    """把 sim 内存世界的供应商 5 表切片进内存 sqlite（列集 = engine R22/R23 SQL 实读列）。
+    日期统一 ISO 字符串：received_date/valid_* 本就是字符串，expected_ready_date 是 date → isoformat，
+    与 ontology.sqlite 的 TEXT 列同形（字典序=时序，与引擎字符串比较逐字一致）。"""
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(
+        "CREATE TABLE suppliers(supplier_id TEXT, supplier_name TEXT);"
+        "CREATE TABLE purchase_orders(po_id TEXT, supplier_id TEXT, expected_ready_date TEXT);"
+        "CREATE TABLE goods_receipts(po_id TEXT, received_date TEXT);"
+        "CREATE TABLE po_lines(po_id TEXT, qty INTEGER, unit_price_usd REAL);"
+        "CREATE TABLE supplier_qualifications("
+        "  qualification_id TEXT, supplier_id TEXT, cert_type TEXT, valid_from TEXT, valid_to TEXT);")
+    con.executemany("INSERT INTO suppliers VALUES (?,?)",
+                    [(world["suppliers"][k]["supplier_id"], world["suppliers"][k]["supplier_name"])
+                     for k in sorted(world["suppliers"])])
+    con.executemany("INSERT INTO purchase_orders VALUES (?,?,?)",
+                    [(world["pos"][k]["po_id"], world["pos"][k]["supplier_id"],
+                      world["pos"][k]["expected_ready_date"].isoformat())
+                     for k in sorted(world["pos"])])
+    con.executemany("INSERT INTO goods_receipts VALUES (?,?)",
+                    [(g["po_id"], g["received_date"]) for g in world.get("goods_receipts", [])])
+    con.executemany("INSERT INTO po_lines VALUES (?,?,?)",
+                    [(r["po_id"], r["qty"], r["unit_price_usd"]) for r in world.get("po_lines", [])])
+    con.executemany("INSERT INTO supplier_qualifications VALUES (?,?,?,?,?)",
+                    [(q["qualification_id"], q["supplier_id"], q["cert_type"],
+                      q["valid_from"], q["valid_to"]) for q in world.get("supplier_qualifications", [])])
+    con.commit()
+    return con
 
 
 # ============================ 模拟审批人 → 处置生效（真改世界）============================

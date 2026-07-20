@@ -35,6 +35,8 @@ RULE_CN = {
     "R10": "价量不符", "R11": "开票超实收", "R12": "预付款敞口",
     "R13": "供应商资质过期", "R14": "单一来源断供", "R15": "绕流程采购(maverick)",
     "R16": "断货", "R17": "不可履约", "R18": "盘点差异",
+    # R19-R21 资金流域（源：engine/finance_rules.py emit() type；CN 与 cockpit aiFlowModel.ts 同名）
+    "R19": "逾期应收", "R20": "现金水位", "R21": "重复或不符付款",
     "R22": "供应商绩效劣化", "R23": "资质过期预警",
 }
 RULE_LEGEND = "　".join(f"{k}={v}" for k, v in RULE_CN.items())

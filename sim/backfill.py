@@ -56,7 +56,21 @@ def build(cfg):
         ticks += 1
     world["_ticks"] = ticks
     EN.enrich(world, cfg, streams)         # F2：回填后补灌采购/准入/盘点/资金流域（独立子流）
+    # V23① R22/R23 供应商风险感知：供应商 5 表由 enrich 补灌后才存在 → 回填末尾一次性检测（as-of=as_of）。
+    # 阈值单一参数源 = config/datagen.yaml supplier_risk 段（不复述进 sim/config.yaml，与验证世界同参）。
+    AI.run_supplier_risk(world, as_of, _load_supplier_risk_cfg())
     return world
+
+
+def _load_supplier_risk_cfg():
+    """R22/R23 阈值单一参数源 = config/datagen.yaml supplier_risk 段（不复制数字进 sim/config.yaml）。
+    缺文件/缺段 → None → run_supplier_risk 空转（不接入、不报错，保持向下兼容）。静态文件读取，
+    同种子两次 build 逐字节复现不受影响。"""
+    p = Path(__file__).resolve().parent.parent / "config" / "datagen.yaml"
+    try:
+        return yaml.safe_load(open(p, encoding="utf-8")).get("supplier_risk")
+    except FileNotFoundError:
+        return None
 
 
 def volume_stats(world):

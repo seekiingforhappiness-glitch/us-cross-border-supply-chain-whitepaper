@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchCustomsQueue, fetchVitals, formatInt, type CustomsQueue, type Role, type World, type Zone, type ZoneId } from "../api";
+import { fetchCustomsQueue, fetchVitals, formatInt, type CustomsQueue, type Role, type Zone, type ZoneId } from "../api";
 import { roleLabel } from "../roleActors";
 import Icon from "../components/Icons";
 import WorkQueue from "./WorkQueue";
@@ -59,7 +59,6 @@ interface Props {
   zone: Zone;
   role: Role;
   asOf: string | null;
-  world?: World; // B·P0：sim 世界供应商区 R22/R23 显"未接入"（传给 ZoneContext 判定）
   defaultMine?: boolean; // F·P2：从"我组处置"卡进入→默认选"我组的"（仅 decisions+非 manager 生效）
   entrySeq?: number; // F·P2：每次进区自增——effect 据此把筛选复位到 defaultMine（区分"进区"与"区内操作"）
   onBack: () => void;
@@ -68,7 +67,7 @@ interface Props {
   activeKey: string | null;
 }
 
-export default function ZoneQueue({ zone, role, asOf, world, defaultMine, entrySeq, onBack, onMap, onDrill, activeKey }: Props) {
+export default function ZoneQueue({ zone, role, asOf, defaultMine, entrySeq, onBack, onMap, onDrill, activeKey }: Props) {
   // 待批提案队列"我组的"筛选（V22 任务1；缘起：财务陌生人"待批队列里自己的活要靠运气翻到"）。
   // 只对 decisions 区、且非 manager（老板本就是收件人全集，"我组的"=全部，冗余不显）。切"我组的"→
   // 带 assignee_role=当前角色重取一份 vitals，仅取其 decisions 区覆盖显示；**不污染** App 共享 vitals
@@ -275,7 +274,7 @@ export default function ZoneQueue({ zone, role, asOf, world, defaultMine, entryS
       onDrill={onDrill}
       activeKey={activeKey}
       emptyHint={emptyHint}
-      context={<ZoneContext zone={zone} worldIsSim={world === "sim"} />}
+      context={<ZoneContext zone={zone} />}
     />
   );
 }

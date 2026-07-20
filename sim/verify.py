@@ -267,11 +267,29 @@ def main():
     approved = [t for t in tasks if t["approval_status"] == "approved"]
     # critical/high 风险 → 提案 → 审批 链路存在
     rid_of_task = {t["risk_event_id"] for t in tasks}
-    hi_risks = [r for r in risks if r["severity"] in ("critical", "high")]
-    check("critical/high 风险均有提案（分诊→提案）",
+    # R22/R23 属感知层（V23①：只建风险不造提案，与验证世界同口径）——不纳入"须有提案"集，
+    # 否则会把"按设计无提案"误判成分诊漏派（口径 = detectors 排除 R3 的同款语义划界）。
+    PERCEPTION_RULES = {"R22", "R23"}
+    hi_risks = [r for r in risks if r["severity"] in ("critical", "high")
+                and r["rule_id"] not in PERCEPTION_RULES]
+    check("critical/high 风险均有提案（分诊→提案；R22/R23 感知层不计）",
           all(r["risk_event_id"] in rid_of_task for r in hi_risks) or
           sum(1 for r in hi_risks if r["risk_event_id"] in rid_of_task) >= len(hi_risks) * 0.9,
           f"{sum(1 for r in hi_risks if r['risk_event_id'] in rid_of_task)}/{len(hi_risks)}")
+    # V23① 供应商风险感知接入看守：R22/R23 逐规则接入 sim（≥1 命中）、全 source='sim'、按感知层设计
+    # **无提案**（不进 tasks）、锚点列同验证世界（R22 锚 supplier_id 列，通用列留空；R23 锚 QUAL 载
+    # affected_so_line_ids 通用列 + supplier_id 同置——供 SUP 卡 risk_on_supplier 反向遍历吃到）。
+    sup_risks = [r for r in risks if r["rule_id"] in PERCEPTION_RULES]
+    r22s = [r for r in sup_risks if r["rule_id"] == "R22"]
+    r23s = [r for r in sup_risks if r["rule_id"] == "R23"]
+    check("R22/R23 供应商风险接入 sim（逐规则 ≥1 命中、全 source='sim'）",
+          len(r22s) >= 1 and len(r23s) >= 1 and all(r["source"] == "sim" for r in sup_risks),
+          f"R22={len(r22s)} R23={len(r23s)}")
+    check("R22/R23 感知层无提案（不进 tasks，与验证世界同口径）",
+          all(r["risk_event_id"] not in rid_of_task for r in sup_risks))
+    check("R22 锚 supplier_id 列 / R23 锚 QUAL 载 affected_so_line_ids 通用列 + supplier_id 同置",
+          all(r["supplier_id"] and r["affected_so_line_ids"] in ("[]", "") for r in r22s)
+          and all(r["supplier_id"] and r["affected_so_line_ids"].startswith('["QUAL') for r in r23s))
     # 世界状态真改：加急 shipment ETA 提前 + 争议发票 disputed
     exped = [s for s in ships if str(s["expedite_flag"]) in ("1", "True")]
     eta_advanced = [s for s in exped if s["eta_current"] < s["eta_initial"]]

@@ -162,6 +162,25 @@ function renderVal(type: string, field: string, v: unknown): { text: string; cls
   return { text: String(v), cls: "" };
 }
 
+// R23 资质预警把 qualification_id 载于通用列 affected_so_line_ids（同 R19/R21 付款锚把 payment 载
+// 同一通用列的先例）——该列默认译"受影响订单行"，但载的是 QUAL 资质证时会误读成订单行。照付款锚
+// 换标模式（ImpactPanel "受影响单据·付款锚"）按锚点内容换标：全为 QUAL id → "关联资质"。
+function fieldLabelAnchorAware(type: string, field: string, raw: unknown): string {
+  if (type === "RiskEvent" && field === "affected_so_line_ids" && typeof raw === "string") {
+    const t = raw.trim();
+    if (t.startsWith("[") && t.endsWith("]")) {
+      try {
+        const ids = JSON.parse(t);
+        if (Array.isArray(ids) && ids.length > 0 && ids.every((id) => String(id).startsWith("QUAL")))
+          return "关联资质";
+      } catch {
+        /* 非 JSON 数组形态 → 落默认标签，不猜 */
+      }
+    }
+  }
+  return fieldLabel(type, field);
+}
+
 export default function ObjectCard({ target, role, links, onOpenObject, onClose, onActed, onSwitchRole }: Props) {
   const [fields, setFields] = useState<ObjectFields | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -393,7 +412,7 @@ export default function ObjectCard({ target, role, links, onOpenObject, onClose,
                       return (
                         <div className="cp-field" key={k}>
                           <span className="cp-field__k" title={k}>
-                            {fieldLabel(target.type, k)}
+                            {fieldLabelAnchorAware(target.type, k, v)}
                           </span>
                           <span className={`cp-field__v ${r.cls}`}>
                             {r.masked && <Icon name="lock" size={11} />}
