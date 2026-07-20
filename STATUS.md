@@ -20,8 +20,13 @@
 > 镜像非低成本）、R22 质量维度二期、R23 锚标签皱纹（QUAL 显示在"受影响订单行"）、
 > ux_copy RULE_CN 缺 R19-R23（Streamlit 侧）、action_log 不在 digest 豁免（verify 库导出
 > 审计会变 digest——维持现状，活系统语义在案）。
-> **V24 角色化首屏 spec 已立**（docs/superpowers/specs/2026-07-20-role-based-cockpit.md，
-> Daniel"各角色页面完全一样，立即修复"）——实现批接续执行中。
+> **V24 角色化首屏已落地（ac5c4ce，spec docs/superpowers/specs/2026-07-20-role-based-cockpit.md）**：
+> Daniel"各角色页面完全一样，立即修复"→ROLE_WALL 配置驱动，七角色首屏两两不同（职责推导自
+> 已批权限矩阵：ops 处置流/cs 客户面/procurement 供应商红榜/finance 现金首位/compliance 准入
+> 卡点/sales 最窄两卡/manager 墙 byte-identical）；零新端点、掩码逐字节一致、192 项配置断言；
+> 首屏收窄≠权限收窄（标题白话点破）。主会话抽验 ops+compliance 两屏实证。**六条候裁微调**
+> 在批报告：协调升墙卡/manager 待拍板置顶/准入独立下钻队列/finance 发票漏斗需新数据/
+> ops 钱区小卡/sales 颗粒度。**下一步建议：L-UX 轮4 陌生人复测角色化首屏。**
 
 > **L-UX 轮3 收官（2026-07-19 傍晚，采购/合规/客服三 Sonnet 陌生人首测批D 新角色 + Opus/Sonnet
 > 修复双批 + 主会话复核）**：报告 docs/research/2026-07-19-ux-stranger-round3.md（含修复对照）。
