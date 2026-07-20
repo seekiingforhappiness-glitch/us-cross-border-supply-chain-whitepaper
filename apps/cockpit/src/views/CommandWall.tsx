@@ -1,7 +1,10 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
+  formatInt,
   formatPct,
+  isMissing,
   type GovernanceGating,
+  type Missing,
   type Role,
   type Zone,
   type ZoneId,
@@ -9,18 +12,35 @@ import {
 } from "../api";
 import Icon from "../components/Icons";
 import StateHint from "../components/StateHint";
-import { headlineOf, summaryLines, todaysFocus, ZONE_ICON, zoneShort, type FocusItem, type SummaryLine } from "./zoneModel";
+import { roleLabel } from "../roleActors";
+import {
+  admissionActionable,
+  admissionSummary,
+  FIXED_ORDER_IDS,
+  headlineOf,
+  readAdmissionFunnel,
+  ROLE_WALL,
+  summaryLines,
+  todaysFocus,
+  ZONE_ICON,
+  zoneShort,
+  type AdmissionFunnel,
+  type FocusItem,
+  type SummaryLine,
+} from "./zoneModel";
 
-// 七区指挥墙（V10 方案 C 默认首屏中央）——体征带的"放大态"（顶部体征带已移除，避免同信息两处）。
-// 每卡：区图标+区名 + headline 大数字 + 趋势（有数据才显示）+ 告警计数徽标 + 该区最要紧 2-3 行摘要
-// + 数字溯源钮（U2，点开口径/来源/样例浮层）；AI 卡额外挂 AI 信任档徽章（U3）。
-// 排序：有告警卡按 alert_count 降序在前，无告警卡按固定七区序在后。有告警卡辉光呼吸。
-// 无数据/掩码 headline 如实降饱和。履约卡右上角显眼「航线视图」钮 → 切航线走廊图（stopPropagation）。
-// 点卡体 → 该区工作队列（下钻第二段）。
+// 角色化指挥墙（V24；V10 方案 C 首屏中央的角色化重排）——体征带的"放大态"（顶部体征带已移除）。
+// 缘起：Daniel"各角色展示页面完全一样"。改法：墙循环从写死七区改**读 ROLE_WALL 配置**（zoneModel.ts）——
+// 每角色渲染哪些区块、什么顺序、什么标题各不相同，但**区块组件全部复用**（同构骨架异构内容）。
+// 每卡：区图标+角色化区名 + headline 大数字 + 趋势 + 告警徽标 + 该区最要紧 2-3 行摘要
+// + 数字溯源钮（U2）；AI 卡额外挂信任档徽章（U3）。sales/compliance 另有"准入案"组合块（复用
+// 已下发的 customers 区 admission_funnel，零新端点）。
+// manager 保持现七区墙不动（告警优先重排 + byte-identical，见 resolveWall）；其余六角色按配置序。
+// 无数据/掩码 headline 如实降饱和。履约卡右上角「航线视图」钮 → 切航线图（stopPropagation）。点卡体 → 下钻。
 
-const FIXED_ORDER: ZoneId[] = ["money", "fulfillment", "customers", "suppliers", "inventory", "ai", "decisions"];
+const FIXED_ORDER: ZoneId[] = FIXED_ORDER_IDS;
 
-// 告警卡（alert_count>0）按 alert_count 降序在前，无告警卡按固定七区序在后。
+// manager 用：告警卡（alert_count>0）按 alert_count 降序在前，无告警卡按固定七区序在后。
 function sortZones(zones: Zone[]): Zone[] {
   const rank = new Map(FIXED_ORDER.map((z, i) => [z, i]));
   return [...zones].sort((a, b) => {
@@ -30,6 +50,32 @@ function sortZones(zones: Zone[]): Zone[] {
     if (aa && ba) return b.alert_count - a.alert_count || (rank.get(a.zone) ?? 9) - (rank.get(b.zone) ?? 9);
     return (rank.get(a.zone) ?? 9) - (rank.get(b.zone) ?? 9);
   });
+}
+
+// 首屏渲染项（V24）：zone 区卡（复用现有渲染）或准入组合块。由 ROLE_WALL[role] 解析而来。
+type WallItem =
+  | { kind: "zone"; zone: Zone; title: string; drill: ZoneId }
+  | { kind: "admission"; funnel: AdmissionFunnel | Missing | undefined; title: string; drill: ZoneId };
+
+// 把 ROLE_WALL[role] 配置解析成有序渲染项。
+//  · manager：现七区墙不动——仍用 sortZones（告警优先重排）+ zoneShort 原名，与改前 byte-identical
+//    （sortZones 全排序，输入序不影响输出 ⇒ 结果与旧 CommandWall 逐字节一致）。
+//  · 其余角色：按 ROLE_WALL 配置序（不告警重排——各角色首屏序是规格的刻意编排，如 finance 钱区永远
+//    首位）；zone 块在载荷里找不到对应区（理论不发生，vitals 恒下发七区）则如实跳过，不占空位。
+function resolveWall(role: Role, zones: Zone[]): WallItem[] {
+  if (role === "manager") {
+    return sortZones(zones).map((z) => ({ kind: "zone" as const, zone: z, title: zoneShort(z.zone, role), drill: z.zone }));
+  }
+  const items: WallItem[] = [];
+  for (const b of ROLE_WALL[role]) {
+    if (b.kind === "admission") {
+      items.push({ kind: "admission", funnel: readAdmissionFunnel(zones), title: b.title, drill: b.drill });
+    } else if (b.zone) {
+      const z = zones.find((zz) => zz.zone === b.zone);
+      if (z) items.push({ kind: "zone", zone: z, title: b.title, drill: b.drill });
+    }
+  }
+  return items;
 }
 
 // 趋势箭头：仅准交率 up=好（绿）/down=差（红）语义明确；其余方向中性（flat）不评判。
@@ -241,28 +287,63 @@ interface Props {
 type Pop = { kind: "prov"; zone: ZoneId; rect: DOMRect } | { kind: "gating"; rect: DOMRect };
 
 export default function CommandWall({ zones, role, provenance, gating, onZone, onMap }: Props) {
-  const ordered = sortZones(zones);
+  const items = resolveWall(role, zones);
   const focus = todaysFocus(zones, role);
   const [pop, setPop] = useState<Pop | null>(null);
   const openPop = (p: Pop) => setPop(p);
 
-  return (
-    <div className="cp-wall-wrap">
-      <div className="cp-panel-head">
-        <span className="cp-panel-head__title">七区指挥墙</span>
-        <span className="cp-panel-head__meta">告警区自动排前 · 点卡下钻工作队列 · 指标可溯源</span>
-      </div>
-      <FocusBar items={focus} onZone={onZone} />
-      {ordered.length === 0 ? (
-        <StateHint
-          kind="empty"
-          title="七区暂无体征"
-          reason="当前世界没有可展示的掌控区数据。"
-          suggestion="切换世界，或确认该世界数据已灌入。"
-        />
-      ) : (
-        <div className="cp-wall" role="list">
-          {ordered.map((z) => {
+  // 面板头角色化：manager 保持"七区指挥墙"；其余角色标明"这是按你职责排的首屏"，并点破"首屏收窄≠
+  // 权限收窄"（未摆出的区经搜索/对象卡仍全量可达，规格微调点 3）。
+  const isManager = role === "manager";
+  const headTitle = isManager ? "七区指挥墙" : `${roleLabel(role)} · 首屏`;
+  const headMeta = isManager
+    ? "告警区自动排前 · 点卡下钻工作队列 · 指标可溯源"
+    : "按你的职责排布 · 点卡下钻 · 未摆出的区经搜索 / 对象卡仍全量可达";
+
+  // ── 准入组合块卡（V24，sales/compliance）：复用 wall-card 骨架，数据取自 customers 区 admission_funnel。
+  //    缺准入域（模拟世界无 admission_cases 表）→ headline"无数据" + reason 副行，诚实空态不填 0。
+  const renderAdmissionCard = (funnel: AdmissionFunnel | Missing | undefined, title: string, drill: ZoneId): ReactNode => {
+    const missingFunnel = funnel === undefined || isMissing(funnel);
+    const f = missingFunnel ? null : (funnel as AdmissionFunnel);
+    const actionable = f ? admissionActionable(f) : 0;
+    const alerted = actionable > 0;
+    const reason = isMissing(funnel) ? funnel.reason : "该世界无准入域数据（准入案表未灌）";
+    return (
+      <button
+        key="admission"
+        role="listitem"
+        className={`cp-wall-card cp-wall-card--admission ${alerted ? "is-alerted" : ""} ${missingFunnel ? "is-nodata" : ""}`}
+        onClick={() => onZone(drill)}
+        title={missingFunnel ? reason : "准入案 · 点击下钻客户区看完整漏斗"}
+      >
+        {alerted && <span className={`cp-wall-card__alert ${actionable > 20 ? "" : "is-amber"}`}>{actionable > 99 ? "99+" : actionable}</span>}
+        <div className="cp-wall-card__top">
+          <span className="cp-wall-card__icon" aria-hidden>
+            <Icon name="stamp" size={17} />
+          </span>
+          <span className="cp-wall-card__name">{title}</span>
+        </div>
+        <div className="cp-wall-card__headline">
+          <span className={`cp-wall-card__big num ${missingFunnel ? "is-missing" : ""}`}>{missingFunnel ? "无数据" : formatInt(f!.cases_total)}</span>
+          <span className="cp-trend cp-trend--none" title="准入案计数为当前值——无逐日趋势对比">当前值</span>
+        </div>
+        <div className="cp-wall-card__hllabel">准入案总数</div>
+        <div className="cp-wall-card__sum">
+          {missingFunnel ? (
+            <div className="cp-wall-card__subnote" title="模拟世界未灌准入域；切验证世界可见真实准入漏斗">
+              {reason}
+            </div>
+          ) : (
+            admissionSummary(f!).map((line, i) => <SummaryRow key={i} line={line} />)
+          )}
+        </div>
+      </button>
+    );
+  };
+
+  // ── zone 区卡（复用现有渲染，抽成内部函数）：name 改为角色化 title、点击下钻改为配置的 drill 目标。
+  //    manager 传入 title=zoneShort(z.zone,role)、drill=z.zone ⇒ 与改前 byte-identical。
+  const renderZoneCard = (z: Zone, title: string, drill: ZoneId): ReactNode => {
             const hl = headlineOf(z);
             const nodata = hl.state === "missing"; // 只对真·无数据降饱和；掩码是权限态，显锁不降卡
             const trend = trendView(z);
@@ -274,7 +355,7 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                 key={z.zone}
                 role="listitem"
                 className={`cp-wall-card cp-wall-card--${z.zone} ${alerted ? "is-alerted" : ""} ${nodata ? "is-nodata" : ""}`}
-                onClick={() => onZone(z.zone)}
+                onClick={() => onZone(drill)}
                 title={z.headline_reason || `${z.headline_label} · 点击下钻`}
               >
                 {alerted && <span className={`cp-wall-card__alert ${z.alert_count > 20 ? "" : "is-amber"}`}>{z.alert_count > 99 ? "99+" : z.alert_count}</span>}
@@ -283,8 +364,8 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                   <span className="cp-wall-card__icon" aria-hidden>
                     <Icon name={ZONE_ICON[z.zone]} size={17} />
                   </span>
-                  {/* F·P1（轮3）：非 manager 的"待我拍板"改"待批提案"（审批权在老板；zoneShort 角色适配） */}
-                  <span className="cp-wall-card__name">{zoneShort(z.zone, role)}</span>
+                  {/* V24 角色化区名（口径诚实，见 ROLE_WALL）；manager 传入 = zoneShort 原名（byte-identical）。 */}
+                  <span className="cp-wall-card__name">{title}</span>
                   {prov && (
                     <span
                       role="button"
@@ -399,7 +480,29 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                 )}
               </button>
             );
-          })}
+  };
+
+  return (
+    <div className="cp-wall-wrap">
+      <div className="cp-panel-head">
+        <span className="cp-panel-head__title">{headTitle}</span>
+        <span className="cp-panel-head__meta">{headMeta}</span>
+      </div>
+      <FocusBar items={focus} onZone={onZone} />
+      {items.length === 0 ? (
+        <StateHint
+          kind="empty"
+          title="首屏暂无体征"
+          reason="当前世界没有可展示的掌控区数据。"
+          suggestion="切换世界，或确认该世界数据已灌入。"
+        />
+      ) : (
+        <div className="cp-wall" role="list">
+          {items.map((it) =>
+            it.kind === "admission"
+              ? renderAdmissionCard(it.funnel, it.title, it.drill)
+              : renderZoneCard(it.zone, it.title, it.drill),
+          )}
         </div>
       )}
 

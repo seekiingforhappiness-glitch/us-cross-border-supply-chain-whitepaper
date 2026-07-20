@@ -43,12 +43,119 @@ export const ZONE_SHORT: Record<ZoneId, string> = {
 // headline 为比率的区（0-1 → 百分比）
 export const RATE_ZONES: ReadonlySet<ZoneId> = new Set<ZoneId>(["fulfillment", "suppliers"]);
 
+// 七区固定序（单一权威源）：manager 现七区墙 = 此序；CommandWall 的告警优先重排以此为同分位次序。
+// 迁自 CommandWall.tsx 的局部 FIXED_ORDER（V24 归一到数据层，供 ROLE_WALL.manager / VALID_BLOCK_IDS /
+// 墙渲染共用一份，避免"两处七区序"漂移）。
+export const FIXED_ORDER_IDS: ZoneId[] = ["money", "fulfillment", "customers", "suppliers", "inventory", "ai", "decisions"];
+
 /** F·P1（轮3 老周/林律"无拍板权角色也被说等你拍板"）：区短名的角色适配——非 manager 没有审批权
  *  （后端 403），"待我拍板"这个第一人称对他们不属实，改中性"待批提案"；manager/未知角色维持原名。
  *  只改措辞不改数据：审批门控仍全在后端，前端不复制权限规则。 */
 export function zoneShort(zone: ZoneId, role?: Role): string {
   if (zone === "decisions" && role && role !== "manager") return "待批提案";
   return ZONE_SHORT[zone];
+}
+
+// ═══════════════════════════ ROLE_WALL 角色化首屏配置（V24）═══════════════════════════
+// 缘起：Daniel 亲验"各角色展示页面完全一样，本质是对每个角色的理解不够深——负责什么、看什么、
+// 决定什么都没仔细思考"。规格 docs/superpowers/specs/2026-07-20-role-based-cockpit.md 定七角色
+// 职责模型 → 首屏区块序。本表是**纯声明式**数据（无 React、无副作用），CommandWall 按它渲染
+// （墙循环从写死七区改读本配置）。这是 V14 接缝③ ViewConfig 的第一次真实消费（角色缺省集，
+// 用户自定义留二期）。
+//
+// 三条铁律（照规格 §设计原则，不发明语义）：
+//  1) **首屏收窄≠权限收窄**：不渲染某区≠看不到——后端 vitals 一次下发全区数据（脱敏由 API 按
+//     X-Role 同源执行，本表不含任何权限规则），本表只挑"这个角色首屏先摆哪几张、什么序、什么标题"；
+//     未摆的区其对象仍经对象卡/搜索全量可达。
+//  2) **同构骨架异构内容 / 零新端点**：区块类型以复用现有 zone 区卡为主（kind:"zone"）；spec 点名的
+//     角色专属组合块（sales/compliance 的"我的准入案"）用**已在 vitals 载荷里**的 customers 区
+//     admission_funnel 组合渲染（kind:"admission"），不新增后端端点。
+//  3) **口径诚实**：角色化标题只换"这个角色怎么称呼这张卡"，绝不改这张卡背后的数字口径
+//     （如非 manager 的 decisions 卡数字仍是全系统待批数，标题不谎称"只有我组的"——"我组"过滤在
+//     下钻队列的 chip 里，见 ZoneQueue"我组的"）。
+export type WallBlockId = ZoneId | "admission";
+export interface WallBlock {
+  /** 区块 id：zone id（复用区卡）或 "admission"（准入组合块）。合法集见 VALID_BLOCK_IDS。 */
+  id: WallBlockId;
+  kind: "zone" | "admission";
+  /** kind==="zone" 时 = 渲染哪张 vitals 区卡；admission 块无 zone。 */
+  zone?: ZoneId;
+  /** 角色化标题（口径诚实，见铁律 3）。 */
+  title: string;
+  /** 默认下钻目标区（点卡进入的区队列）。zone 块 = 自身；admission 块 = customers（准入漏斗数据家）。 */
+  drill: ZoneId;
+}
+
+const zb = (zone: ZoneId, title: string): WallBlock => ({ id: zone, kind: "zone", zone, title, drill: zone });
+const adm = (title: string): WallBlock => ({ id: "admission", kind: "admission", title, drill: "customers" });
+
+// 七角色首屏区块序（规格 §七角色职责模型 逐条落实）。区块序 = 该角色 10 秒扫屏的从上到下顺序。
+// manager 保持现七区序（FIXED_ORDER）——它本就是监督全域视角；渲染时仍由 sortZones 告警优先重排
+// （见 CommandWall），故 manager 画面与改前 byte-identical，本表 manager 项仅供完整性断言 + 文档。
+export const ROLE_WALL: Record<Role, WallBlock[]> = {
+  // 经理：监督 + 全域审批。现七区墙不动（任务硬约束 + 规格明示），标题用 ZONE_SHORT 原名。
+  manager: [
+    zb("money", ZONE_SHORT.money),
+    zb("fulfillment", ZONE_SHORT.fulfillment),
+    zb("customers", ZONE_SHORT.customers),
+    zb("suppliers", ZONE_SHORT.suppliers),
+    zb("inventory", ZONE_SHORT.inventory),
+    zb("ai", ZONE_SHORT.ai),
+    zb("decisions", ZONE_SHORT.decisions),
+  ],
+  // 运营：物流执行者（唯一 CloseRiskEvent 持有者）。①我组处置+超时 ②在途异常（延误+清关直达）
+  // ③库存救援 ④供应商交期风向（只读）。不渲染钱区聚合、客户敞口榜（非其决策域，明细仍经对象卡达）。
+  // 规格 ops③"逾期协调线程"无独立区卡 → 由右栏协作流 tab 承载（见歧义清单）。
+  ops: [
+    zb("decisions", "我组处置 · 超时告警"),
+    zb("fulfillment", "在途异常 · 延误 / 清关卡点"),
+    zb("inventory", "库存救援 · 现货救延误"),
+    zb("suppliers", "供应商交期风向（只读）"),
+  ],
+  // 客服：客户面（R19 催收提案主力）。①我组处置（催收）②受影响客户（敞口榜+出险订单）
+  // ③履约准交（对客户承诺）。不渲染供应商/库存/钱区聚合。规格 cs③"客户协调线程"→右栏协作流。
+  cs: [
+    zb("decisions", "我组处置 · 催收"),
+    zb("customers", "受影响客户 · 敞口 / 出险订单"),
+    zb("fulfillment", "履约准交 · 对客户承诺"),
+  ],
+  // 采购：供应商面（R7-R15 域提案）。①供应商绩效红榜（合规排序/R22/R23 都在此区摘要）②我组处置。
+  // 规格 procurement 的绩效红榜/采购异常队列/资质临期三块同源于 suppliers 区卡摘要，故合为一张富卡。
+  // 不渲染客户敞口/履约/钱区聚合。规格 procurement④"供应商协调线程"→右栏协作流。
+  procurement: [
+    zb("suppliers", "供应商绩效 · 对账 / 资质"),
+    zb("decisions", "我组处置任务"),
+  ],
+  // 财务：钱面（R4-R6/R21 处置主力）。①现金水位+应收应付+费用异常（钱区升为首位，一张卡覆盖）
+  // ②我组处置（R21 对账直达）。规格 finance 的费用异常队列/发票漏斗/逾期应收榜同源于 money 区卡。
+  // 不渲染库存/供应商交期榜。
+  finance: [
+    zb("money", "现金水位 · 应收应付 / 费用异常"),
+    zb("decisions", "我组处置 · 对账"),
+  ],
+  // 合规：合规面（RejectOrRequestMoreInfo 持有者、V23② 协调权）。①准入案队列（卡点步骤显性）
+  // ②供应商合规红榜（UFLPA/资质，队列里"按合规风险"排序默认可用）③清关卡点。不渲染钱区（本就掩码）
+  // /库存/客户敞口。规格 compliance④"合规协调线程"→右栏协作流、⑤"证据导出"→对象卡/证据卡入口。
+  compliance: [
+    adm("准入案 · 卡点步骤"),
+    zb("suppliers", "供应商合规 · UFLPA / 资质"),
+    zb("fulfillment", "清关卡点"),
+  ],
+  // 销售：准入发起 + 客户成单面（数据面最窄，页面最简洁是正确形态——规格明示）。①我的准入案进度
+  // （卡在哪步/缺什么）②客户履约状态。规格 sales③"被驳回/需补件警示"= 准入块内的 needs_more_info/
+  // rejected 计数（同块承载，不另立卡）。不渲染其余全部运营区。
+  sales: [
+    adm("我的准入案 · 卡在哪步 / 缺什么"),
+    zb("fulfillment", "客户履约状态"),
+  ],
+};
+
+/** 合法区块 id 全集（完整性断言用）：七区 + 准入组合块。 */
+export const VALID_BLOCK_IDS: ReadonlySet<WallBlockId> = new Set<WallBlockId>([...FIXED_ORDER_IDS, "admission"]);
+
+/** 某角色首屏摆出的 zone 区 id 集合（focus 的告警池按此收窄，只在该角色关心的区里挑最高告警）。 */
+export function roleWallZoneIds(role: Role): Set<ZoneId> {
+  return new Set(ROLE_WALL[role].filter((b) => b.kind === "zone" && b.zone).map((b) => b.zone as ZoneId));
 }
 
 // ── 值渲染态（掩码/缺数/真实）────────────────────────────────────────────────
@@ -298,6 +405,60 @@ export function summaryLines(z: Zone): SummaryLine[] {
     case "decisions":
       return decisionsSummary(d);
   }
+}
+
+// ═══════════════════════════ 准入组合块（V24，sales/compliance 首屏）═══════════════════════════
+// 规格点名 sales"我的准入案"/compliance"准入案队列（卡点步骤显性）"为角色专属组合块。准入案没有独立
+// 的 vitals 区（七区无准入区），但**准入漏斗数据早已在载荷里**——customers 区 detail.admission_funnel
+// （见 apps/api/cockpit.py::_zone_customers）。故本块零新端点，直接从已下发的 customers 区读取漏斗，
+// 按状态机呈现"卡在哪步/缺什么"。模拟世界无 admission_cases 表 → 漏斗为 Missing → 卡面诚实空态
+// （不填 0 冒充）。金额无关（漏斗只有计数），无脱敏问题。
+export interface AdmissionFunnel {
+  by_status: Record<string, number>;
+  cases_total: number;
+}
+
+// 准入状态机白话名（Daniel 规则：术语必配白话）。口径源 = _zone_customers 的 status order。
+export const ADMISSION_STATUS_CN: Record<string, string> = {
+  draft: "草稿",
+  in_precheck: "预审中",
+  plan_ready: "方案就绪",
+  priced: "已报价",
+  quote_with_conditions: "有条件报价",
+  approved: "已批准",
+  needs_more_info: "需补件",
+  rejected: "已驳回",
+};
+// 流转中（尚未到终态/卡点）的状态集——用于"审批中"汇总（不含 approved 终态、needs_more_info/rejected 卡点）。
+const _ADMISSION_IN_REVIEW = ["draft", "in_precheck", "plan_ready", "priced", "quote_with_conditions"];
+
+/** 从整套 zones 里读 customers 区的准入漏斗。缺 customers 区 / 缺漏斗字段 → undefined；该世界无准入域
+ *  （Missing 形状）→ 原样返回 Missing（调用方画诚实空态）。 */
+export function readAdmissionFunnel(zones: Zone[]): AdmissionFunnel | Missing | undefined {
+  const c = zones.find((z) => z.zone === "customers");
+  if (!c) return undefined;
+  const f = (c.detail as D).admission_funnel;
+  if (isMissing(f)) return f;
+  if (f && typeof f === "object" && "by_status" in (f as object)) return f as AdmissionFunnel;
+  return undefined;
+}
+
+/** 准入块需要处理的件数（需补件 + 已驳回）——卡面告警数 / focus"准入卡点"计数同源。 */
+export function admissionActionable(f: AdmissionFunnel): number {
+  return (f.by_status.needs_more_info ?? 0) + (f.by_status.rejected ?? 0);
+}
+
+/** 准入块摘要三行（审批中 / 需补件 / 已驳回），全部现取漏斗计数、缺则 0（真·计数为 0，非缺数）。 */
+export function admissionSummary(f: AdmissionFunnel): SummaryLine[] {
+  const bs = f.by_status;
+  const inReview = _ADMISSION_IN_REVIEW.reduce((s, k) => s + (bs[k] ?? 0), 0);
+  const needsMore = bs.needs_more_info ?? 0;
+  const rejected = bs.rejected ?? 0;
+  return [
+    { label: "审批流转中", value: `${formatInt(inReview)} 件`, state: "real" },
+    { label: `需补件（${ADMISSION_STATUS_CN.needs_more_info}）`, value: `${formatInt(needsMore)} 件`, state: "real", tone: needsMore > 0 ? "neg" : undefined },
+    { label: `已驳回（${ADMISSION_STATUS_CN.rejected}）`, value: `${formatInt(rejected)} 件`, state: "real", tone: rejected > 0 ? "neg" : undefined },
+  ];
 }
 
 // ═══════════════════════════ 下钻队列（第二段）═══════════════════════════
@@ -565,8 +726,12 @@ function cashFocus(zones: Zone[]): FocusItem | null {
   };
 }
 
-function alertFocus(zones: Zone[]): FocusItem | null {
-  const pool = zones.filter((z) => z.zone !== "money" && z.zone !== "decisions" && z.alert_count > 0);
+// V24：告警池按角色首屏区收窄——只在"该角色摆在首屏的 zone 区"里挑最高告警区（钱/待拍板两区
+// 各有专属优先级，不进"其余区"池，避免重复计入）。manager 首屏 = 全七区，收窄后池 = 全区 −
+// {money,decisions}，与改前 byte-identical（现状不动的保证）。
+function alertFocus(zones: Zone[], role: Role): FocusItem | null {
+  const wallZones = roleWallZoneIds(role);
+  const pool = zones.filter((z) => wallZones.has(z.zone) && z.zone !== "money" && z.zone !== "decisions" && z.alert_count > 0);
   if (pool.length === 0) return null;
   const top = [...pool].sort((a, b) => b.alert_count - a.alert_count)[0];
   // 一句话取该区摘要首行（各区已按"最要紧"排首位，如供应商=最差交期、库存=盘点差异）——headline
@@ -582,10 +747,57 @@ function alertFocus(zones: Zone[]): FocusItem | null {
   };
 }
 
-/** 今日焦点条数据：固定三优先级依次现算，取满 3 条为止（三优先级至多各出 1 条，天然封顶，
- *  slice(0,3) 仅作显式兜底）；某优先级无数据跳过顺延；全部无数据 → 空数组（调用方须整条不渲染）。 */
-export function todaysFocus(zones: Zone[], role?: Role): FocusItem[] {
-  return [decisionsFocus(zones, role), cashFocus(zones), alertFocus(zones)]
+/** 准入卡点焦点（compliance/sales P1）：准入漏斗里 needs_more_info+rejected 件数 >0 → 一条焦点。
+ *  缺准入域（Missing/undefined）或零卡点 → null（本优先级无数据，跳过顺延）。 */
+function admissionFocus(zones: Zone[]): FocusItem | null {
+  const f = readAdmissionFunnel(zones);
+  if (!f || isMissing(f)) return null;
+  const n = admissionActionable(f);
+  if (n <= 0) return null;
+  return {
+    key: "focus-admission",
+    zone: "customers", // 下钻落 customers 区（准入漏斗数据家），其 ZoneContext 呈现完整漏斗
+    text: `${formatInt(n)} 件准入待补件 / 被驳回`,
+    source: "来自：客户区准入漏斗当前值（needs_more_info + rejected）",
+  };
+}
+
+// V24 角色化焦点源顺序（规格 §实现架构"今日焦点条按角色配置生成，各角色 P1/P2/P3 焦点源不同"）。
+// 每角色列出该角色**关心且首屏摆得出**的焦点源，按 P1→P3 排；todaysFocus 依次现算取满 3 条。
+// manager 保持 [decisions,cash,alert]（改前顺序，byte-identical）。焦点源只取该角色语境成立的：
+//   · decisions（待批/我组待批）：仅摆了 decisions 区的角色（能审批/有处置任务）。
+//   · cash（现金击穿）：仅 finance/manager（摆了钱区、且 _can_see_cost 见金额；其余角色钱区掩码不摆）。
+//   · alert（最高告警区）：告警池已按 roleWallZoneIds 收窄到该角色首屏区。
+//   · admission（准入卡点）：compliance/sales（准入是其主责，P1）。
+export type FocusSourceId = "decisions" | "cash" | "alert" | "admission";
+export const ROLE_FOCUS: Record<Role, FocusSourceId[]> = {
+  manager: ["decisions", "cash", "alert"],
+  ops: ["decisions", "alert"],
+  cs: ["decisions", "alert"],
+  procurement: ["decisions", "alert"],
+  finance: ["cash", "decisions", "alert"],
+  compliance: ["admission", "alert"],
+  sales: ["admission", "alert"],
+};
+
+function focusSource(id: FocusSourceId, zones: Zone[], role: Role): FocusItem | null {
+  switch (id) {
+    case "decisions":
+      return decisionsFocus(zones, role);
+    case "cash":
+      return cashFocus(zones);
+    case "alert":
+      return alertFocus(zones, role);
+    case "admission":
+      return admissionFocus(zones);
+  }
+}
+
+/** 今日焦点条数据：按角色配置的焦点源顺序（ROLE_FOCUS）依次现算，取满 3 条为止；某源无数据跳过
+ *  顺延；全部无数据 → 空数组（调用方须整条不渲染）。role 缺省（理论不发生，Role 全覆盖）退 manager 序。 */
+export function todaysFocus(zones: Zone[], role: Role = "manager"): FocusItem[] {
+  return (ROLE_FOCUS[role] ?? ROLE_FOCUS.manager)
+    .map((id) => focusSource(id, zones, role))
     .filter((x): x is FocusItem => x !== null)
     .slice(0, 3);
 }
