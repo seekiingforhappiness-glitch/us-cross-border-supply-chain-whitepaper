@@ -14,8 +14,10 @@ import {
 } from "../api";
 import Icon, { type IconName } from "../components/Icons";
 import StateHint from "../components/StateHint";
+import { roleLabel } from "../roleActors";
 import AiRuns from "./AiRuns";
-import { buildStories, KIND_CN, MODE_CN, SEV_CN, type Story, type StoryState } from "./aiFlowModel";
+import { OpenCoordForm } from "./ImpactPanel";
+import { buildStories, KIND_CN, MODE_CN, SEV_CN, sortStoriesForRole, type Story, type StoryState } from "./aiFlowModel";
 import { SEV_RANK } from "./severityRank";
 
 // 页面第二主角：AI 工作流「用户故事卡」流（V10 补记：从事件日志重构为用户视角）。同一风险/任务链的
@@ -397,7 +399,7 @@ function ThreadRow({
   );
 }
 
-function CollabPanel({ role, world, onOpenObject }: { role: Role; world?: World | null; onOpenObject: (r: ObjectRef) => void }) {
+function CollabPanel({ role, world, reloadSignal, onOpenObject }: { role: Role; world?: World | null; reloadSignal?: number; onOpenObject: (r: ObjectRef) => void }) {
   const [data, setData] = useState<CollaborationThreads | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -406,6 +408,7 @@ function CollabPanel({ role, world, onOpenObject }: { role: Role; world?: World 
   const [refresh, setRefresh] = useState(0);
   const softSeen = useRef(0);
 
+  // C·P1：协作流 tab 顶部发起协调成功 → reloadSignal 变 → 硬刷新列表让新线程就地可见（含 0 条→1 条）。
   useEffect(() => {
     let cancelled = false;
     const soft = refresh !== softSeen.current;
@@ -420,7 +423,7 @@ function CollabPanel({ role, world, onOpenObject }: { role: Role; world?: World 
     return () => {
       cancelled = true;
     };
-  }, [role, world, reload, refresh]);
+  }, [role, world, reload, refresh, reloadSignal]);
 
   if (err)
     return (
@@ -510,6 +513,7 @@ export default function AiWorkflow({
   const [err, setErr] = useState(false);
   const [reload, setReload] = useState(0); // 错误态重试计数（StateHint 重试按钮驱动）
   const [tab, setTab] = useState<Tab>("ai");
+  const [collabReload, setCollabReload] = useState(0); // C·P1：协作流 tab 顶部发起协调成功后刷新线程列表
 
   useEffect(() => {
     let cancelled = false;
@@ -528,6 +532,11 @@ export default function AiWorkflow({
   }, [role, asOf, world, reload]);
 
   const stories = useMemo(() => (data ? buildStories(data.items) : []), [data]);
+  // D·P1：按角色职责相关性稳定排序（相关规则族排前、其余在后，各组内保持时间序；manager/sales 不重排）。
+  // 只重排展示序、不隐藏任何条目；reordered=false（无相关条目/不重排角色）时不显"排前"提示，避免空承诺。
+  const { stories: sortedStories, reordered } = useMemo(() => sortStoriesForRole(stories, role), [stories, role]);
+  // 呼吸高亮跟真·最新（buildStories 已按 ts 降序，stories[0] 即最新）——重排后不随位置跑偏到旧卡。
+  const newestKey = stories[0]?.key;
 
   return (
     <div className="cp-flow">
@@ -547,13 +556,21 @@ export default function AiWorkflow({
         <AiRuns role={role} world={world} onOpenObject={onOpenObject} />
       ) : tab === "collab" ? (
         <div className="cp-collab-tab">
-          {/* 诚实横幅（V23② compliance 接入后更新，缘起李珊任务3+轮3合规陌生人）：催办/记回应/升级/达成/谈崩
-              可在下方线程卡直接完成；发起新协调线程也已进驾驶舱——在「影响分析」面板的「处置任务」区块点
-              「发起协调」（需任务上下文锚定）。协调权限组：运营/客服/采购/财务/合规；老板/销售视角只读。 */}
+          {/* 诚实横幅（C·P1 轮4 更新，缘起合规首屏三卡下钻到不了 ImpactPanel 发起入口的断路）：发起新
+              协调线程现在**本 tab 顶部**即可（下方"发起协调"，需锚一个处置任务号）；影响面板「处置任务」
+              区块的入口仍在（有预选锚更省事）。协调权限组：运营/客服/采购/财务/合规；老板/销售只读。 */}
           <div className="cp-collab-note">
-            <Icon name="chat" size={12} /> 催办、记回应、升级、达成/谈崩可直接在下方线程卡上完成；发起新协调线程请到「影响分析」面板的「处置任务」区块点「发起协调」（需协调角色：运营/客服/采购/财务/合规；其余角色只读）。
+            <Icon name="chat" size={12} /> 催办 / 记回应 / 升级 / 达成 / 谈崩在下方线程卡直接完成；发起新协调线程点下方「发起协调」（需锚一个处置任务号）。协调权限组：运营/客服/采购/财务/合规；老板/销售只读。
           </div>
-          <CollabPanel role={role} world={world} onOpenObject={onOpenObject} />
+          {/* C·P1：协作流 tab 顶部发起协调入口（无预选锚，输入任务号）——修复合规/其它协调角色从首屏
+              下钻到不了发起入口的断路。用本地 COORD_UI_ROLES 门控外层容器（与 OpenCoordForm 自门控同集），
+              非协调角色（老板/销售）整块不渲染，不留空边框盒。 */}
+          {COORD_UI_ROLES.includes(role) && (
+            <div className="cp-collab-initiate">
+              <OpenCoordForm role={role} onOpened={() => setCollabReload((n) => n + 1)} />
+            </div>
+          )}
+          <CollabPanel role={role} world={world} reloadSignal={collabReload} onOpenObject={onOpenObject} />
         </div>
       ) : err ? (
         <StateHint
@@ -573,8 +590,13 @@ export default function AiWorkflow({
         />
       ) : (
         <div className="cp-flow__list">
-          {stories.map((s, i) => (
-            <StoryCard key={s.key} story={s} latest={i === 0} onOpenObject={onOpenObject} />
+          {reordered && (
+            <div className="cp-flow__relnote" title="按当前角色职责域的规则族把'更可能是你的活'提前——全部条目仍完整展示，未隐藏任何内容">
+              <Icon name="spark" size={11} /> 已把与你（{roleLabel(role)}）职责相关的排前 · 全部条目仍完整展示
+            </div>
+          )}
+          {sortedStories.map((s) => (
+            <StoryCard key={s.key} story={s} latest={s.key === newestKey} onOpenObject={onOpenObject} />
           ))}
         </div>
       )}

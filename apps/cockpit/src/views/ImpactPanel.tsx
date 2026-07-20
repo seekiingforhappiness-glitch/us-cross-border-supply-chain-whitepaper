@@ -114,6 +114,7 @@ export function payRowStatus(r: PaymentImpactRow): { text: string; neg: boolean 
 export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { decision: PendingDecision; role: Role; onActed?: () => void; onSwitchRole?: (r: Role) => void }) {
   const [busy, setBusy] = useState<null | "approved" | "rejected">(null);
   const [err, setErr] = useState<string | null>(null);
+  const [lockHint, setLockHint] = useState(false); // G·P2：越权点击"按不动"按钮时的一次性提示
   // V22③ 审批理由必填：批准/驳回都必须先写一句为什么（王总"万把刀的处置点一下就落地，连为什么都不用写"）。
   // 单个理由框同时给两个按钮用——空值时两按钮都置灰。理由随请求走 comment，后端落 action_log 审计 +
   // 处置记忆批注（decision_note）；前端置灰只是体验预判，真正必填闸门在后端 /decisions（空→422 白话）。
@@ -144,14 +145,21 @@ export function DecisionButtons({ decision, role, onActed, onSwitchRole }: { dec
   if (!canDecide) {
     return (
       <div className="cp-decide">
+        {/* G·P2（轮4）：越权按钮"按不动"态视觉强化（is-locked 虚线灰）+ 保留可点，点击给一次性提示——
+            原来是原生 disabled，点了毫无反馈，用户不知道是没权限还是坏了。现有静态说明（StateHint）保留。 */}
         <div className="cp-decide__row">
-          <button className="cp-decide-btn cp-decide-btn--approve" disabled>
+          <button className="cp-decide-btn cp-decide-btn--approve is-locked" aria-disabled onClick={() => setLockHint(true)}>
             批准
           </button>
-          <button className="cp-decide-btn cp-decide-btn--reject" disabled>
+          <button className="cp-decide-btn cp-decide-btn--reject is-locked" aria-disabled onClick={() => setLockHint(true)}>
             驳回
           </button>
         </div>
+        {lockHint && (
+          <div className="cp-decide__lockhint" role="status">
+            按不动——审批权在「老板 manager」。你现在是{roleShort(role)}，只能看不能批{onSwitchRole ? "；点下方「切到老板角色」再拍板，或请老板来批。" : "，请老板来批。"}
+          </div>
+        )}
         <StateHint
           kind="no-permission"
           compact
@@ -240,6 +248,7 @@ function CloseRiskButton({
   const [quality, setQuality] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [lockHint, setLockHint] = useState(false); // G·P2：越权点击"关闭风险"时的一次性提示
   const canDecide = role === "ops";
 
   if (riskStatus && RISK_TERMINAL.has(riskStatus)) return null; // 已终态（resolved/escalated）：无按钮
@@ -247,9 +256,15 @@ function CloseRiskButton({
   if (!canDecide) {
     return (
       <div className="cp-decide">
-        <button className="cp-decide-btn" disabled>
+        {/* G·P2（轮4）：越权"关闭风险"按钮同款——is-locked 视觉强化 + 可点给一次性提示，静态说明保留。 */}
+        <button className="cp-decide-btn is-locked" aria-disabled onClick={() => setLockHint(true)}>
           关闭风险
         </button>
+        {lockHint && (
+          <div className="cp-decide__lockhint" role="status">
+            按不动——关闭风险是运营（ops）的活。你现在是{roleShort(role)}，只能看不能关{onSwitchRole ? "；点下方「切到运营角色」再关，或请运营来关。" : "，请运营来关。"}
+          </div>
+        )}
         <StateHint
           kind="no-permission"
           compact
@@ -363,8 +378,14 @@ function CloseRiskButton({
 // 与 CL1 语义一致：协调是某处置任务派生的对外往返）。owner 不在表单——后端缺省用发起人身份。
 const COORD_UI_ROLES: Role[] = ["ops", "cs", "procurement", "finance", "compliance"];
 
-function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role; onOpened?: () => void }) {
+// 发起协调表单。两种锚定态：
+//  · taskId 已给（影响面板"处置任务"区块）→ 锚定该任务，行为 byte-identical（原有入口不变）。
+//  · taskId 缺省（C·P1 协作流 tab 顶部无预选锚场景）→ 渲染任务号输入框（后端 openCoordination 仍要求
+//    task_id 非空且任务须存在，故必须锚一个任务——提供输入 + 白话说明"去哪找任务号"，不静默失败）。
+// export：C·P1 协作流 tab 复用同一组件（单一来源，同 DecisionButtons/ExportEvidenceButton 先例）。
+export function OpenCoordForm({ taskId, role, onOpened }: { taskId?: string; role: Role; onOpened?: () => void }) {
   const [open, setOpen] = useState(false);
+  const [taskInput, setTaskInput] = useState(""); // 无预选锚时用户输入的处置任务号（TSK-…）
   const [ct, setCt] = useState<CounterpartyType>("supplier");
   const [ref, setRef] = useState("");
   const [ask, setAsk] = useState("");
@@ -375,23 +396,25 @@ function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role;
 
   if (!COORD_UI_ROLES.includes(role)) return null; // 角色门控：非协调角色不渲染发起入口
 
-  const canSubmit = !busy && ref.trim() !== "" && ask.trim() !== "" && due !== "";
+  const anchorTask = (taskId ?? taskInput).trim(); // 预选锚优先；无则用输入框
+  const canSubmit = !busy && anchorTask !== "" && ref.trim() !== "" && ask.trim() !== "" && due !== "";
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
     setErr(null);
     try {
       const res = await openCoordination(
-        { task_id: taskId, counterparty_type: ct, counterparty_ref: ref.trim(), ask: ask.trim(), next_action_due: due },
+        { task_id: anchorTask, counterparty_type: ct, counterparty_ref: ref.trim(), ask: ask.trim(), next_action_due: due },
         role,
         actorForRole(role),
       );
-      setReceipt(`已发起协调线程 ${res.object_id ?? ""}——去右栏「协作流」tab 跟进 / 催办。`);
+      setReceipt(`已发起协调线程 ${res.object_id ?? ""}——在下方线程列表跟进 / 催办。`);
       setOpen(false);
       setRef("");
       setAsk("");
       setDue("");
-      onOpened?.(); // 可选通知父层；发起协调**不关面板**（不改本风险的处置态，成功回执需留在原地可见）
+      if (!taskId) setTaskInput(""); // 无预选锚模式：清空任务号输入，便于再发一条
+      onOpened?.(); // 可选通知父层（协作流 tab 据此软刷新列表让新线程就地可见）
     } catch (e) {
       setErr((e as Error).message); // 后端白话错误原文（无权 403 / task 不存在 / 枚举非法…），不吞不美化
     } finally {
@@ -406,7 +429,14 @@ function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role;
       </button>
       {open && (
         <div className="cp-coord-open__form">
-          <div className="cp-coord-open__hint">对外协调（追工厂改期 / 追货代改配 / 追客户拆单…），锚定本处置任务 <span className="num">{taskId}</span></div>
+          {taskId ? (
+            <div className="cp-coord-open__hint">对外协调（追工厂改期 / 追货代改配 / 追客户拆单…），锚定本处置任务 <span className="num">{taskId}</span></div>
+          ) : (
+            <>
+              <div className="cp-coord-open__hint">对外协调（追工厂改期 / 追货代改配 / 追客户拆单…）须锚定一个处置任务——填任务号（形如 <span className="num">TSK-0001</span>）。任务号可在右栏「AI 工作流」故事卡或各区队列里找到。</div>
+              <input className="cp-coord-open__ctrl" type="text" placeholder="处置任务号（TSK-…）" value={taskInput} onChange={(e) => setTaskInput(e.target.value)} />
+            </>
+          )}
           <label className="cp-coord-open__row">
             对手方类型
             <select value={ct} onChange={(e) => setCt(e.target.value as CounterpartyType)} className="cp-coord-open__ctrl">
@@ -445,11 +475,15 @@ function OpenCoordForm({ taskId, role, onOpened }: { taskId: string; role: Role;
 export function ExportEvidenceButton({ riskId, role }: { riskId: string; role: Role }) {
   const [busy, setBusy] = useState<null | "html" | "json">(null);
   const [err, setErr] = useState<string | null>(null);
+  // E·P2（轮4 林律"点导出 3 次无感知，后端 3 次 200"）：点击后除 busy 态外，成功/降级都给白话回执
+  // （原来 html 成功=新窗口静默打开、json 成功=浏览器下载静默完成、弹窗被拦=静默改下载——全无画面反馈）。
+  const [receipt, setReceipt] = useState<string | null>(null);
 
   const doExport = async (fmt: "html" | "json") => {
     if (busy) return;
     setBusy(fmt);
     setErr(null);
+    setReceipt(null); // 新一次导出：清掉上次回执，避免旧成功提示与本次混淆
     // html 版必须在用户手势的**同步栈内**先开空白窗（await 之后再 window.open 会被浏览器弹窗拦截器
     // 拦下——手势上下文过 await 即失效，浏览器实测确认），拿到窗口句柄后再异步把 Blob URL 导航进去。
     // 极端环境开不出窗（win=null，强拦截器）→ 退化为下载 .html 文件（内容同一份，不丢功能）。
@@ -459,6 +493,7 @@ export function ExportEvidenceButton({ riskId, role }: { riskId: string; role: R
       const url = URL.createObjectURL(blob);
       if (fmt === "html" && win) {
         win.location.href = url; // 新窗口载入自包含单文件（浏览器可直接打印为 PDF）
+        setReceipt(`已在新窗口打开证据包 evidence-${riskId}.html（可用浏览器打印为 PDF）。`);
       } else {
         const a = document.createElement("a");
         a.href = url;
@@ -466,6 +501,12 @@ export function ExportEvidenceButton({ riskId, role }: { riskId: string; role: R
         document.body.appendChild(a);
         a.click();
         a.remove();
+        // 弹窗被拦（html 想开窗却 win=null）→ 已自动降级下载，如实告知；json 本就走下载。
+        setReceipt(
+          fmt === "html"
+            ? `浏览器拦了新窗口——已改为下载 evidence-${riskId}.html（双击可用浏览器打开、打印为 PDF）。`
+            : `已下载 evidence-${riskId}.json（同一份数据、同一套角色脱敏）。`,
+        );
       }
       // Blob URL 延迟释放：新窗口/下载已拿到内容后回收（60s 足够，避免内存驻留）
       window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
@@ -497,6 +538,7 @@ export function ExportEvidenceButton({ riskId, role }: { riskId: string; role: R
           <Icon name="link" size={12} /> {busy === "json" ? "下载中…" : "下载 JSON"}
         </button>
       </div>
+      {receipt && <div className="cp-coord-open__ok">{receipt}</div>}
       {err && <div className="cp-coord-open__err">{err}</div>}
     </div>
   );

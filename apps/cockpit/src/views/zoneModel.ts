@@ -74,6 +74,15 @@ export function zoneShort(zone: ZoneId, role?: Role): string {
 //     （如非 manager 的 decisions 卡数字仍是全系统待批数，标题不谎称"只有我组的"——"我组"过滤在
 //     下钻队列的 chip 里，见 ZoneQueue"我组的"）。
 export type WallBlockId = ZoneId | "admission";
+/** 该块 headline 用哪个口径（V24② 标题×数据口径对齐）：
+ *  · undefined = 用该区默认 headline（headlineOf + z.headline_label）；
+ *  · "compliance" = 供应商合规口径（UFLPA 标记家数为主数字，交期达成率降副行）——仅 compliance
+ *    的供应商卡用；缺省供应商卡（ops 风向 / procurement 绩效 / manager）仍是交期达成率（那是绩效口径，
+ *    与其标题一致，不改）。
+ *  · "customs" = 清关卡点口径（未报关且在途的票数为主数字，准交率 OTD 降副行）——仅 compliance 的
+ *    "清关卡点"履约卡用；其余履约卡（ops 在途异常 / cs 履约准交 / sales 客户履约）标题本就与 OTD 相符，
+ *    仍用默认 OTD。缘由：标题"清关卡点"配大数字 96.9% 会被读成"清关通过率 96.9%"（其实是准交率），贴错标签。 */
+export type WallCaliber = "compliance" | "customs";
 export interface WallBlock {
   /** 区块 id：zone id（复用区卡）或 "admission"（准入组合块）。合法集见 VALID_BLOCK_IDS。 */
   id: WallBlockId;
@@ -84,9 +93,12 @@ export interface WallBlock {
   title: string;
   /** 默认下钻目标区（点卡进入的区队列）。zone 块 = 自身；admission 块 = customers（准入漏斗数据家）。 */
   drill: ZoneId;
+  /** headline 口径覆盖（V24② 标题×口径对齐；缺省=区默认口径）。 */
+  caliber?: WallCaliber;
 }
 
-const zb = (zone: ZoneId, title: string): WallBlock => ({ id: zone, kind: "zone", zone, title, drill: zone });
+const zb = (zone: ZoneId, title: string, caliber?: WallCaliber): WallBlock =>
+  ({ id: zone, kind: "zone", zone, title, drill: zone, ...(caliber ? { caliber } : {}) });
 const adm = (title: string): WallBlock => ({ id: "admission", kind: "admission", title, drill: "customers" });
 
 // 七角色首屏区块序（规格 §七角色职责模型 逐条落实）。区块序 = 该角色 10 秒扫屏的从上到下顺序。
@@ -138,8 +150,8 @@ export const ROLE_WALL: Record<Role, WallBlock[]> = {
   // /库存/客户敞口。规格 compliance④"合规协调线程"→右栏协作流、⑤"证据导出"→对象卡/证据卡入口。
   compliance: [
     adm("准入案 · 卡点步骤"),
-    zb("suppliers", "供应商合规 · UFLPA / 资质"),
-    zb("fulfillment", "清关卡点"),
+    zb("suppliers", "供应商合规 · UFLPA / 资质", "compliance"),
+    zb("fulfillment", "清关卡点", "customs"),
   ],
   // 销售：准入发起 + 客户成单面（数据面最窄，页面最简洁是正确形态——规格明示）。①我的准入案进度
   // （卡在哪步/缺什么）②客户履约状态。规格 sales③"被驳回/需补件警示"= 准入块内的 needs_more_info/
@@ -187,6 +199,96 @@ export function headlineOf(z: Zone): { text: string; state: ValState } {
   if (typeof v === "string") return { text: v, state: "real" }; // AI 区"N 检 / M 提案"
   if (RATE_ZONES.has(z.zone)) return { text: formatPct(v), state: "real" };
   return { text: formatInt(v), state: "real" };
+}
+
+// ═══════════════════════════ 角色化 headline 口径覆盖（V24②，标题×数据口径对齐）═══════════════════════════
+// 缘起（轮4 陌生人复测根因）：ROLE_WALL 只换了区块标题没换数据口径——如"我组处置"卡标题写"我组"、
+// 大数字却是**全司**待批数（老周实测卡显 21，其实我组 0）；"供应商合规·UFLPA/资质"卡标题写合规、
+// 大数字却是**交期达成率 82.2%**（贴错标签）。roleHeadline 按区块 id/caliber + 角色返回口径对齐的
+// headline（含标签 + 副行），返回 null → 用区默认 headline（headlineOf）。全部现取自已下发载荷字段，
+// 零新端点、掩码/缺数如实（不填 0 冒充）。
+export interface RoleHeadline {
+  text: string;
+  state: ValState;
+  label: string; // hllabel 覆盖（口径诚实的白话标签）
+  /** headline 下的口径副行（如"全司 21 条候老板审批" / 资质异常家数）——如实并存，点破两口径。 */
+  sublines?: { text: string; title?: string; tone?: "neg" }[];
+}
+
+/** 我组待批计数：pending_proposals 里 assignee_role===role 的行数（前端现算，同 decisionsFocus 口径）。
+ *  诚实门：列表被后端 cap(50) 截断（pend.length < pending_total）时，被截样本不能反推准确"我组数"——
+ *  返回 capped=true，调用方退回全司口径大数字、不谎报我组数。 */
+export function decisionsTeamCount(z: Zone, role: Role): { mine: number; total: number; capped: boolean } {
+  const d = z.detail as D;
+  const pend = (d.pending_proposals as { assignee_role: string | null }[]) ?? [];
+  const total = typeof d.pending_total === "number" ? (d.pending_total as number) : pend.length;
+  return { mine: pend.filter((p) => p.assignee_role === role).length, total, capped: pend.length < total };
+}
+
+/** A2：合规供应商卡 headline——主数字=UFLPA 标记家数（合规首要信号），资质异常/交期降副行。
+ *  数据源=compliance_dimension（K 批载荷，仅 compliance/manager 带此键；全库现查计数非规则计数，
+ *  故 sim 零阳性显 0 是"查过 N 家 0 标记"的诚实空态、非"未接入"——与 R22/R23 规则未接入不同，见 B 项）。
+ *  缺合规列世界 available:false → headline 无数据 + reason。 */
+function complianceSupplierHeadline(z: Zone): RoleHeadline {
+  const comp = (z.detail as D).compliance_dimension as SupplierComplianceDimension | undefined;
+  if (!comp || !comp.available) {
+    return { text: "无数据", state: "missing", label: "供应商合规（本世界缺合规列）" };
+  }
+  const uflpa = comp.uflpa_flagged_total ?? 0;
+  const qual = comp.qual_abnormal_total ?? 0;
+  const suppliers = comp.suppliers_total ?? 0;
+  const sublines: { text: string; title?: string; tone?: "neg" }[] = [
+    { text: `资质异常 ${formatInt(qual)} 家`, tone: qual > 0 ? "neg" : undefined, title: "工厂审计 not_started/pending/failed 或合规文件 missing/partial/rejected（未知/空不臆断）" },
+  ];
+  if (uflpa === 0) {
+    // 零阳性诚实空态（全库查过、0 标记）——白话点破"非未检"，与 sim 规则未接入区分。note 由后端现取。
+    sublines.push({ text: comp.note ?? `全库 ${formatInt(suppliers)} 家现查 0 家 UFLPA 标记（已查·非未检）`, title: "UFLPA 旗标来自 suppliers 表现查（全库计数），0 家=查过没标记，不是没查" });
+  }
+  return {
+    text: formatInt(uflpa),
+    state: "real",
+    label: `UFLPA 标记供应商（全库 ${formatInt(suppliers)} 家）`,
+    sublines,
+  };
+}
+
+/** 角色化 headline 口径覆盖入口：按区块 id/caliber + 角色决定是否覆盖区默认 headline。返回 null=用默认。
+ *  b 只需 {id, caliber}（manager 合成块 caliber 恒 undefined，decisions 分支 role!=="manager" 天然跳过
+ *  ⇒ manager 卡走默认 headline、byte-identical）。 */
+export function roleHeadline(b: { id: WallBlockId; caliber?: WallCaliber }, z: Zone, role: Role): RoleHeadline | null {
+  // A1：非 manager 的"我组处置"决策卡——大数字改我组计数，副行如实并存全司待批数。
+  if (b.id === "decisions" && role !== "manager") {
+    const { mine, total, capped } = decisionsTeamCount(z, role);
+    if (capped) {
+      // 列表超 50 被后端截断，无法准确拆"我组"——诚实退回全司大数字，标签点明暂无法拆分（不谎报）。
+      return { text: formatInt(total), state: "real", label: "全司待批（>50 未截全 · 暂无法拆我组）" };
+    }
+    return {
+      text: formatInt(mine),
+      state: "real",
+      label: "我组待批提案",
+      sublines: [{ text: `全司 ${formatInt(total)} 条候老板审批`, title: "全司=全部待批提案（审批权在老板 manager）；大数字只数指派给你组的那些" }],
+    };
+  }
+  // A2：合规供应商卡——交期达成率贴错标签，改合规口径（UFLPA 标记家数）。
+  if (b.id === "suppliers" && b.caliber === "compliance") {
+    return complianceSupplierHeadline(z);
+  }
+  // A 自查：合规"清关卡点"履约卡——准交率 96.9% 贴错标签（会读成"清关通过率"），改清关卡点票数。
+  if (b.id === "fulfillment" && b.caliber === "customs") {
+    const c = (z.detail as D).customs_blocked as { value: number } | undefined;
+    if (!c || typeof c.value !== "number") {
+      return { text: "无数据", state: "missing", label: "清关卡点（缺 customs_blocked）" };
+    }
+    const otd = headlineOf(z); // 准交率 OTD（原 headline）降副行——仍在下方"在途延误/历史延误"摘要可见
+    return {
+      text: formatInt(c.value),
+      state: "real",
+      label: "清关卡点票（未报关且在途）",
+      sublines: [{ text: `准交率 OTD ${otd.text}`, title: "全司准交率（到达行 actual≤promised 占比）——本卡次要口径，主数字是清关卡点票数" }],
+    };
+  }
+  return null;
 }
 
 // ═══════════════════════════ 摘要行（每区 2-3 行）═══════════════════════════

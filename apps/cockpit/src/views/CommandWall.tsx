@@ -20,6 +20,7 @@ import {
   headlineOf,
   readAdmissionFunnel,
   ROLE_WALL,
+  roleHeadline,
   summaryLines,
   todaysFocus,
   ZONE_ICON,
@@ -27,6 +28,8 @@ import {
   type AdmissionFunnel,
   type FocusItem,
   type SummaryLine,
+  type WallBlockId,
+  type WallCaliber,
 } from "./zoneModel";
 
 // 角色化指挥墙（V24；V10 方案 C 首屏中央的角色化重排）——体征带的"放大态"（顶部体征带已移除）。
@@ -53,8 +56,10 @@ function sortZones(zones: Zone[]): Zone[] {
 }
 
 // 首屏渲染项（V24）：zone 区卡（复用现有渲染）或准入组合块。由 ROLE_WALL[role] 解析而来。
+// V24②：zone 项额外带 id/caliber（供 roleHeadline 做标题×口径对齐）+ teamDecisions（非 manager 的
+// "我组处置"卡，下钻默认选"我组的"筛选，F·P2）。manager 合成项 caliber 恒 undefined、teamDecisions=false。
 type WallItem =
-  | { kind: "zone"; zone: Zone; title: string; drill: ZoneId }
+  | { kind: "zone"; zone: Zone; id: WallBlockId; caliber?: WallCaliber; title: string; drill: ZoneId; teamDecisions: boolean }
   | { kind: "admission"; funnel: AdmissionFunnel | Missing | undefined; title: string; drill: ZoneId };
 
 // 把 ROLE_WALL[role] 配置解析成有序渲染项。
@@ -64,7 +69,9 @@ type WallItem =
 //    首位）；zone 块在载荷里找不到对应区（理论不发生，vitals 恒下发七区）则如实跳过，不占空位。
 function resolveWall(role: Role, zones: Zone[]): WallItem[] {
   if (role === "manager") {
-    return sortZones(zones).map((z) => ({ kind: "zone" as const, zone: z, title: zoneShort(z.zone, role), drill: z.zone }));
+    // manager 合成项：id=z.zone、caliber=undefined、teamDecisions=false ⇒ roleHeadline 全返 null、
+    // 下钻不带 mine ⇒ 与改前 byte-identical。
+    return sortZones(zones).map((z) => ({ kind: "zone" as const, zone: z, id: z.zone, title: zoneShort(z.zone, role), drill: z.zone, teamDecisions: false }));
   }
   const items: WallItem[] = [];
   for (const b of ROLE_WALL[role]) {
@@ -72,7 +79,8 @@ function resolveWall(role: Role, zones: Zone[]): WallItem[] {
       items.push({ kind: "admission", funnel: readAdmissionFunnel(zones), title: b.title, drill: b.drill });
     } else if (b.zone) {
       const z = zones.find((zz) => zz.zone === b.zone);
-      if (z) items.push({ kind: "zone", zone: z, title: b.title, drill: b.drill });
+      // F·P2：非 manager 的决策卡即"我组处置"卡——点它进队列默认选"我组的"（teamDecisions=true）。
+      if (z) items.push({ kind: "zone", zone: z, id: b.id, caliber: b.caliber, title: b.title, drill: b.drill, teamDecisions: b.id === "decisions" });
     }
   }
   return items;
@@ -280,7 +288,8 @@ interface Props {
   role: Role; // V22 任务1：今日焦点条"你组 M 条"自队待批联动需当前角色（manager 不显）
   provenance?: Record<ZoneId, ZoneProvenance>; // U2 溯源信封（App 恒带 provenance=1 拉取）
   gating?: GovernanceGating | null; // U3 AI 信任档（App 取一次；null=加载中/失败）
-  onZone: (z: ZoneId) => void;
+  // F·P2：从"我组处置"卡进入队列默认选"我组的"——opts.mine 透传给 App→ZoneQueue 的 defaultMine。
+  onZone: (z: ZoneId, opts?: { mine?: boolean }) => void;
   onMap: () => void;
 }
 
@@ -298,7 +307,8 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
   const headTitle = isManager ? "七区指挥墙" : `${roleLabel(role)} · 首屏`;
   const headMeta = isManager
     ? "告警区自动排前 · 点卡下钻工作队列 · 指标可溯源"
-    : "按你的职责排布 · 点卡下钻 · 未摆出的区经搜索 / 对象卡仍全量可达";
+    // H·P3（文案诚实）：驾驶舱无全局搜索——原"经搜索"指向不存在的入口，改"经下钻 / 对象卡"（真路径）。
+    : "按你的职责排布 · 点卡下钻 · 未摆出的区经下钻 / 对象卡仍全量可达";
 
   // ── 准入组合块卡（V24，sales/compliance）：复用 wall-card 骨架，数据取自 customers 区 admission_funnel。
   //    缺准入域（模拟世界无 admission_cases 表）→ headline"无数据" + reason 副行，诚实空态不填 0。
@@ -342,9 +352,13 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
   };
 
   // ── zone 区卡（复用现有渲染，抽成内部函数）：name 改为角色化 title、点击下钻改为配置的 drill 目标。
-  //    manager 传入 title=zoneShort(z.zone,role)、drill=z.zone ⇒ 与改前 byte-identical。
-  const renderZoneCard = (z: Zone, title: string, drill: ZoneId): ReactNode => {
-            const hl = headlineOf(z);
+  //    manager 传入 title=zoneShort(z.zone,role)、drill=z.zone、caliber=undefined ⇒ 与改前 byte-identical。
+  //    V24②：headline 经 roleHeadline 做标题×口径对齐（null=区默认口径）；F·P2 teamDecisions→下钻带 mine。
+  const renderZoneCard = (item: Extract<WallItem, { kind: "zone" }>): ReactNode => {
+            const { zone: z, id, caliber, title, drill, teamDecisions } = item;
+            const rh = roleHeadline({ id, caliber }, z, role); // 角色化口径覆盖（A1/A2）；null=用区默认
+            const hl = rh ? { text: rh.text, state: rh.state } : headlineOf(z);
+            const hllabel = rh ? rh.label : z.headline_label;
             const nodata = hl.state === "missing"; // 只对真·无数据降饱和；掩码是权限态，显锁不降卡
             const trend = trendView(z);
             const alerted = z.alert_count > 0;
@@ -355,8 +369,8 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                 key={z.zone}
                 role="listitem"
                 className={`cp-wall-card cp-wall-card--${z.zone} ${alerted ? "is-alerted" : ""} ${nodata ? "is-nodata" : ""}`}
-                onClick={() => onZone(drill)}
-                title={z.headline_reason || `${z.headline_label} · 点击下钻`}
+                onClick={() => onZone(drill, teamDecisions ? { mine: true } : undefined)}
+                title={z.headline_reason || `${hllabel} · 点击下钻`}
               >
                 {alerted && <span className={`cp-wall-card__alert ${z.alert_count > 20 ? "" : "is-amber"}`}>{z.alert_count > 99 ? "99+" : z.alert_count}</span>}
 
@@ -407,15 +421,24 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
                     </span>
                   )}
                 </div>
+                {/* V24② 角色化口径副行（A1 全司待批 / A2 资质异常等）：headline 换成我组/合规口径后，
+                    副行把另一口径如实并存点破（"全司 N 条候老板审批"），不藏也不冒充。 */}
+                {rh?.sublines?.map((s, i) => (
+                  <div key={`rh-${i}`} className={`cp-wall-card__subnote ${s.tone === "neg" ? "is-neg" : ""}`} title={s.title}>
+                    {s.text}
+                  </div>
+                ))}
                 {/* 待拍板卡消歧（P2）：大数字=待批提案数，右上角徽章另有"超时/升级"告警数，两个数字贴太近
-                    易被读成一个——大数字下补一行点明徽章口径（数据用已有 alert_count；为 0 不显=诚实空态）。 */}
+                    易被读成一个——大数字下补一行点明徽章口径（数据用已有 alert_count；为 0 不显=诚实空态）。
+                    V24② 口径标注：非 manager 的"我组处置"卡里，超时/升级仍是**全司**口径（后端未按角色拆），
+                    故写"全司超时/升级"；manager 保持"其中超时/升级"（byte-identical）。 */}
                 {z.zone === "decisions" && z.alert_count > 0 && (
-                  <div className="cp-wall-card__subnote" title="超时/升级告警数=超期任务+升级件（右上角徽章即此数）；这是另一口径的计数，别把右上角徽章读成待批提案数">
-                    其中超时/升级 {z.alert_count}
+                  <div className="cp-wall-card__subnote" title="超时/升级告警数=超期任务+升级件（右上角徽章即此数）；这是另一口径的计数（当前为全司口径，未按角色拆），别把右上角徽章读成待批提案数">
+                    {role === "manager" ? "其中" : "全司"}超时/升级 {z.alert_count}
                   </div>
                 )}
                 <div className="cp-wall-card__hllabel">
-                  {z.headline_label}
+                  {hllabel}
                   {/* 回放态诚实标注：headline_as_of 仅回放时下发。current=该指标无时点历史→显当前值（不造假），
                       replayed=真按时点重算。存量类的小灰标是本任务"诚实边界"的画面兑现。 */}
                   {z.headline_as_of === "current" && (
@@ -501,7 +524,7 @@ export default function CommandWall({ zones, role, provenance, gating, onZone, o
           {items.map((it) =>
             it.kind === "admission"
               ? renderAdmissionCard(it.funnel, it.title, it.drill)
-              : renderZoneCard(it.zone, it.title, it.drill),
+              : renderZoneCard(it),
           )}
         </div>
       )}

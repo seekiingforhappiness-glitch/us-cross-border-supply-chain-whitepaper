@@ -330,13 +330,17 @@ function CustomersCtx({ d }: { d: D }) {
   );
 }
 
-function SuppliersCtx({ d }: { d: D }) {
+function SuppliersCtx({ d, worldIsSim }: { d: D; worldIsSim?: boolean }) {
   const defect = d.defect_top;
   const r14 = d.single_source_r14 as { value: number };
   const recon = d.recon_diff_r7_r13 as { open_risks: number; amount_usd: number | string };
   // V23① R22/R23（可选键：旧载荷/缺列世界无此键时不渲染，不编造 0）
   const r22 = d.perf_degradation_r22 as { open_risks: number; amount_usd: number | string } | undefined;
   const r23 = d.qual_expiry_r23 as { open_risks: number } | undefined;
+  // B·P0（轮4）：R22/R23 规则**未接入模拟世界**（sim 检测器逐规则手工镜像非低成本，STATUS 挂账）——
+  // 后端 SQL 在 sim 返回 0 行，卡面照显"0 家/0 证"会被读成"检测过没发现"（其实是没跑）。sim 世界改
+  // 显"未接入"白话；验证世界照常显数。判定依据=世界标识（App.world；R22/R23 与 world=sim 严格相关）。
+  const notWired = !!worldIsSim;
   return (
     <>
       <Card title="质量缺陷率 Top（defect ppm）">
@@ -372,11 +376,21 @@ function SuppliersCtx({ d }: { d: D }) {
         <Metric label="单一供应商依赖（R14）" value={formatInt(r14.value)} tone={r14.value > 0 ? "neg" : undefined} />
         <Metric label="发票对账差异（R7-R13）" value={`${recon.open_risks} 起`} tone={recon.open_risks > 0 ? "neg" : undefined} />
         <Metric label="对账差异金额" value={formatUsd(recon.amount_usd)} />
+        {/* R22/R23：sim 世界未接入（notWired）→ 显"未接入"白话（非 0，避免读成"检测过没发现"）；
+            验证世界照常显数。载荷缺键（旧库/缺列世界）仍不渲染（不编造）。 */}
         {r22 && (
-          <Metric label="供应商绩效劣化（R22）" value={`${r22.open_risks} 家 · ${formatUsd(r22.amount_usd)}`} tone={r22.open_risks > 0 ? "neg" : undefined} />
+          <Metric
+            label="供应商绩效劣化（R22）"
+            value={notWired ? "未接入（暂只在验证世界运行）" : `${r22.open_risks} 家 · ${formatUsd(r22.amount_usd)}`}
+            tone={!notWired && r22.open_risks > 0 ? "neg" : undefined}
+          />
         )}
         {r23 && (
-          <Metric label="资质过期预警（R23）" value={`${r23.open_risks} 证`} tone={r23.open_risks > 0 ? "neg" : undefined} />
+          <Metric
+            label="资质过期预警（R23）"
+            value={notWired ? "未接入（暂只在验证世界运行）" : `${r23.open_risks} 证`}
+            tone={!notWired && r23.open_risks > 0 ? "neg" : undefined}
+          />
         )}
       </Card>
     </>
@@ -425,7 +439,8 @@ function DecisionsCtx({ d }: { d: D }) {
   );
 }
 
-const CTX: Record<Zone["zone"], (p: { d: D }) => ReactNode> = {
+// worldIsSim 只有 SuppliersCtx 消费（B·P0 R22/R23 未接入态）；其余组件忽略该可选入参。
+const CTX: Record<Zone["zone"], (p: { d: D; worldIsSim?: boolean }) => ReactNode> = {
   money: MoneyCtx,
   fulfillment: FulfillmentCtx,
   ai: AiCtx,
@@ -435,11 +450,11 @@ const CTX: Record<Zone["zone"], (p: { d: D }) => ReactNode> = {
   decisions: DecisionsCtx,
 };
 
-export default function ZoneContext({ zone }: { zone: Zone }) {
+export default function ZoneContext({ zone, worldIsSim }: { zone: Zone; worldIsSim?: boolean }) {
   const C = CTX[zone.zone];
   return (
     <div className="cp-context-grid">
-      <C d={zone.detail as D} />
+      <C d={zone.detail as D} worldIsSim={worldIsSim} />
     </div>
   );
 }

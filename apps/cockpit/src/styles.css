@@ -559,6 +559,19 @@ body {
   flex-direction: column;
   gap: 8px;
 }
+/* D·P1 feed 角色相关性排序说明条（"与你职责相关的排前"）——克制的小灰条，随列表滚动、不占顶栏。 */
+.cp-flow__relnote {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--bg-1);
+}
 /* @keyframes slidein / breathe：原 cp-flow-card（事件日志卡）已被 cp-story（V10 用户故事卡）
    取代，但两组 keyframes 与 cp-flow-card__sim 徽标仍被 cp-story 系列复用，故保留。 */
 @keyframes slidein {
@@ -1670,6 +1683,11 @@ body {
   margin-top: 3px;
   letter-spacing: 0.02em;
 }
+/* V24② 角色化口径副行的告警变体（如合规卡"资质异常 N 家"N>0）——比默认 amber 更重的红。
+   manager 墙的副行从不带 is-neg，故此规则对 manager 画面零影响（byte-identical 保持）。 */
+.cp-wall-card__subnote.is-neg {
+  color: var(--sev-red);
+}
 .cp-wall-card__sum {
   margin-top: 11px;
   padding-top: 9px;
@@ -1939,6 +1957,38 @@ body {
 .cp-decide-btn--reject:not(:disabled):hover {
   background: color-mix(in srgb, var(--sev-red) 15%, var(--bg-3));
   border-color: var(--sev-red);
+}
+/* G·P2（轮4 越权按钮反馈）：视觉强化"按不动"态 —— 虚线边 + 中性灰（盖掉 approve/reject 的绿/红上色），
+   但保留 DOM 可点（不用原生 disabled，否则收不到 click）以在点击时给一次性提示。 */
+.cp-decide-btn.is-locked,
+.cp-decide-btn.is-locked:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-style: dashed;
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+  background: var(--bg-3);
+}
+.cp-decide__lockhint {
+  margin-top: 7px;
+  padding: 6px 9px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sev-amber-dim);
+  background: color-mix(in srgb, var(--sev-amber) 8%, var(--bg-2));
+  color: var(--sev-amber);
+  font-size: 11px;
+  line-height: 1.5;
+  animation: cp-lockshake 0.28s ease;
+}
+@keyframes cp-lockshake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cp-decide__lockhint {
+    animation: none;
+  }
 }
 .cp-decide__hint {
   display: flex;
@@ -2984,6 +3034,12 @@ body {
   font-size: 10.5px;
   color: var(--ink-2);
   background: var(--bg-2);
+}
+/* C·P1 协作流 tab 顶部"发起协调"入口容器（无预选锚场景）——薄内边距，与下方线程列表分隔。 */
+.cp-collab-initiate {
+  flex: none;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--line);
 }
 .cp-collab-live {
   flex: 1;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchCustomsQueue, fetchVitals, formatInt, type CustomsQueue, type Role, type Zone, type ZoneId } from "../api";
+import { fetchCustomsQueue, fetchVitals, formatInt, type CustomsQueue, type Role, type World, type Zone, type ZoneId } from "../api";
 import { roleLabel } from "../roleActors";
 import Icon from "../components/Icons";
 import WorkQueue from "./WorkQueue";
@@ -59,19 +59,23 @@ interface Props {
   zone: Zone;
   role: Role;
   asOf: string | null;
+  world?: World; // B·P0：sim 世界供应商区 R22/R23 显"未接入"（传给 ZoneContext 判定）
+  defaultMine?: boolean; // F·P2：从"我组处置"卡进入→默认选"我组的"（仅 decisions+非 manager 生效）
+  entrySeq?: number; // F·P2：每次进区自增——effect 据此把筛选复位到 defaultMine（区分"进区"与"区内操作"）
   onBack: () => void;
   onMap?: () => void;
   onDrill: (t: DrillTarget, key: string) => void;
   activeKey: string | null;
 }
 
-export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, activeKey }: Props) {
+export default function ZoneQueue({ zone, role, asOf, world, defaultMine, entrySeq, onBack, onMap, onDrill, activeKey }: Props) {
   // 待批提案队列"我组的"筛选（V22 任务1；缘起：财务陌生人"待批队列里自己的活要靠运气翻到"）。
   // 只对 decisions 区、且非 manager（老板本就是收件人全集，"我组的"=全部，冗余不显）。切"我组的"→
   // 带 assignee_role=当前角色重取一份 vitals，仅取其 decisions 区覆盖显示；**不污染** App 共享 vitals
   // （指挥墙墙卡仍是全集，权限/掩码全由后端按 X-Role 同源，前端只透传角色）。后端非法值 422、缺省不筛。
   const canFilter = zone.zone === "decisions" && role !== "manager";
-  const [mineOnly, setMineOnly] = useState(false);
+  // F·P2：初始态即取 defaultMine（从"我组处置"卡进入=true；其它入口/manager=false），避免"全部→我组的"闪切。
+  const [mineOnly, setMineOnly] = useState(() => canFilter && !!defaultMine);
   const [mineZone, setMineZone] = useState<Zone | null>(null);
   const [mineLoading, setMineLoading] = useState(false);
   const [mineErr, setMineErr] = useState(false);
@@ -90,6 +94,13 @@ export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, ac
   useEffect(() => {
     if (!canFilter) setMineOnly(false);
   }, [canFilter, role]);
+
+  // F·P2：每次"进区"（entrySeq 变）把筛选复位到 defaultMine——从"我组处置"卡进=我组的、其它入口=全部。
+  // 区内操作（审批刷新/软重取）不改 entrySeq，故不冲掉用户在区内手动切的筛选态。
+  useEffect(() => {
+    setMineOnly(canFilter && !!defaultMine);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entrySeq]);
 
   // 离开供应商区 / 换角色 → 复位到"按交期"（缺省口径），不残留排序态。
   useEffect(() => {
@@ -264,7 +275,7 @@ export default function ZoneQueue({ zone, role, asOf, onBack, onMap, onDrill, ac
       onDrill={onDrill}
       activeKey={activeKey}
       emptyHint={emptyHint}
-      context={<ZoneContext zone={zone} />}
+      context={<ZoneContext zone={zone} worldIsSim={world === "sim"} />}
     />
   );
 }

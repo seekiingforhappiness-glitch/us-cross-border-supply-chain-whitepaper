@@ -12,10 +12,11 @@
 //
 // （esbuild 是 vite 既有间接依赖，非新增；--format=cjs 同 StateHint 冒烟避免 ESM 动态 require 坑。）
 
-import type { Role, ZoneId } from "../api";
+import type { Role, Zone, ZoneId } from "../api";
 import { ROLES } from "../roleActors";
 import {
   FIXED_ORDER_IDS,
+  roleHeadline,
   ROLE_FOCUS,
   ROLE_WALL,
   roleWallZoneIds,
@@ -108,6 +109,67 @@ for (const role of ROLE_IDS) {
     const zoneBlockCount = ROLE_WALL[role].filter((b) => b.kind === "zone").length;
     check(`${role}：roleWallZoneIds 数量 = 该角色 zone 块数`, zoneIds.size === zoneBlockCount);
   }
+}
+
+// ── 7. V24② caliber 口径覆盖配置：全表恰两处（compliance 的 suppliers=合规 / fulfillment=清关），别处无 ──
+{
+  const calibered: { role: Role; id: WallBlockId; caliber?: string }[] = [];
+  for (const role of ROLE_IDS) for (const b of ROLE_WALL[role]) if (b.caliber) calibered.push({ role, id: b.id, caliber: b.caliber });
+  check("caliber 覆盖恰 2 处（不误伤其它区卡）", calibered.length === 2);
+  check("全部 caliber 都在 compliance 角色下", calibered.every((c) => c.role === "compliance"));
+  const supC = calibered.find((c) => c.id === "suppliers");
+  const fulC = calibered.find((c) => c.id === "fulfillment");
+  check("compliance 供应商块 caliber=compliance", supC?.caliber === "compliance");
+  check("compliance 清关卡点（fulfillment）块 caliber=customs", fulC?.caliber === "customs");
+  // 采购/ops 的供应商卡、cs/sales 的履约卡不带 caliber（headline 仍是各自默认口径，与其标题相符）
+  for (const role of ["procurement", "ops"] as Role[]) {
+    const sup = ROLE_WALL[role].find((b) => b.id === "suppliers");
+    check(`${role} 供应商块无 caliber（保持绩效/交期口径）`, sup !== undefined && sup.caliber === undefined);
+  }
+  for (const role of ["cs", "sales"] as Role[]) {
+    const ful = ROLE_WALL[role].find((b) => b.id === "fulfillment");
+    check(`${role} 履约块无 caliber（履约准交/客户履约标题本就与 OTD 相符）`, ful !== undefined && ful.caliber === undefined);
+  }
+}
+
+// ── 8. roleHeadline 行为（A1 我组计数 / A2 合规口径 / manager byte-identical 返 null）───────────────
+{
+  const zDecisions = (pend: { assignee_role: string | null }[], total: number): Zone => ({
+    zone: "decisions", headline_label: "待批提案", headline_value: total, trend: null,
+    alert_count: 0, detail: { pending_proposals: pend, pending_total: total },
+  });
+  // A1：非 manager 的 decisions 卡 → 我组计数 + 全司副行；manager → null（走默认，byte-identical）
+  const pend3 = [{ assignee_role: "procurement" }, { assignee_role: "procurement" }, { assignee_role: "ops" }];
+  const rhProc = roleHeadline({ id: "decisions" }, zDecisions(pend3, 3), "procurement");
+  check("A1 procurement 我组待批=2（现算）", rhProc?.text === "2" && rhProc?.label === "我组待批提案");
+  check("A1 procurement 副行如实并存全司 3", (rhProc?.sublines?.[0]?.text ?? "").includes("全司 3 条"));
+  check("A1 manager 的 decisions 卡不覆盖（返 null=区默认 byte-identical）", roleHeadline({ id: "decisions" }, zDecisions(pend3, 3), "manager") === null);
+  // A1 诚实门：列表被 cap 截断（pend.length < total）→ 退回全司大数字、不谎报我组
+  const rhCapped = roleHeadline({ id: "decisions" }, zDecisions(pend3, 60), "finance");
+  check("A1 截断诚实门：退回全司 60、标签点明暂无法拆", rhCapped?.text === "60" && (rhCapped?.label ?? "").includes("全司待批"));
+
+  // A2：合规供应商卡 caliber → UFLPA 标记家数为主数字；无 caliber 的供应商卡返 null（走默认交期口径）
+  const zSup = (comp: unknown): Zone => ({
+    zone: "suppliers", headline_label: "交期达成率", headline_value: 0.822, trend: null,
+    alert_count: 0, detail: { compliance_dimension: comp },
+  });
+  const compAvail = { available: true, uflpa_flagged_total: 2, qual_abnormal_total: 1, suppliers_total: 10 };
+  const rhComp = roleHeadline({ id: "suppliers", caliber: "compliance" }, zSup(compAvail), "compliance");
+  check("A2 合规卡主数字=UFLPA 标记家数 2", rhComp?.text === "2" && (rhComp?.label ?? "").includes("UFLPA"));
+  check("A2 合规卡副行含资质异常家数", (rhComp?.sublines?.[0]?.text ?? "").includes("资质异常 1 家"));
+  const rhZeroUflpa = roleHeadline({ id: "suppliers", caliber: "compliance" }, zSup({ available: true, uflpa_flagged_total: 0, qual_abnormal_total: 0, suppliers_total: 25 }), "compliance");
+  check("A2 零阳性 UFLPA 显 0（诚实空态，非未接入）", rhZeroUflpa?.text === "0" && rhZeroUflpa?.state === "real");
+  check("A2 无 caliber 的供应商卡不覆盖（返 null=交期默认口径）", roleHeadline({ id: "suppliers" }, zSup(compAvail), "procurement") === null);
+
+  // 自查：合规"清关卡点"履约卡 caliber=customs → 主数字=清关卡点票数（customs_blocked.value）、OTD 降副行
+  const zFul: Zone = {
+    zone: "fulfillment", headline_label: "准交率 OTD", headline_value: 0.969, trend: null,
+    alert_count: 0, detail: { customs_blocked: { value: 21 } },
+  };
+  const rhCustoms = roleHeadline({ id: "fulfillment", caliber: "customs" }, zFul, "compliance");
+  check("清关卡点卡主数字=清关卡点票数 21（非 96.9%）", rhCustoms?.text === "21" && (rhCustoms?.label ?? "").includes("清关卡点"));
+  check("清关卡点卡 OTD 降副行", (rhCustoms?.sublines?.[0]?.text ?? "").includes("准交率 OTD"));
+  check("无 caliber 的履约卡不覆盖（返 null=OTD 默认口径）", roleHeadline({ id: "fulfillment" }, zFul, "cs") === null);
 }
 
 console.log(`ROLE_WALL 配置完整性冒烟测试全部通过（${passed} 项断言）`);

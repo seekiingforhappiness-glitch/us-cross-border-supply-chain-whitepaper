@@ -7,7 +7,7 @@
 // QUALITY_LABEL_CN、app/streamlit_app.py 的审批模板、ontology 规则 type 字段）；/ontology 端点
 // 未暴露规则/动作中文名（只给 PascalCase action name），故前端建映射表兜底并在报告列歧义。
 // 金额/规则/严重度全部现取自载荷，不编造。
-import { refToObjectRef, type AiFlowItem, type ObjectRef } from "../api";
+import { refToObjectRef, type AiFlowItem, type ObjectRef, type Role } from "../api";
 
 // ── 规则码 → 中文（R1-R18 逐字镜像 app/ux_copy.py::RULE_CN；R19-R21 补自 ontology 规则 type
 //    与 B5 任务书/V8 决策，均为一手源，非臆造）───────────────────────────────────
@@ -168,8 +168,44 @@ export interface Story {
   trail: string; // 主句后半（金额后）
   ts: string; // 最近事件 ts（排序 + 展示）
   mode?: ExecMode; // 卡面执行方式徽标：取代表事件（驱动主句的那条）的 mode，判不了则 undefined 不渲染
+  ruleId?: string; // D·P1 角色相关性排序用：该链的规则码（sim 从 detect note 现取；无 detect/非 sim=undefined）
   events: StoryEvent[]; // 时间线（时间升序）
   links: StoryLink[]; // 「查看详情」去重链接（风险 / 任务）
+}
+
+// ── D·P1（轮4 老周"右栏 feed 全角色同一内容，跟坐在老板工位看一样"）：角色→规则族映射 ──────────
+// 保守修法=按角色职责相关性**排序**（不隐藏任何条目），当前角色职责域的规则族条目排前。映射照
+// ROLE_WALL 职责推导（spec §七角色职责模型 + 各角色规则域归属，与 zoneModel ROLE_WALL 注释一致）：
+//   ops         → R1/R2/R3       延误/单证/清关处置（唯一 CloseRiskEvent 持有者、履约执行）
+//   cs          → R19            逾期应收→催收（客户面 R19 催收提案主力）
+//   procurement → R7-R15 + R22   供应商绩效/短装/质量/对账/资质/单一来源域提案 + 绩效劣化
+//   finance     → R4/R5/R6/R19/R20/R21  费率超收/重复计费/计划外费用/应收/现金水位/付款对账
+//   compliance  → R13/R22/R23    供应商资质过期 + 绩效劣化 + 资质过期预警（UFLPA/资质监控）
+//   sales       → 空集           准入域无对应风险规则族——不重排（如实，不硬造相关性）
+//   manager     → 空集           全域监督——不重排（feed 保持时间序，与改前一致）
+// 空集=不重排（该角色对所有条目"同等相关"，返回原时间序）。规则族允许重叠（R19 既 cs 又 finance），
+// 排序只是把"更可能是你的活"提前，非独占归属；仍全量展示。
+export const ROLE_RULE_FAMILY: Record<Role, ReadonlySet<string>> = {
+  manager: new Set<string>(),
+  ops: new Set(["R1", "R2", "R3"]),
+  cs: new Set(["R19"]),
+  procurement: new Set(["R7", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "R22"]),
+  finance: new Set(["R4", "R5", "R6", "R19", "R20", "R21"]),
+  compliance: new Set(["R13", "R22", "R23"]),
+  sales: new Set<string>(),
+};
+
+/** 按角色职责相关性**稳定分区**：相关规则族的故事排前、其余在后，各组内保持原时间序（不打乱时间）。
+ *  空规则族（manager/sales）或无任何相关条目 → 返回原序 + reordered:false（UI 据此不显"排前"提示，
+ *  避免空承诺）。仅重排展示序，绝不隐藏条目（保守修，宪法"不删信息"）。 */
+export function sortStoriesForRole(stories: Story[], role: Role): { stories: Story[]; reordered: boolean } {
+  const fam = ROLE_RULE_FAMILY[role];
+  if (fam.size === 0) return { stories, reordered: false };
+  const front: Story[] = [];
+  const back: Story[] = [];
+  for (const s of stories) (s.ruleId && fam.has(s.ruleId) ? front : back).push(s);
+  if (front.length === 0) return { stories, reordered: false };
+  return { stories: [...front, ...back], reordered: true };
 }
 
 // 链 key：sim 事件按 risk_event_id 归并；task_flow/ai_action 按 ref 对象归并；其余（llm_call）独立成卡
@@ -257,10 +293,12 @@ export function buildStories(items: AiFlowItem[]): Story[] {
     const detailOf = (kd: string) => evs.find((e) => e.kind === kd)?.detail as { risk_event_id?: string; task_id?: string } | undefined;
 
     let composed: Pick<Story, "state" | "lead" | "amount" | "trail">;
+    let ruleId: string | undefined; // D·P1 角色相关性排序键（sim 从 detect note 现取）
     if (sim) {
       const byType: Record<string, AiFlowItem> = {};
       for (const e of evs) if (!byType[e.kind]) byType[e.kind] = e; // 每型取一（同型多条罕见，取首条）
       composed = composeSim(byType);
+      ruleId = byType.detect ? parseDetect(String((byType.detect.detail as { note?: string }).note ?? "")).code || undefined : undefined;
       const anyDetail = (detailOf("detect") || detailOf("propose") || detailOf("close") || detailOf("approve") || {}) as {
         risk_event_id?: string;
         task_id?: string;
@@ -281,6 +319,7 @@ export function buildStories(items: AiFlowItem[]): Story[] {
       ts: latestTs,
       // 卡面徽标 = 代表事件（驱动主句的那条 = 非 sim 卡的末条）的 mode；sim 卡无 mode（后端不判 sim 条目）。
       mode: sim ? undefined : timeline[timeline.length - 1]?.mode,
+      ruleId,
       events: timeline,
       links,
     });

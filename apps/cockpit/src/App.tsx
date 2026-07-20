@@ -66,6 +66,9 @@ export default function App() {
   const [detail, setDetail] = useState<ImpactFocus | null>(null); // 右栏影响面板（风险类下钻）
   const [activeKey, setActiveKey] = useState<string | null>(null); // 队列高亮行
   const [card, setCard] = useState<ObjectRef | null>(null); // 对象卡抽屉（对象类下钻）
+  // F·P2：进区上下文——seq 每次进区自增（供 ZoneQueue 区分"进区"与"区内操作"），mine=是否从"我组处置"
+  // 卡进入（决定队列默认筛"我组的"）。区内审批/软刷新不改 seq，故不冲掉用户手动切的筛选态。
+  const [zoneEntry, setZoneEntry] = useState<{ seq: number; mine: boolean }>({ seq: 0, mine: false });
 
   const closeDetail = () => {
     setDetail(null);
@@ -181,10 +184,12 @@ export default function App() {
     setStage({ view: "wall" });
     closeDetail();
   };
-  const goZone = (zoneId: ZoneId) => {
+  const goZone = (zoneId: ZoneId, opts?: { mine?: boolean }) => {
     // L-UX 轮2 P2：墙卡计数与队列头计数曾各自取数不同鲜（测试期间他处审批后墙面滞留旧值，
     // 22 vs 共20条被读成"漏了2条"）。下钻即刷体征——两处永远同一次取数口径。
     refreshVitalsData();
+    // F·P2：记录本次进区是否来自"我组处置"卡（opts.mine）——ZoneQueue 据 seq 变化把筛选复位到 mine。
+    setZoneEntry((e) => ({ seq: e.seq + 1, mine: !!opts?.mine }));
     setStage({ view: "zone", zoneId });
     closeDetail();
   };
@@ -263,7 +268,7 @@ export default function App() {
               <StateHint kind="loading" title="指挥墙加载中…" skeletonRows={4} />
             )
           ) : stage.view === "zone" && activeZone ? (
-            <ZoneQueue zone={activeZone} role={role} asOf={asOf} onBack={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
+            <ZoneQueue zone={activeZone} role={role} asOf={asOf} world={world} defaultMine={zoneEntry.mine} entrySeq={zoneEntry.seq} onBack={goWall} onMap={goMap} onDrill={handleDrill} activeKey={activeKey} />
           ) : (
             <CommandWall zones={vitals.zones} role={role} provenance={vitals.provenance} gating={gating} onZone={goZone} onMap={goMap} />
           )}
