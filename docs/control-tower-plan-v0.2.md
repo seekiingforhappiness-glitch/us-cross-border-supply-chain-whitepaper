@@ -331,6 +331,14 @@ request_supplier_docs、expedite_replenish→escalate_replenishment，语义等�
 ②本体 Task.proposed_action 枚举扩入真实存在的提案动作值（含 F1 新增 propose_collection/
 reconcile_payment 与协调升级 escalate）——枚举收编现实、命名不造分叉。执行单 G4。
 
+**V25 — 轮4 遗留四道裁决（2026-07-20 晚，Daniel 原话"1 ops用异常票数 2 finance用现金水位
+3 对齐证据包按声明放开 4 临期调参数演示"）。**
+①ops「在途异常」卡主数字=在途异常总票（延误+清关卡点），OTD 降副行。②finance 卡主数字=
+未来14天净现金流（击穿标红），费用异常敞口降副行。③证据包脱敏与对象读端点统一为**按声明
+执行**（撤末端全量成本门；未声明字段如 affected_value_usd 两出口同为明文，已声明字段仍掩）。
+④qual_warning_days 30→40：sim 世界获临期 medium 演示样本（RSK-SIM-00261），验证世界真值随
+参数合法重算（新真值文件重算合法、旧 9 文件不变红线照守）。
+
 **V23 — L-UX 轮3 四道裁决（2026-07-20，Daniel 原话"1新增规则可以 2同意 3收紧 4做导出"）。**
 ①**新增规则域批准**：R22 供应商绩效劣化（慢性交期/质量劣化，如 Yiwu Sunrise 53.6% 达成率
 零覆盖的补位）+ R23 资质过期预警（过期/临期资质主动上浮）——合规/采购域从"零 AI 覆盖"
