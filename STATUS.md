@@ -34,6 +34,12 @@
 > 客服复测跳过（两角色已定位根因，记录在案）。回归 196/288/lint 0/digest 不变/211 断言。
 > **候 Daniel**：V24 批报告六条微调+轮4 两条两可（ops 在途卡与 finance 现金卡主数字取法）+
 > 证据包 vs 对象卡影响金额口径不一致（导出掩/卡上明文，谁对齐谁）。
+> **R22/R23 sim 接入收官（7461c71，V23① 挂账清偿）**：import engine 纯函数零镜像漂移、
+> config 单一参数源、enrich 后 as-of 一次性检测与验证世界同口径；**Yiwu Sunrise 53.6% 精确
+> 命中 RSK-SIM-00259**（+Jinsheng 55% critical、R23 一证 high），采购陌生人两轮撞的"最差
+> 供应商零覆盖"全域闭环；同种子两次逐字节一致；"未接入"白话退场。顺带清三小账（R23 锚
+> "关联资质"标签/ux_copy R19-R21 中文名/sim verify 感知层语义修正+3 严看守）。sim 无临期
+> （medium）样本属 rng 事实（product_safety_cert 余量 34>30 天窗），要演示可调参数候裁。
 
 > **L-UX 轮3 收官（2026-07-19 傍晚，采购/合规/客服三 Sonnet 陌生人首测批D 新角色 + Opus/Sonnet
 > 修复双批 + 主会话复核）**：报告 docs/research/2026-07-19-ux-stranger-round3.md（含修复对照）。
