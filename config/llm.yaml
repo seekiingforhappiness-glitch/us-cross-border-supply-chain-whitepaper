@@ -1,0 +1,17 @@
+# LLM 供应链治理参数（spec v3.0 §9；读取方 agent/egress_gate.py，缺文件/缺键自动用同值默认）
+egress_gate:
+  enabled: true            # 出境白名单摘除闸门总开关；环境变量 EGRESS_GATE=on/off 优先于本值
+
+context_budget:            # 每类调用输入上限（chars）。超限=显式降级为结构化字段摘要，绝不静默截断
+  briefing: 12000          # 简报 grounding（当前唯一在用类型）
+  parse: 12000             # A 能力（邮件/EDI 解析）启用时生效——先占位定值
+  proposal: 12000          # 提案类调用启用时生效——先占位定值
+
+fallback:                  # claude_cli 回退规则（spec §9：连续失败 3 次自动降级并告警）
+  fail_threshold: 3        # 连续失败 N 次进降级模式（简报回退确定性模板）
+  cooldown_seconds: 300    # 降级后经冷却放行一次真实探测调用（半开）；恢复成功一次即清零
+
+agent:                     # M4 主通道 provider（裁3 可回退：provider 改回 claude_cli 即退旧单发档）
+  provider: claude_cli_mcp        # 默认新通道：本账号订阅 + 本体只读 MCP server 多轮真调用（模型自查库）
+  fallback_provider: claude_cli   # 主通道失败→单发合成（Python 预取上下文让模型朗读）→再不行确定性简报
+  # 环境变量 AGENT_PROVIDER 优先于本值（向后兼容既有 openai/anthropic 切换与 CI）

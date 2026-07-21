@@ -1,0 +1,366 @@
+{
+  "version": "0.1.0",
+  "name": "cross_border_sku_admission_ontology",
+  "displayName": "跨境供应链 SKU 准入与报价决策 Ontology",
+  "scope": "MVP for SKU admission, logistics planning, compliance precheck, cost scenarios, and quote approval.",
+  "primaryKeyPolicy": {
+    "requiredPattern": "*_id",
+    "rules": [
+      "All object instances must use a stable unique primary key.",
+      "Do not use sku_name, customer_name, supplier_name, or any mutable display name as a primary key.",
+      "Synthetic keys must be generated in the data preparation layer and persisted before application usage."
+    ]
+  },
+  "objects": [
+    {
+      "type": "Sku",
+      "description": "准备进入美国市场或需要报价的商品。",
+      "primaryKey": "sku_id",
+      "titleKey": "sku_name",
+      "ownerRole": "sales",
+      "properties": [
+        {"name": "sku_id", "type": "string", "required": true, "sensitive": false, "description": "Stable SKU identifier."},
+        {"name": "sku_name", "type": "string", "required": true, "sensitive": false, "description": "Display name for the SKU."},
+        {"name": "category", "type": "string", "required": true, "sensitive": false, "description": "Product category."},
+        {"name": "material", "type": "string", "required": false, "sensitive": false, "description": "Primary material."},
+        {"name": "use_case", "type": "string", "required": true, "sensitive": false, "description": "Intended use."},
+        {"name": "origin_country", "type": "string", "required": true, "sensitive": false, "description": "Country of origin."},
+        {"name": "declared_value_usd", "type": "number", "required": true, "sensitive": false, "description": "Declared value used for admission modeling."},
+        {"name": "package_weight_kg", "type": "number", "required": true, "sensitive": false, "description": "Packed weight."},
+        {"name": "package_length_cm", "type": "number", "required": true, "sensitive": false, "description": "Packed length."},
+        {"name": "package_width_cm", "type": "number", "required": true, "sensitive": false, "description": "Packed width."},
+        {"name": "package_height_cm", "type": "number", "required": true, "sensitive": false, "description": "Packed height."},
+        {"name": "battery_flag", "type": "boolean", "required": true, "sensitive": false, "description": "Whether the product contains batteries."},
+        {"name": "food_contact_flag", "type": "boolean", "required": true, "sensitive": false, "description": "Whether the product contacts food."},
+        {"name": "children_product_flag", "type": "boolean", "required": true, "sensitive": false, "description": "Whether the product is intended for children."},
+        {"name": "platform", "type": "enum", "required": false, "sensitive": false, "values": ["amazon", "walmart", "tiktok_shop", "shopify", "other"], "description": "Primary sales platform."},
+        {"name": "target_margin_rate", "type": "number", "required": false, "sensitive": true, "description": "Internal target margin."}
+      ],
+      "dataQualityRules": [
+        "sku_id must be unique.",
+        "package dimensions and weight must be greater than zero.",
+        "declared_value_usd must be greater than zero.",
+        "At least one regulatory trigger flag must be explicitly true or false."
+      ]
+    },
+    {
+      "type": "Customer",
+      "description": "发起准入或报价需求的客户、卖家或品牌方。",
+      "primaryKey": "customer_id",
+      "titleKey": "customer_name",
+      "ownerRole": "sales",
+      "properties": [
+        {"name": "customer_id", "type": "string", "required": true, "sensitive": false, "description": "Stable customer identifier."},
+        {"name": "customer_name", "type": "string", "required": true, "sensitive": false, "description": "Display name."},
+        {"name": "business_model", "type": "enum", "required": true, "sensitive": false, "values": ["platform_seller", "brand_dtc", "trader", "service_provider", "other"], "description": "Customer business model."},
+        {"name": "sales_channel", "type": "string", "required": false, "sensitive": false, "description": "Main sales channel."},
+        {"name": "target_market", "type": "string", "required": true, "sensitive": false, "description": "Target destination market."},
+        {"name": "ior_capability", "type": "enum", "required": true, "sensitive": false, "values": ["has_ior", "needs_partner", "unknown"], "description": "Importer of Record capability."},
+        {"name": "broker_status", "type": "enum", "required": true, "sensitive": false, "values": ["has_broker", "needs_broker", "unknown"], "description": "Customs broker readiness."},
+        {"name": "credit_terms", "type": "string", "required": false, "sensitive": true, "description": "Payment or credit terms."},
+        {"name": "risk_tier", "type": "enum", "required": false, "sensitive": true, "values": ["low", "medium", "high", "critical"], "description": "Internal customer risk tier."}
+      ],
+      "dataQualityRules": [
+        "customer_id must be unique.",
+        "target_market must be populated.",
+        "ior_capability must not be unknown before approving DDP."
+      ]
+    },
+    {
+      "type": "Supplier",
+      "description": "SKU 的生产商、供货商或贸易供货主体。",
+      "primaryKey": "supplier_id",
+      "titleKey": "supplier_name",
+      "ownerRole": "compliance",
+      "properties": [
+        {"name": "supplier_id", "type": "string", "required": true, "sensitive": false, "description": "Stable supplier identifier."},
+        {"name": "supplier_name", "type": "string", "required": true, "sensitive": false, "description": "Supplier display name."},
+        {"name": "country", "type": "string", "required": true, "sensitive": false, "description": "Supplier country or region."},
+        {"name": "factory_audit_status", "type": "enum", "required": false, "sensitive": true, "values": ["not_started", "pending", "passed", "failed", "waived"], "description": "Factory audit status."},
+        {"name": "compliance_docs_status", "type": "enum", "required": true, "sensitive": false, "values": ["missing", "partial", "provided", "verified", "rejected"], "description": "Supplier compliance documentation status."},
+        {"name": "uflpa_risk_flag", "type": "boolean", "required": true, "sensitive": true, "description": "Internal UFLPA risk flag."},
+        {"name": "origin_evidence_status", "type": "enum", "required": true, "sensitive": false, "values": ["missing", "provided", "verified", "rejected"], "description": "Origin evidence status."},
+        {"name": "lead_time_days", "type": "number", "required": false, "sensitive": false, "description": "Standard lead time."}
+      ],
+      "dataQualityRules": [
+        "supplier_id must be unique.",
+        "uflpa_risk_flag must be explicit.",
+        "origin_evidence_status must be verified before high-risk origin approval."
+      ]
+    },
+    {
+      "type": "AdmissionCase",
+      "description": "围绕一个 SKU 的准入、方案和报价决策案件。",
+      "primaryKey": "admission_case_id",
+      "titleKey": "case_title",
+      "ownerRole": "manager",
+      "statusField": "status",
+      "properties": [
+        {"name": "admission_case_id", "type": "string", "required": true, "sensitive": false, "description": "Stable admission case identifier."},
+        {"name": "case_title", "type": "string", "required": true, "sensitive": false, "description": "Case display title."},
+        {"name": "status", "type": "enum", "required": true, "sensitive": false, "values": ["draft", "in_precheck", "plan_ready", "priced", "approved", "quote_with_conditions", "rejected", "needs_more_info"], "description": "Case workflow status."},
+        {"name": "request_type", "type": "enum", "required": true, "sensitive": false, "values": ["new_sku_admission", "ddp_quote", "dap_quote", "plan_review"], "description": "Request category."},
+        {"name": "incoterm_candidate", "type": "enum", "required": false, "sensitive": false, "values": ["FOB", "DAP", "DDP", "unknown"], "description": "Candidate Incoterm."},
+        {"name": "target_launch_date", "type": "date", "required": false, "sensitive": false, "description": "Target launch date."},
+        {"name": "monthly_order_estimate", "type": "number", "required": false, "sensitive": false, "description": "Estimated monthly order volume."},
+        {"name": "risk_level", "type": "enum", "required": false, "sensitive": false, "values": ["low", "medium", "high", "critical"], "description": "Current case risk level."},
+        {"name": "decision", "type": "enum", "required": false, "sensitive": false, "values": ["approve", "reject", "more_info", "quote_with_conditions"], "description": "Final or current decision."},
+        {"name": "decision_reason", "type": "string", "required": false, "sensitive": true, "description": "Internal decision rationale."}
+      ],
+      "dataQualityRules": [
+        "admission_case_id must be unique.",
+        "status transitions must follow the defined action workflow.",
+        "DDP approval requires compliance precheck and complete cost scenario."
+      ]
+    },
+    {
+      "type": "ComplianceFinding",
+      "description": "合规预审中发现的监管、税号、文件或拒接风险。",
+      "primaryKey": "compliance_finding_id",
+      "titleKey": "finding_title",
+      "ownerRole": "compliance",
+      "properties": [
+        {"name": "compliance_finding_id", "type": "string", "required": true, "sensitive": false, "description": "Stable finding identifier."},
+        {"name": "finding_title", "type": "string", "required": true, "sensitive": false, "description": "Finding display title."},
+        {"name": "finding_type", "type": "enum", "required": true, "sensitive": false, "values": ["HTS", "PGA", "labeling", "certification", "origin", "uflpa", "ad_cvd", "section_301", "platform_rule"], "description": "Finding category."},
+        {"name": "severity", "type": "enum", "required": true, "sensitive": false, "values": ["low", "medium", "high", "critical"], "description": "Finding severity."},
+        {"name": "hts_candidate", "type": "string", "required": false, "sensitive": false, "description": "Candidate US HTS code."},
+        {"name": "pga_agency", "type": "enum", "required": false, "sensitive": false, "values": ["CBP", "FDA", "FCC", "CPSC", "EPA", "USDA", "other"], "description": "Relevant partner government agency."},
+        {"name": "required_document", "type": "string", "required": false, "sensitive": false, "description": "Required document or evidence."},
+        {"name": "evidence_status", "type": "enum", "required": true, "sensitive": false, "values": ["missing", "provided", "verified", "rejected"], "description": "Evidence review status."},
+        {"name": "recommendation", "type": "enum", "required": true, "sensitive": false, "values": ["accept", "request_more_info", "dap_only", "reject", "escalate"], "description": "Compliance recommendation."},
+        {"name": "internal_notes", "type": "string", "required": false, "sensitive": true, "description": "Internal compliance notes."}
+      ],
+      "dataQualityRules": [
+        "critical findings must have recommendation reject or escalate.",
+        "request_more_info requires required_document.",
+        "HTS finding should include hts_candidate when available."
+      ]
+    },
+    {
+      "type": "LogisticsPlan",
+      "description": "面向一个案件的跨境履约路径方案。",
+      "primaryKey": "logistics_plan_id",
+      "titleKey": "plan_name",
+      "ownerRole": "operations",
+      "properties": [
+        {"name": "logistics_plan_id", "type": "string", "required": true, "sensitive": false, "description": "Stable logistics plan identifier."},
+        {"name": "plan_name", "type": "string", "required": true, "sensitive": false, "description": "Plan display name."},
+        {"name": "route_type", "type": "enum", "required": true, "sensitive": false, "values": ["express", "air_freight", "ocean_fcl", "ocean_lcl", "ocean_parcel", "warehouse_fulfillment"], "description": "Route mode."},
+        {"name": "incoterm", "type": "enum", "required": true, "sensitive": false, "values": ["FOB", "DAP", "DDP"], "description": "Plan Incoterm."},
+        {"name": "origin_port", "type": "string", "required": false, "sensitive": false, "description": "Origin port or airport."},
+        {"name": "destination_port", "type": "string", "required": false, "sensitive": false, "description": "Destination port or airport."},
+        {"name": "us_warehouse_region", "type": "enum", "required": false, "sensitive": false, "values": ["west", "central", "east", "platform_warehouse", "none"], "description": "US warehouse region."},
+        {"name": "last_mile_method", "type": "enum", "required": false, "sensitive": false, "values": ["UPS", "FedEx", "USPS", "OnTrac", "LTL", "platform_fulfillment", "unknown"], "description": "Last-mile method."},
+        {"name": "estimated_transit_days", "type": "number", "required": true, "sensitive": false, "description": "Estimated end-to-end transit days."},
+        {"name": "sla_risk", "type": "enum", "required": true, "sensitive": false, "values": ["low", "medium", "high", "critical"], "description": "SLA risk."},
+        {"name": "carrier_contract_cost_notes", "type": "string", "required": false, "sensitive": true, "description": "Sensitive carrier contract notes."}
+      ],
+      "dataQualityRules": [
+        "estimated_transit_days must be greater than zero.",
+        "DDP plans must not be finalized without compliance precheck.",
+        "last_mile_method must be populated before cost scenario approval."
+      ]
+    },
+    {
+      "type": "CostScenario",
+      "description": "一个物流方案下的报价、成本和利润情景。",
+      "primaryKey": "cost_scenario_id",
+      "titleKey": "scenario_name",
+      "ownerRole": "finance",
+      "properties": [
+        {"name": "cost_scenario_id", "type": "string", "required": true, "sensitive": false, "description": "Stable cost scenario identifier."},
+        {"name": "scenario_name", "type": "string", "required": true, "sensitive": false, "description": "Scenario display name."},
+        {"name": "scenario_type", "type": "enum", "required": true, "sensitive": false, "values": ["conservative", "base", "optimistic"], "description": "Scenario type."},
+        {"name": "product_cost_usd", "type": "number", "required": true, "sensitive": true, "description": "Product cost."},
+        {"name": "first_mile_cost_usd", "type": "number", "required": true, "sensitive": true, "description": "China or origin-side logistics cost."},
+        {"name": "international_freight_usd", "type": "number", "required": true, "sensitive": true, "description": "International freight cost."},
+        {"name": "duty_tax_usd", "type": "number", "required": true, "sensitive": true, "description": "Duty and tax estimate."},
+        {"name": "customs_brokerage_usd", "type": "number", "required": true, "sensitive": true, "description": "Customs brokerage cost."},
+        {"name": "warehouse_cost_usd", "type": "number", "required": true, "sensitive": true, "description": "Warehouse cost."},
+        {"name": "last_mile_cost_usd", "type": "number", "required": true, "sensitive": true, "description": "Last-mile cost."},
+        {"name": "returns_allowance_usd", "type": "number", "required": true, "sensitive": true, "description": "Returns allowance."},
+        {"name": "risk_buffer_usd", "type": "number", "required": true, "sensitive": true, "description": "Risk buffer."},
+        {"name": "gross_margin_usd", "type": "number", "required": true, "sensitive": true, "description": "Gross margin."},
+        {"name": "gross_margin_rate", "type": "number", "required": true, "sensitive": true, "description": "Gross margin rate."}
+      ],
+      "dataQualityRules": [
+        "All cost fields must be zero or positive.",
+        "DDP scenarios must include duty_tax_usd, customs_brokerage_usd, and risk_buffer_usd.",
+        "scenario_type must be unique per logistics_plan_id."
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "type": "case_has_sku",
+      "sourceObject": "AdmissionCase",
+      "targetObject": "Sku",
+      "cardinality": "N:1",
+      "description": "一个准入案件围绕一个 SKU。"
+    },
+    {
+      "type": "case_for_customer",
+      "sourceObject": "AdmissionCase",
+      "targetObject": "Customer",
+      "cardinality": "N:1",
+      "description": "一个准入案件属于一个客户。"
+    },
+    {
+      "type": "sku_supplied_by",
+      "sourceObject": "Sku",
+      "targetObject": "Supplier",
+      "cardinality": "N:M",
+      "description": "一个 SKU 由一个或多个供应商供货。",
+      "requiresBackingJoinDataset": true
+    },
+    {
+      "type": "case_has_compliance_finding",
+      "sourceObject": "AdmissionCase",
+      "targetObject": "ComplianceFinding",
+      "cardinality": "1:N",
+      "description": "一个案件有多条合规发现。"
+    },
+    {
+      "type": "case_has_logistics_plan",
+      "sourceObject": "AdmissionCase",
+      "targetObject": "LogisticsPlan",
+      "cardinality": "1:N",
+      "description": "一个案件可有多个物流方案。"
+    },
+    {
+      "type": "plan_has_cost_scenario",
+      "sourceObject": "LogisticsPlan",
+      "targetObject": "CostScenario",
+      "cardinality": "1:N",
+      "description": "一个物流方案有多个成本情景。"
+    }
+  ],
+  "actions": [
+    {
+      "type": "CreateAdmissionCase",
+      "description": "创建一个 SKU 准入与报价案件。",
+      "allowedRoles": ["sales"],
+      "inputs": ["customer_id", "sku_id", "request_type", "target_launch_date", "monthly_order_estimate", "incoterm_candidate"],
+      "successState": {"AdmissionCase.status": "draft"},
+      "auditFields": ["actor_id", "created_at", "source", "reason"],
+      "failureHandling": "Reject submission when customer, SKU, target market, or required SKU facts are missing."
+    },
+    {
+      "type": "RunCompliancePrecheck",
+      "description": "对案件执行合规预审。",
+      "allowedRoles": ["compliance", "manager"],
+      "inputs": ["admission_case_id", "hts_candidate", "pga_agency", "required_documents", "severity", "recommendation"],
+      "successState": {"AdmissionCase.status": "in_precheck"},
+      "auditFields": ["actor_id", "checked_at", "evidence_url", "reason"],
+      "failureHandling": "Do not mark precheck complete when HTS, regulatory triggers, or required documents are unresolved."
+    },
+    {
+      "type": "BuildLogisticsPlan",
+      "description": "为案件创建可报价的物流履约方案。",
+      "allowedRoles": ["operations"],
+      "inputs": ["admission_case_id", "route_type", "incoterm", "origin_port", "destination_port", "us_warehouse_region", "last_mile_method", "estimated_transit_days", "sla_risk"],
+      "successState": {"AdmissionCase.status": "plan_ready"},
+      "auditFields": ["actor_id", "planned_at", "assumptions"],
+      "failureHandling": "DDP plans without IOR, HTS, duty/tax, and compliance precheck remain draft only."
+    },
+    {
+      "type": "CalculateCostScenario",
+      "description": "为物流方案创建保守、中性、乐观成本情景。",
+      "allowedRoles": ["finance"],
+      "inputs": ["logistics_plan_id", "scenario_type", "product_cost_usd", "international_freight_usd", "duty_tax_usd", "warehouse_cost_usd", "last_mile_cost_usd", "returns_allowance_usd", "risk_buffer_usd"],
+      "successState": {"AdmissionCase.status": "priced"},
+      "auditFields": ["actor_id", "calculated_at", "assumption_version"],
+      "failureHandling": "DDP scenarios cannot be submitted for approval without tax, customs, and risk buffer assumptions."
+    },
+    {
+      "type": "ApproveQuoteDecision",
+      "description": "经理审批报价决策。",
+      "allowedRoles": ["manager"],
+      "inputs": ["admission_case_id", "approved_logistics_plan_id", "approved_cost_scenario_id", "decision", "decision_reason", "conditions"],
+      "successState": {"AdmissionCase.status": "approved_or_quote_with_conditions"},
+      "auditFields": ["actor_id", "approved_at", "decision_reason"],
+      "failureHandling": "Block approval when critical compliance findings exist, cost scenario is missing, or DDP lacks IOR."
+    },
+    {
+      "type": "RejectOrRequestMoreInfo",
+      "description": "拒接案件或要求客户补充资料。",
+      "allowedRoles": ["compliance", "manager"],
+      "inputs": ["admission_case_id", "decision", "missing_documents", "rejection_reason", "next_owner"],
+      "successState": {"AdmissionCase.status": "rejected_or_needs_more_info"},
+      "auditFields": ["actor_id", "decided_at", "reason"],
+      "failureHandling": "Reject decisions require a reason; more-info decisions require a missing document list."
+    }
+  ],
+  "roles": [
+    {
+      "role": "sales",
+      "description": "创建案件并查看非敏感报价结果。",
+      "canExecute": ["CreateAdmissionCase"],
+      "sensitiveFieldAccess": "none"
+    },
+    {
+      "role": "compliance",
+      "description": "维护 HTS、PGA、IOR、资料缺口和拒接原因。",
+      "canExecute": ["RunCompliancePrecheck", "RejectOrRequestMoreInfo"],
+      "sensitiveFieldAccess": "compliance_notes_only"
+    },
+    {
+      "role": "operations",
+      "description": "维护头程、清关、仓配和尾程方案。",
+      "canExecute": ["BuildLogisticsPlan"],
+      "sensitiveFieldAccess": "carrier_notes_only"
+    },
+    {
+      "role": "finance",
+      "description": "维护成本假设、利润模型和风险准备金。",
+      "canExecute": ["CalculateCostScenario"],
+      "sensitiveFieldAccess": "cost_and_margin"
+    },
+    {
+      "role": "manager",
+      "description": "审批 DDP、高风险品类、高成本方案和拒接决定。",
+      "canExecute": ["ApproveQuoteDecision", "RejectOrRequestMoreInfo"],
+      "sensitiveFieldAccess": "approval_required_fields"
+    },
+    {
+      "role": "ai_assistant",
+      "description": "只输出结构化 proposal，不直接执行高风险写回。",
+      "canExecute": [],
+      "sensitiveFieldAccess": "inherits_user_or_minimum_service_scope"
+    }
+  ],
+  "aiLogic": {
+    "name": "SkuAdmissionAdvisor",
+    "mode": "proposal_only",
+    "inputObject": "AdmissionCase",
+    "readScope": ["AdmissionCase", "Sku", "Customer", "ComplianceFinding", "LogisticsPlan", "CostScenario"],
+    "outputSchema": {
+      "risk_level": "low | medium | high | critical",
+      "missing_documents": "string[]",
+      "hts_candidates": "string[]",
+      "recommended_route": "string",
+      "pricing_risks": "string[]",
+      "needs_human_approval": "boolean",
+      "confidence": "number"
+    },
+    "forbiddenBehaviors": [
+      "Do not fabricate HTS, duty, tax, or regulatory conclusions.",
+      "Do not bypass permissions for cost, customer credit, or supplier risk fields.",
+      "Do not auto-approve DDP, high-risk categories, high-cost plans, or rejection decisions.",
+      "Do not send external customer notifications.",
+      "Do not interpret null sensitive values as no risk."
+    ],
+    "evalRequirements": {
+      "minimumCases": 30,
+      "highRiskMissRate": 0,
+      "requiresHumanApprovalForHighRisk": true
+    }
+  },
+  "acceptanceCriteria": [
+    "A user can move one SKU through data collection, compliance precheck, logistics planning, cost scenario calculation, and quote approval.",
+    "Every object has a primary key, business definition, core properties, sensitive properties, and owner role.",
+    "Every action has inputs, permissions, success state, failure handling, and audit fields.",
+    "AI remains proposal-only and high-risk actions require manager approval."
+  ]
+}

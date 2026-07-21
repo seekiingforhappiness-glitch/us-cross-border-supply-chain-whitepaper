@@ -1,0 +1,23 @@
+{
+  "name": "cockpit",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "驾驶舱（地基）—— V4 决议⑥授权的 React 双应用之一；本目录当前只有工程骨架 + API 数据源接线，画面级实现候 Daniel 对 docs/superpowers/specs/2026-07-14-cockpit-screen-narrative.md 画面复述确认后开工",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview --port 4174"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

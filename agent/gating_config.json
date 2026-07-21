@@ -1,0 +1,31 @@
+{
+  "_status": "已裁决采纳（V16①，2026-07-16，Daniel 原话\"98%\"＝确认自动档精确率门 98%，阶梯整体照准）；display-only 仍有效，接线到工具授权是独立工程（候波2）",
+  "version": "ratified-1",
+  "_note": "放权阶梯阈值。agent/gating.py 只读本文件算各域当前档位（display-only），绝不改任何工具授权/build_tool_defs（V15 保护条款）。改阈值＝改本文件并递增 version；数字来源＝Monday 基准，属业务裁决，AI 不自定。",
+  "_plain": "这是一把'尺子'：给定一个域（某条规则/某类题）AI 测出来的可靠度，尺子说它现在该处在放权阶梯的哪一档。只展示不放权——真正改权限永远是人的事。",
+  "ladder": [
+    {"tier": "shadow", "name": "影子", "plain": "只测不放权：AI 生成建议只记录、不生效，纯攒证据。所有域的起点。"},
+    {"tier": "suggest", "name": "建议", "plain": "AI 可给建议供人参考，决定仍全在人。"},
+    {"tier": "approve", "name": "审核", "plain": "AI 可提交处置提案进审批闸，人逐条批（maker-checker）。"},
+    {"tier": "auto", "name": "自动", "plain": "AI 可自动执行（结构上够不到：需 n≥1000 且有纠正率测量，本波远未达）。"}
+  ],
+  "promotions": {
+    "shadow_to_suggest": {
+      "consistency_min": 0.85,
+      "escalation_recall_min": 0.95,
+      "n_min": 30,
+      "_plain": "升到'建议'档：AI 与人一致率≥85% 且 该转人的案子里 AI 也保守的比例(escalation recall)≥95% 且 样本≥30。放权最怕漏升级，故 recall 门槛比一致率更高。"
+    },
+    "suggest_to_approve": {
+      "precision_min": 0.95,
+      "n_min": 100,
+      "_plain": "升到'审核'档：一致率/过题率≥95% 且 样本≥100。"
+    },
+    "approve_to_auto": {
+      "rate_min": 0.98,
+      "n_min": 1000,
+      "correction_rate_max": 0.05,
+      "_plain": "升到'自动'档：一致率≥98% 且 样本≥1000 且 人事后纠正率<5%。本波样本远不足 1000、且纠正率暂无测量手段，故任何域结构上都够不到自动档（诚实：这是设计内的天花板，不是缺陷）。"
+    }
+  }
+}

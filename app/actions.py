@@ -1,0 +1,770 @@
+"""W5 动作层：A3-A6（manual §5 五要素）。
+
+- 纯函数写 sqlite，不依赖 Streamlit——W6 直接注册为 AI tools（D7）
+- 统一返回 {ok, object_id, side_effects, error}，从不抛异常给调用方
+- 一切调用（成功/失败/越权）都写 action_log（断言 B4/C4）
+- 审计时间戳基于 as_of，不用系统时钟（D8）
+"""
+import contextvars
+import json
+import sqlite3
+
+try:
+    from .action_context import Actor, ApprovalPolicy, next_stable_id, transaction
+    from .work_queue import Owner, assign_owner, sla_state
+except ImportError:  # streamlit run 场景：app/ 为脚本目录，无包上下文
+    from action_context import Actor, ApprovalPolicy, next_stable_id, transaction
+    from work_queue import Owner, assign_owner, sla_state
+
+from pipeline.outbox import enqueue_writeback
+# 桥2 运行时侧（M2，V5 决议①）：权限矩阵改为从本体解释生成，硬编码字面量退役。
+from pipeline.ontology_runtime import build_role_perms, load_ontology
+# C1 处置记忆：写入只在动作层 approve/close 成功路径挂钩（AI 无写工具，检索另走只读工具）
+from engine.resolution_memory import (QUALITY_LABELS, backfill_outcome,
+                                      ensure_resolution_memory_table, write_decision_memory)
+
+# manual §6 权限矩阵——桥2 M2 起从本体解释生成（不再硬编码字面量）：build_role_perms 读
+# enforcement=role_dict 动作的 executors，按 permission_key 归组成全域映射，本模块按自己的键分片。
+# 本体成为唯一权威源；人批口径守护见 app/test_agent_security.py EXPECTED_ROLE_PERMS（一行不改而
+# 自动通过 = 迁移零行为漂移）+ app/test_ontology_runtime.py（生成 == 迁移前基线）。P4：
+# ProposeMitigation 含 procurement（采购处置提案）；审批仍仅 manager、关闭仍仅 ops（冻结区由
+# ai_executable=frozen 声明保证，maker-checker 三方分离不变）。
+_ONTOLOGY_PERMS = build_role_perms(load_ontology())
+
+
+def _perm_slice(*keys):
+    """从本体生成的全域权限映射里取本模块负责的键（桥2 M2「同构分片取用」）。"""
+    return {k: _ONTOLOGY_PERMS[k] for k in keys}
+
+
+# F1（V8-②）：资金流两动作随本体 enforcement=role_dict 自动进 build_role_perms，本模块追加分片
+# 取用——RecordPayment(记录收/付事实，AI 不可达)、ProposeCollection(催收提案，maker-checker)。
+# 人批口径守护见 app/test_agent_security.py EXPECTED_ROLE_PERMS（仅追加两键、既有键一字不改）。
+ROLE_PERMS = _perm_slice("AssignTask", "ProposeMitigation", "ApproveMitigation", "CloseRiskEvent",
+                         "RecordPayment", "ProposeCollection")
+PARAM_SCHEMAS = {
+    "expedite": {"new_mode", "est_cost_usd", "expected_new_eta"},
+    "reschedule": {"new_promise_date", "notify_customer"},
+    "accept_delay": {"reason"},
+    # cost-manual §4 A4 提案类型扩展（费用异常处置）
+    "dispute": {"reason", "disputed_amount_usd"},
+    "accept_charge": {"reason"},
+    "rebill_customer": {"rebill_amount_usd", "incoterm_basis"},
+    # P1 采购 A4 提案类型扩展（采购 RiskEvent R7-R10 处置；决策日志 P1，Build 3）：
+    # 走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "expedite_po": {"reason"},                       # 催单：标记受影响 PoLine 加急
+    "raise_supplier_claim": {"claim_amount_usd", "reason"},   # 供应商索赔：标记 PoLine 已发起索赔
+    "dispute_supplier_invoice": {"reason", "disputed_amount_usd"},  # 争议供应商发票（复用 dispute 语义）
+    "accept_receipt_variance": {"reason"},           # 接受短装/差异：标记 PoLine 差异已接受
+    # P2 采购富化 A4 提案类型扩展（R12 预付款敞口 / R13 供应商资质；决策日志 P2，Build B）：
+    # 同走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "escalate_prepayment": {"reason"},               # R12 升级预付款敞口：标记 deposit 付款 at_risk
+    "hold_balance_payment": {"reason"},              # R12 暂缓尾款：标记 balance 付款 at_risk
+    "request_supplier_docs": {"reason"},             # R13 要求补交资质：标记过期资质 evidence_status=provided（cert_type 可选，缺省全过期证）
+    "suspend_supplier": {"reason"},                  # R13 冻结供应商：标记过期资质 status=revoked（Supplier 无 status 字段，回写资质对象）
+    # W1 仓储处置提案类型扩展（R16-R18 + 延误连接；决策日志 W1，Build 2/3）：
+    # 同走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "suggest_substitution": {"reason"},              # 延误(R1-R3)/R17：目的仓现货拆单先发 + 余量 backorder（杀手锏）
+    "adjust_inventory": {"reason"},                  # R18：按 CycleCount.counted 调整 InventoryPosition + reconciled
+    "escalate_replenishment": {"reason"},            # R16：升级补货（在途补足安全库存缺口）
+    # P3 采购富化2 处置提案类型扩展（R14 单一来源 / R15 maverick；决策日志 P3，Build B）：
+    # 同走既有 assign→propose→approve 闭环，权限沿用 ProposeMitigation:{ops,cs,finance}、审批仍仅 manager。
+    "initiate_second_source": {"reason"},            # R14：对断供 SKU 建/标一条 RFQ(status=sent) 启动第二来源
+    "block_non_po_payment": {"reason"},              # R15：把 maverick supplier_invoice 标 on_hold 拦截付款
+    "backfill_po": {"reason"},                       # R15：为 maverick 发票补一张追溯 PurchaseOrder 并关联（合规补单）
+}
+# 采购处置动作 → PoLine.line_status 目标态（审批通过后回写受影响 PoLine 的可见状态）。
+# dispute_supplier_invoice 不改 PoLine（改 supplier_invoices.status=disputed），故不在此表。
+PO_LINE_STATUS_ON_APPROVE = {
+    "expedite_po": "expedited",
+    "raise_supplier_claim": "claim_raised",
+    "accept_receipt_variance": "variance_accepted",
+}
+# P2 采购富化处置（决策日志 P2，Build B）——审批后回写受影响对象「可见状态」，非判风险
+# （R12/R13 检测由 engine 从事实重算，绝不信 exposure_status/status 字段，同"不信状态字段"铁律）：
+#   R12 预付款敞口（po_id 锚）→ PurchasePayment.exposure_status='at_risk'；
+#   R13 供应商资质（supplier_id 锚）→ SupplierQualification.evidence_status/status（Supplier 无 status 字段）。
+PREPAYMENT_ACTIONS = {"escalate_prepayment", "hold_balance_payment"}   # R12
+QUALIFICATION_ACTIONS = {"request_supplier_docs", "suspend_supplier"}  # R13
+PROCUREMENT_ACTIONS = (set(PO_LINE_STATUS_ON_APPROVE) | {"dispute_supplier_invoice"}
+                       | PREPAYMENT_ACTIONS | QUALIFICATION_ACTIONS)
+# W1 仓储处置动作（决策日志 W1，Build 2/3）——审批后回写受影响仓储对象「可见状态」，非判风险
+# （R16-R18 检测由 engine 从事实重算，绝不信状态字段，同「不信状态字段」铁律）。回写逻辑在
+# app.warehouse_actions.apply_warehouse_disposition（approve_mitigation 事务内调用），锚点：
+#   suggest_substitution 延误(R1-R3, shipment 目的仓)/R17(warehouse_id) → Reservation + SalesOrderLine；
+#   adjust_inventory R18(cycle_count 锚) → InventoryPosition + CycleCount.status=reconciled；
+#   escalate_replenishment R16(inventory_position 锚) → InventoryPosition.in_transit_qty。
+WAREHOUSE_ACTIONS = {"suggest_substitution", "adjust_inventory", "escalate_replenishment"}
+# P3 采购富化2 处置动作（决策日志 P3，Build B）——审批后回写受影响采购/询价对象「可见状态」，非判风险
+# （R14/R15 检测由 engine.detect_sourcing_risks 从事实重算，绝不信 rfq/invoice/po 状态字段，同「不信状态字段」铁律）。
+# 回写逻辑在 app.sourcing_actions.apply_sourcing_disposition（approve_mitigation 事务内调用），锚点：
+#   initiate_second_source R14(supplier_id 锚, sku 载体在 affected_po_line_ids[0]) → RFQ.status=sent（建/标询价）；
+#   block_non_po_payment  R15(po_id 锚, maverick 行在 affected_invoice_line_ids) → supplier_invoices.status=on_hold；
+#   backfill_po           R15 → 新建追溯 PurchaseOrder(supplier=biller) + supplier_invoices 重指向关联（合规补单）。
+SOURCING_ACTIONS = {"initiate_second_source", "block_non_po_payment", "backfill_po"}
+# cost-manual §4 A5 G4 incoterm 责任门禁矩阵（与 ontology JSON incotermRebillMatrix 同步）：
+# rebill_customer 仅当受影响行费种 ⊆ 该票 incoterm 的可转嫁集合。
+REBILL_MATRIX = {
+    "DDP": set(),  # 门到门全我方，rebill 一律拒绝
+    "CIF": {"DTY", "CUS", "WHS", "STO", "LMD", "DET", "DEM", "CHS", "ACC"},
+    "FOB": {"OFT", "FSC", "THC", "DOC", "DTY", "CUS", "WHS", "STO", "LMD",
+            "DET", "DEM", "CHS", "ACC"},
+}
+RISK_TERMINAL = ("resolved", "escalated")
+TASK_TERMINAL = ("done", "cancelled")
+TASK_GOVERNANCE_COLUMNS = {
+    "assigned_by_actor_id": "TEXT",
+    "proposal_actor_id": "TEXT",
+    "proposal_actor_role": "TEXT",
+}
+TASK_WORK_QUEUE_COLUMNS = {
+    "assignee_user_id": "TEXT",
+    "assignee_team_id": "TEXT",
+    "sla_state": "TEXT",
+    "escalation_level": "INTEGER DEFAULT 0",
+    "policy_version": "TEXT",
+}
+WORK_QUEUE_POLICY_VERSION = "M2-demo-work-queue-v1"
+DEFAULT_DEMO_REGION = "US"
+DEMO_ROSTER = [
+    Owner(actor_id="u-ops-us", role="ops", region="US", active=True),
+    Owner(actor_id="u-cs-us", role="cs", region="US", active=True),
+    Owner(actor_id="u-manager-us", role="manager", region="US", active=True),
+    Owner(actor_id="u-fin-us", role="finance", region="US", active=True),
+    Owner(actor_id="u-ops-cn", role="ops", region="CN", active=True),
+    # 实名 owner（enrich demo）：仅 append，第一个 ops/US 仍是 u-ops-us，
+    # 故 resolve_actor / assign_owner 既有行为不变，只为运营快照提供更多分派对象。
+    Owner(actor_id="u-ops-us-amelia", role="ops", region="US", active=True),
+    Owner(actor_id="u-ops-us-diego", role="ops", region="US", active=True),
+    Owner(actor_id="u-cs-us-priya", role="cs", region="US", active=True),
+    Owner(actor_id="u-fin-us-marcus", role="finance", region="US", active=True),
+    Owner(actor_id="u-ops-cn-lin", role="ops", region="CN", active=True),
+    # P4：采购 procurement demo owner（US/CN），供采购处置提案分派与数据范围解析。
+    Owner(actor_id="u-proc-us", role="procurement", region="US", active=True),
+    Owner(actor_id="u-proc-cn", role="procurement", region="CN", active=True),
+]
+
+
+class _StateConflict(Exception):
+    """洞1.2 TOCTOU 收窄：事务内（BEGIN IMMEDIATE 写锁下）状态机复检失败时抛出，
+    由动作的 except 捕获转 _fail——业务写随事务回滚，审计留痕（_fail 另起事务）不被吞。"""
+
+
+# G-Trace 贯穿追踪号（治理证据包）：AI 经 dispatch 触发的写动作，把当次 LLM 调用的 trace_id 透传到
+#   action_log，使 action_log ↔ llm_calls 可按血缘拼接（"这次 AI 调用→改了哪条数据"）。透传用
+#   ContextVar 而非改 7 个动作函数签名——dispatch 层（agent/tools.py Toolbox.dispatch）在 AI 动作
+#   执行期间 set，_log 读取。人工/UI/存量动作从不 set → 读到默认 None → action_log.trace_id 写 NULL
+#   （如实：非 AI 触发无 trace）。纯测量：动作语义/权限/审计内容一字不动，只多记一个关联号。
+#   本模块的 _log 被 warehouse/admission/coordination/procurement 等动作层共享 import——一处透传，全域覆盖。
+_CURRENT_TRACE_ID = contextvars.ContextVar("gtrace_action_trace_id", default=None)
+
+
+def set_action_trace_id(trace_id):
+    """在 AI 触发的动作执行期间设置当前 trace_id；返回 token 交 reset_action_trace_id 复位。"""
+    return _CURRENT_TRACE_ID.set(trace_id)
+
+
+def reset_action_trace_id(token):
+    """复位 trace 上下文（务必在 finally 调用，防跨调用/跨请求泄漏 trace）。"""
+    _CURRENT_TRACE_ID.reset(token)
+
+
+def current_action_trace_id():
+    """当前生效的 trace_id（无则 None）；供审计对齐（如 MCP 侧 llm_calls 落同一 trace）读取。"""
+    return _CURRENT_TRACE_ID.get()
+
+
+def _log(cur, actor, role, action, target, params, as_of, result):
+    trace_id = _CURRENT_TRACE_ID.get()
+    params_json = json.dumps(params, ensure_ascii=False)
+    timestamp = f"{as_of}T00:00:00Z"
+    try:
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
+                       as_of_date, timestamp, result, trace_id) VALUES (?,?,?,?,?,?,?,?,?)""",
+                    (actor, role, action, target, params_json, as_of, timestamp, result, trace_id))
+    except sqlite3.OperationalError as exc:
+        # 旧库副本 / 测试自建的 action_log 尚无 trace_id 列（G-Trace 是可空增列）：回落 8 列写入，
+        #   既有审计内容照写不误——追踪号缺列只丢关联号，绝不阻断审计（红线：只增不改语义）。
+        if "trace_id" not in str(exc):
+            raise
+        cur.execute("""INSERT INTO action_log (actor, role, action, target_object_id, params_json,
+                       as_of_date, timestamp, result) VALUES (?,?,?,?,?,?,?,?)""",
+                    (actor, role, action, target, params_json, as_of, timestamp, result))
+
+
+def _res(ok, object_id=None, side_effects=None, error=None):
+    return {"ok": ok, "object_id": object_id, "side_effects": side_effects or [], "error": error}
+
+
+def _table_columns(cur, table):
+    return {row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _ensure_task_governance_columns(con, cur):
+    cols = _table_columns(cur, "tasks")
+    changed = False
+    for name, ddl in {**TASK_GOVERNANCE_COLUMNS, **TASK_WORK_QUEUE_COLUMNS}.items():
+        if name not in cols:
+            cur.execute(f"ALTER TABLE tasks ADD COLUMN {name} {ddl}")
+            changed = True
+    if changed:
+        con.commit()
+
+
+def _demo_region_for_risk(cur, risk):
+    try:
+        row = cur.execute("""SELECT destination_port_locode FROM shipments
+                             WHERE shipment_id=?""", (risk["shipment_id"],)).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table: shipments" not in str(exc):
+            raise
+        return DEFAULT_DEMO_REGION
+    if row and row["destination_port_locode"].startswith("US"):
+        return "US"
+    return DEFAULT_DEMO_REGION
+
+
+def _team_id_for(owner):
+    return f"team-{owner.role}-{owner.region.lower()}"
+
+
+def _escalation_level(due_at, as_of):
+    return 1 if sla_state(due_at, as_of) == "overdue" else 0
+
+
+def _enqueue_reschedule_writeback(con, task_id, risk, affected, params, actor, as_of):
+    payload = {
+        "task_id": task_id,
+        "risk_event_id": risk["risk_event_id"],
+        "shipment_id": risk["shipment_id"],
+        "so_line_ids": sorted(affected),
+        "new_promise_date": params["new_promise_date"],
+        "notify_customer": bool(params.get("notify_customer")),
+        "approved_by_actor_id": actor,
+        "as_of_date": as_of,
+    }
+    return enqueue_writeback(
+        con,
+        target_system="oms_simulated",
+        action_name="update_promise_date",
+        target_object=f"Task:{task_id}",
+        payload=payload,
+        as_of=as_of,
+    )
+
+
+def _work_queue_assignment(cur, risk, assignee_role, due_at, as_of):
+    region = _demo_region_for_risk(cur, risk)
+    owner = assign_owner(assignee_role, region, DEMO_ROSTER)
+    state = sla_state(due_at, as_of)
+    return {
+        "assignee_user_id": owner.actor_id,
+        "assignee_team_id": _team_id_for(owner),
+        "sla_state": state,
+        "escalation_level": _escalation_level(due_at, as_of),
+        "policy_version": WORK_QUEUE_POLICY_VERSION,
+    }
+
+
+def ensure_task_work_queue_columns(con, as_of_date):
+    """M2 runtime compatibility for old ontology.sqlite copies; uses explicit as_of_date."""
+    cur = con.cursor()
+    _ensure_task_governance_columns(con, cur)
+    rows = cur.execute("""SELECT * FROM tasks
+                          WHERE assignee_user_id IS NULL OR assignee_team_id IS NULL
+                             OR sla_state IS NULL OR policy_version IS NULL""").fetchall()
+    for task in rows:
+        risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
+                           (task["risk_event_id"],)).fetchone()
+        if not risk:
+            continue
+        assignment = _work_queue_assignment(cur, risk, task["assignee_role"],
+                                            task["due_at"], as_of_date)
+        cur.execute("""UPDATE tasks SET assignee_user_id=?, assignee_team_id=?,
+                       sla_state=?, escalation_level=?, policy_version=?
+                       WHERE task_id=?""",
+                    (assignment["assignee_user_id"], assignment["assignee_team_id"],
+                     assignment["sla_state"], assignment["escalation_level"],
+                     assignment["policy_version"], task["task_id"]))
+    if rows:
+        con.commit()
+
+
+def _next_task_id(cur, risk_event_id, as_of):
+    base = next_stable_id("TSK", f"{risk_event_id}|assign|{as_of}")
+    candidate = base
+    suffix = 2
+    while cur.execute("SELECT 1 FROM tasks WHERE task_id=?", (candidate,)).fetchone():
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _proposal_actor_from_log(cur, task_id):
+    row = cur.execute("""SELECT actor, role FROM action_log
+                         WHERE action='ProposeMitigation' AND target_object_id=?
+                         AND result='ok'
+                         ORDER BY log_id DESC LIMIT 1""", (task_id,)).fetchone()
+    if row:
+        return row["actor"], row["role"]
+    return None, None
+
+
+def can_approve_actor(proposer_actor_id, approver_actor_id, approver_role):
+    """M1 maker-checker helper; legacy unknown proposer keeps role-only behavior."""
+    if approver_role not in ROLE_PERMS["ApproveMitigation"]:
+        return False, "manager_role_required"
+    if not proposer_actor_id:
+        return True, "legacy_role_only"
+    return ApprovalPolicy(policy_version="M1").can_approve(
+        proposer=Actor(actor_id=proposer_actor_id, role="proposer"),
+        approver=Actor(actor_id=approver_actor_id, role=approver_role),
+    )
+
+
+def _denied(con, action, target, actor, role, as_of):
+    cur = con.cursor()
+    _log(cur, actor, role, action, target, {}, as_of, "denied: role not permitted")
+    con.commit()
+    return _res(False, error=f"权限拒绝：角色 {role} 不允许执行 {action}（已记录审计）")
+
+
+def _fail(con, action, target, actor, role, as_of, msg, params=None):
+    cur = con.cursor()
+    _log(cur, actor, role, action, target, params or {}, as_of, f"rejected: {msg}")
+    con.commit()
+    return _res(False, error=msg)
+
+
+def assign_task(con, risk_event_id, assignee_role, priority, due_at, actor, role, as_of):
+    """A3：派单。前置：风险 open 且无非终态任务。成功：Task=assigned，Risk→acknowledged。
+    洞1.2：状态机检查先在事务外快速失败（干净错误消息、非并发路径行为不变），再在
+    BEGIN IMMEDIATE 事务内写锁下复检，堵住"两并发都读到 open 都派单"的 TOCTOU 窗口。"""
+    if role not in ROLE_PERMS["AssignTask"]:
+        return _denied(con, "AssignTask", risk_event_id, actor, role, as_of)
+    cur = con.cursor()
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?", (risk_event_id,)).fetchone()
+    if not risk:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, "风险事件不存在")
+    # 事务外快速前置校验（manual A3：已有非终态 Task → 拒绝并返回其 id；再查状态）
+    ex = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=? AND status NOT IN (?,?)""",
+                     (risk_event_id, *TASK_TERMINAL)).fetchone()
+    if ex:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of,
+                     f"已存在非终态任务 {ex['task_id']}（单风险单任务，D9/C4）")
+    if risk["status"] != "open":
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of,
+                     f"风险状态为 {risk['status']}，仅 open 可派单")
+    _ensure_task_governance_columns(con, cur)
+    try:
+        assignment = _work_queue_assignment(cur, risk, assignee_role, due_at, as_of)
+    except ValueError as exc:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, str(exc))
+    try:
+        with transaction(con, immediate=True):
+            # 写锁下复检状态机（洞1.2）：并发下另一方已派单 / 风险已被推进则拒绝并回滚
+            ex2 = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
+                                 AND status NOT IN (?,?)""",
+                              (risk_event_id, *TASK_TERMINAL)).fetchone()
+            if ex2:
+                raise _StateConflict(f"已存在非终态任务 {ex2['task_id']}（单风险单任务，D9/C4）")
+            rk = cur.execute("SELECT status FROM risk_events WHERE risk_event_id=?",
+                             (risk_event_id,)).fetchone()
+            if rk["status"] != "open":
+                raise _StateConflict(f"风险状态为 {rk['status']}，仅 open 可派单")
+            tid = _next_task_id(cur, risk_event_id, as_of)
+            cur.execute("""INSERT INTO tasks
+                           (task_id, risk_event_id, title, assignee_role, priority, due_at,
+                            proposed_action, proposal_params, approval_status, approved_by_role,
+                            action_taken, status, assigned_by_actor_id, assignee_user_id,
+                            assignee_team_id, sla_state, escalation_level, policy_version)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (tid, risk_event_id, f"处置 {risk['type']} @ {risk['shipment_id']}",
+                         assignee_role, priority, due_at, None, None, None, None, None, "assigned",
+                         actor, assignment["assignee_user_id"], assignment["assignee_team_id"],
+                         assignment["sla_state"], assignment["escalation_level"],
+                         assignment["policy_version"]))
+            cur.execute("UPDATE risk_events SET status='acknowledged' WHERE risk_event_id=?",
+                        (risk_event_id,))
+            _log(cur, actor, role, "AssignTask", tid,
+                 {"risk_event_id": risk_event_id, "assignee_role": assignee_role,
+                  "priority": priority, "assignee_user_id": assignment["assignee_user_id"],
+                  "assignee_team_id": assignment["assignee_team_id"],
+                  "sla_state": assignment["sla_state"],
+                  "escalation_level": assignment["escalation_level"],
+                  "policy_version": assignment["policy_version"]},
+                 as_of, "ok")
+    except (_StateConflict, sqlite3.Error) as exc:
+        return _fail(con, "AssignTask", risk_event_id, actor, role, as_of, str(exc))
+    return _res(True, tid, [f"RiskEvent {risk_event_id}: open→acknowledged",
+                            f"Task {tid} assigned to {assignment['assignee_user_id']}"])
+
+
+def propose_collection(con, payment_id, note=None, actor=None, role=None, as_of=None):
+    """A26（F1，V8-②）：对逾期应收（overdue 派生的 in 向 Payment）提交催收任务提案。
+    前置：payment 存在、direction='in'、overdue 派生成立（status=scheduled 未付 且 due_date < as_of）。
+    效果：生成催收 Task 提案（approval_status='pending'，maker-checker）候人批——审批仍由人做
+    （proposal-only，AI 只产提案不夺决策）。若该应收已检出 R19 风险事件则挂其上、复用现有闭环。"""
+    if role not in ROLE_PERMS["ProposeCollection"]:
+        return _denied(con, "ProposeCollection", payment_id, actor, role, as_of)
+    cur = con.cursor()
+    p = cur.execute("SELECT * FROM payments WHERE payment_id=?", (payment_id,)).fetchone()
+    if not p:
+        return _fail(con, "ProposeCollection", payment_id, actor, role, as_of, "Payment 不存在")
+    if p["direction"] != "in":
+        return _fail(con, "ProposeCollection", payment_id, actor, role, as_of,
+                     "仅 in 向应收可催收（direction≠in）")
+    overdue = (p["status"] == "scheduled" and not p["paid_date"]
+               and p["due_date"] and str(p["due_date"]) < str(as_of))
+    if not overdue:
+        return _fail(con, "ProposeCollection", payment_id, actor, role, as_of,
+                     "Payment 非 overdue（须 scheduled 未付且 due_date < as_of）")
+    # 若该逾期应收已检出 R19 风险事件（affected_so_line_ids 承载 payment_id），催收提案挂其上
+    risk = cur.execute("SELECT risk_event_id FROM risk_events WHERE rule_id='R19' "
+                       "AND affected_so_line_ids LIKE ?", (f'%"{payment_id}"%',)).fetchone()
+    rid = risk["risk_event_id"] if risk else None
+    params = {"payment_id": payment_id, "counterparty_id": p["counterparty_id"],
+              "amount_usd_ref": p["ref_id"], "note": note or ""}
+    _ensure_task_governance_columns(con, cur)
+    tid = _next_task_id(cur, rid or payment_id, as_of)
+    with transaction(con):
+        cur.execute("""INSERT INTO tasks (task_id, risk_event_id, title, assignee_role, priority,
+                       proposed_action, proposal_params, approval_status, status,
+                       assigned_by_actor_id, proposal_actor_id, proposal_actor_role)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (tid, rid, f"催收逾期应收 {payment_id}", role, "P2",
+                     "collect", json.dumps(params, ensure_ascii=False), "pending", "in_progress",
+                     actor, actor, role))
+        _log(cur, actor, role, "ProposeCollection", tid, params, as_of, "ok")
+    return _res(True, tid, [f"催收任务提案 {tid} 生成（approval_status=pending，候人批 maker-checker）"])
+
+
+def propose_mitigation(con, task_id, proposed_action, proposal_params, actor, role, as_of):
+    """A4：提交处置方案。前置：Task=assigned、参数过 schema、改期日晚于受影响行当前承诺。"""
+    if role not in ROLE_PERMS["ProposeMitigation"]:
+        return _denied(con, "ProposeMitigation", task_id, actor, role, as_of)
+    cur = con.cursor()
+    task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    if not task:
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of, "任务不存在")
+    if task["status"] != "assigned":
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
+                     f"任务状态为 {task['status']}，仅 assigned 可提案")
+    schema = PARAM_SCHEMAS.get(proposed_action)
+    if schema is None or not schema <= set(proposal_params):
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
+                     f"参数不符合 {proposed_action} schema（需 {sorted(schema or [])}）",
+                     proposal_params)
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
+                       (task["risk_event_id"],)).fetchone()
+    if proposed_action == "reschedule":
+        rows = cur.execute(
+            f"""SELECT max(promised_delivery_date) m FROM sales_order_lines WHERE so_line_id IN
+            ({','.join('?' * len(json.loads(risk['affected_so_line_ids'])))})""",
+            json.loads(risk["affected_so_line_ids"])).fetchone()
+        if rows["m"] and proposal_params["new_promise_date"] <= rows["m"]:
+            return _fail(con, "ProposeMitigation", task_id, actor, role, as_of,
+                         f"新承诺日必须晚于受影响行当前承诺日（最晚 {rows['m']}）", proposal_params)
+    _ensure_task_governance_columns(con, cur)
+    try:
+        with transaction(con, immediate=True):
+            # 写锁下复检任务态（洞1.2）：并发下已被他人提案（status≠assigned）则拒绝并回滚
+            st = cur.execute("SELECT status FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if not st or st["status"] != "assigned":
+                raise _StateConflict(
+                    f"任务状态为 {st['status'] if st else '不存在'}，仅 assigned 可提案")
+            cur.execute("""UPDATE tasks SET status='in_progress', proposed_action=?, proposal_params=?,
+                           approval_status='pending', proposal_actor_id=?, proposal_actor_role=?
+                           WHERE task_id=?""",
+                        (proposed_action, json.dumps(proposal_params, ensure_ascii=False),
+                         actor, role, task_id))
+            cur.execute("UPDATE risk_events SET status='mitigating' WHERE risk_event_id=?",
+                        (task["risk_event_id"],))
+            _log(cur, actor, role, "ProposeMitigation", task_id,
+                 {"proposed_action": proposed_action, **proposal_params}, as_of, "ok")
+    except (_StateConflict, sqlite3.Error) as exc:
+        return _fail(con, "ProposeMitigation", task_id, actor, role, as_of, str(exc), proposal_params)
+    return _res(True, task_id, [f"Task {task_id}: assigned→in_progress (pending approval)",
+                                f"RiskEvent {task['risk_event_id']}: →mitigating"])
+
+
+def _bulk_set_status(cur, table, column, value, id_column, ids):
+    """逐条 UPDATE {table} SET {column}=value WHERE {id_column}=?；抽自 approve_mitigation 六处等价回写。"""
+    for i in ids:
+        cur.execute(f"UPDATE {table} SET {column}=? WHERE {id_column}=?", (value, i))
+
+
+def _distinct_invoice_col(cur, column, invoice_line_ids):
+    """DISTINCT {column} FROM invoice_lines WHERE invoice_line_id IN ids（参数化，空→[]）；抽自 rebill/dispute 两处。"""
+    if not invoice_line_ids:
+        return []
+    ph = ",".join("?" * len(invoice_line_ids))
+    return [r[column] for r in cur.execute(
+        f"SELECT DISTINCT {column} FROM invoice_lines WHERE invoice_line_id IN ({ph})",
+        invoice_line_ids)]
+
+
+def approve_mitigation(con, task_id, decision, comment, actor, role, as_of,
+                       offsite_basis=None, proposal_version=None):
+    """A5：审批（仅经理）。approved 按方案回写；rejected 退回 assigned，提案留痕于 action_log。
+    C1：成功路径归档处置记忆（决策血缘：提案版本戳+引用先例+决策人+场外依据，均可选传入）。"""
+    if role not in ROLE_PERMS["ApproveMitigation"]:
+        return _denied(con, "ApproveMitigation", task_id, actor, role, as_of)
+    cur = con.cursor()
+    task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    if not task or task["approval_status"] != "pending":
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     "任务不存在或无待审批提案")
+    _ensure_task_governance_columns(con, cur)
+    ensure_resolution_memory_table(con)  # C1：旧库副本兼容（仿 M2 模式），事务外幂等建表
+    task = cur.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    proposer_actor_id = task["proposal_actor_id"]
+    if not proposer_actor_id:
+        proposer_actor_id, _ = _proposal_actor_from_log(cur, task_id)
+    allowed, reason = can_approve_actor(proposer_actor_id, actor, role)
+    if not allowed:
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     f"M1 审批边界拒绝：{reason}",
+                     {"proposer_actor_id": proposer_actor_id, "approver_actor_id": actor})
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?",
+                       (task["risk_event_id"],)).fetchone()
+    affected = json.loads(risk["affected_so_line_ids"])
+    params = json.loads(task["proposal_params"] or "{}")
+    act = task["proposed_action"]
+    # G4 incoterm 责任门禁（仅 rebill_customer）：审批前置校验，越界即拒绝并审计（A5/XC4）。
+    if decision == "approved" and act == "rebill_customer":
+        inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
+        codes = set(_distinct_invoice_col(cur, "charge_code", inv_lids))
+        ship = cur.execute("SELECT incoterm FROM shipments WHERE shipment_id=?",
+                           (risk["shipment_id"],)).fetchone()
+        incoterm = ship["incoterm"] if ship else ""
+        allowed = REBILL_MATRIX.get(incoterm, set())
+        overflow = codes - allowed
+        if overflow:
+            return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                         f"G4 门禁未过：incoterm={incoterm} 下费种 {sorted(overflow)} 不可转嫁客户",
+                         {"decision": decision, "proposal": params})
+    effects = []
+    if decision not in ("approved", "rejected"):
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     "decision 必须是 approved/rejected")
+    try:
+        with transaction(con, immediate=True):
+            # 写锁下复检审批态（洞1.2）：并发下提案已被他人审批（approval_status≠pending）则拒绝并
+            # 回滚，防止处置副作用被重复执行（双批）。
+            fresh = cur.execute("SELECT approval_status FROM tasks WHERE task_id=?",
+                                (task_id,)).fetchone()
+            if not fresh or fresh["approval_status"] != "pending":
+                raise _StateConflict("任务不存在或无待审批提案（并发已被处理）")
+            if decision == "rejected":
+                cur.execute("""UPDATE tasks SET status='assigned', approval_status='rejected',
+                               proposed_action=NULL, proposal_params=NULL WHERE task_id=?""", (task_id,))
+                effects.append(f"Task {task_id}: →assigned（提案已驳回，参数留痕于审计）")
+            elif decision == "approved":
+                if act == "reschedule":
+                    for lid in affected:
+                        cur.execute("""UPDATE sales_order_lines SET promised_delivery_date=?,
+                                       reschedule_count=reschedule_count+1, line_status='allocated'
+                                       WHERE so_line_id=? AND line_status='at_risk'""",
+                                    (params["new_promise_date"], lid))
+                    outbox_key = _enqueue_reschedule_writeback(con, task_id, risk, affected,
+                                                               params, actor, as_of)
+                    effects.append(f"受影响行承诺日→{params['new_promise_date']}，at_risk→allocated")
+                    effects.append(f"模拟写回 outbox 已入队：{outbox_key}")
+                elif act == "expedite":
+                    cur.execute("UPDATE shipments SET expedite_flag=1 WHERE shipment_id=?",
+                                (risk["shipment_id"],))
+                    for lid in affected:
+                        cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
+                                       WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
+                    effects.append(f"Shipment {risk['shipment_id']} expedite_flag=1，行风险解除（D9/C2 简化）")
+                elif act == "accept_delay":
+                    effects.append("接受延误：行保持 at_risk 至交付")
+                elif act in ("dispute", "accept_charge", "rebill_customer"):
+                    # 费用提案：无行级副作用（affected_so_line_ids 空）；按 §2 状态机回写发票。
+                    # dispute → 受影响行所属发票 disputed；accept_charge / rebill_customer → approved。
+                    inv_lids = json.loads(risk["affected_invoice_line_ids"] or "[]")
+                    new_inv_status = "disputed" if act == "dispute" else "approved"
+                    inv_ids = _distinct_invoice_col(cur, "invoice_id", inv_lids)
+                    _bulk_set_status(cur, "invoices", "status", new_inv_status, "invoice_id", inv_ids)
+                    effects.append(f"{act} 批准：受影响发票 {sorted(inv_ids)} → {new_inv_status}")
+                elif act in PREPAYMENT_ACTIONS:
+                    # R12 预付款敞口处置（po_id 锚）：审批后把相关付款 exposure_status 回写 at_risk
+                    # （可见状态回写，非判风险——R12 由收货存在性+付款账龄重算，不信该字段）。
+                    # escalate_prepayment 锚 deposit（预付敞口本体）；hold_balance_payment 锚 balance（暂缓尾款）。
+                    pay_type = "deposit" if act == "escalate_prepayment" else "balance"
+                    pay_ids = [r["payment_id"] for r in cur.execute(
+                        "SELECT payment_id FROM purchase_payments WHERE po_id=? AND payment_type=?",
+                        (risk["po_id"], pay_type))]
+                    _bulk_set_status(cur, "purchase_payments", "exposure_status", "at_risk",
+                                     "payment_id", pay_ids)
+                    effects.append(f"{act} 批准：{pay_type} 付款 {sorted(pay_ids)} → exposure_status=at_risk")
+                elif act in QUALIFICATION_ACTIONS:
+                    # R13 供应商资质处置（supplier_id 锚）：审批后回写该供应商「过期证」的可见状态
+                    # （无 Supplier.status 字段，回写资质对象；R13 由 valid_to vs as_of 重算，不信 status/evidence_status）。
+                    # 过期证域 = valid_to < as_of（R13 检测口径）；request 可选 cert_type 缩到某类证。
+                    cert_filter = params.get("cert_type")
+                    quals = cur.execute(
+                        """SELECT qualification_id, cert_type, valid_to FROM supplier_qualifications
+                           WHERE supplier_id=?""", (risk["supplier_id"],)).fetchall()
+                    qids = sorted(r["qualification_id"] for r in quals
+                                  if r["valid_to"] < as_of
+                                  and (cert_filter is None or r["cert_type"] == cert_filter))
+                    if act == "request_supplier_docs":
+                        _bulk_set_status(cur, "supplier_qualifications", "evidence_status",
+                                         "provided", "qualification_id", qids)
+                        effects.append(f"request_supplier_docs 批准：过期资质 {qids} "
+                                       f"→ evidence_status=provided（补证请求已发）")
+                    else:  # suspend_supplier
+                        _bulk_set_status(cur, "supplier_qualifications", "status", "revoked",
+                                         "qualification_id", qids)
+                        effects.append(f"suspend_supplier 批准：供应商 {risk['supplier_id']} 过期资质 "
+                                       f"{qids} → status=revoked（供应商已冻结）")
+                elif act in PROCUREMENT_ACTIONS:
+                    # P1 采购处置（Build 3）：采购 RiskEvent 用 po_id/affected_po_line_ids 锚点，
+                    # 无 SO 行副作用；批准后回写受影响 PoLine 状态或供票状态（事实回写，非判风险）。
+                    po_line_ids = json.loads(risk["affected_po_line_ids"] or "[]")
+                    if act == "dispute_supplier_invoice":
+                        sinv_ids = []
+                        if po_line_ids:
+                            ph = ",".join("?" * len(po_line_ids))
+                            sinv_ids = [r["supplier_invoice_id"] for r in cur.execute(
+                                f"""SELECT DISTINCT si.supplier_invoice_id FROM supplier_invoices si
+                                    JOIN supplier_invoice_lines sil
+                                      ON sil.supplier_invoice_id=si.supplier_invoice_id
+                                    WHERE sil.po_line_id IN ({ph})""", po_line_ids)]
+                        if not sinv_ids and risk["po_id"]:  # 回退：按 PO 取供票
+                            sinv_ids = [r["supplier_invoice_id"] for r in cur.execute(
+                                "SELECT supplier_invoice_id FROM supplier_invoices WHERE po_id=?",
+                                (risk["po_id"],))]
+                        _bulk_set_status(cur, "supplier_invoices", "status", "disputed",
+                                         "supplier_invoice_id", sinv_ids)
+                        effects.append(f"dispute_supplier_invoice 批准：供票 {sorted(sinv_ids)} → disputed")
+                    else:
+                        new_pol_status = PO_LINE_STATUS_ON_APPROVE[act]
+                        _bulk_set_status(cur, "po_lines", "line_status", new_pol_status,
+                                         "po_line_id", po_line_ids)
+                        effects.append(f"{act} 批准：受影响采购行 {sorted(po_line_ids)} "
+                                       f"→ line_status={new_pol_status}")
+                elif act in WAREHOUSE_ACTIONS:
+                    # W1 仓储处置（Build 2/3）：仓储风险(R16-R18)锚 warehouse_id+affected_so_line_ids
+                    # （承载受影响仓储对象 id）；延误连接(R1-R3)锚 shipment_id。审批后按已批准方案回写受影响
+                    # 仓储对象「可见状态」（事实回写，非判风险——检测仍由 engine 从事实重算）。lazy import
+                    # 避免 actions↔warehouse_actions 循环 import；helper 在本事务内只用 cur。
+                    try:
+                        from .warehouse_actions import apply_warehouse_disposition
+                    except ImportError:
+                        from warehouse_actions import apply_warehouse_disposition
+                    effects.extend(apply_warehouse_disposition(cur, act, risk, affected, params, as_of))
+                elif act in SOURCING_ACTIONS:
+                    # P3 采购富化2 处置（Build B）：R14 锚 supplier_id + sku 载体(affected_po_line_ids[0])，
+                    # R15 锚 po_id + maverick 行(affected_invoice_line_ids)；无 SO 行副作用。审批后按已批准方案
+                    # 回写受影响 RFQ/supplier_invoice/purchase_order 的「可见状态」（事实回写，非判风险——检测仍由
+                    # engine 从事实重算）。lazy import 避免 actions↔sourcing_actions 循环 import；helper 只用 cur。
+                    try:
+                        from .sourcing_actions import apply_sourcing_disposition
+                    except ImportError:
+                        from sourcing_actions import apply_sourcing_disposition
+                    effects.extend(apply_sourcing_disposition(cur, act, risk, params, as_of))
+                cur.execute("""UPDATE tasks SET status='done', approval_status='approved',
+                               approved_by_role=?, action_taken=? WHERE task_id=?""",
+                            (role, f"{act} approved: {json.dumps(params, ensure_ascii=False)}", task_id))
+                effects.append(f"Task {task_id}: →done")
+            # C1 处置记忆：approved/rejected 都是"人的决定"，同事务归档（失败随审批一起回滚）。
+            # 决定映射：approved→adopted、rejected→rejected（现有闭环无"改后批"路径，modified 暂不可达）。
+            memory_id = write_decision_memory(
+                con, task["risk_event_id"], task_id=task_id, proposed_action=act,
+                proposal_params=params,
+                decision="adopted" if decision == "approved" else "rejected",
+                decision_note=comment, decided_by=actor, as_of=as_of,
+                offsite_basis=offsite_basis, proposal_version=proposal_version)
+            effects.append(f"处置记忆已归档 {memory_id}（C1 决策血缘）")
+            _log(cur, actor, role, "ApproveMitigation", task_id,
+                 {"decision": decision, "comment": comment, "proposal": params,
+                  "offsite_basis": offsite_basis, "memory_id": memory_id}, as_of, "ok")
+    except (_StateConflict, ValueError, sqlite3.Error) as exc:
+        # M7 加固：outbox 入队等异常先经 transaction 回滚（业务状态与写回一起撤销），
+        # 再转结构化失败返回，守住 actions.py 顶部“从不抛异常给调用方”契约。
+        # 洞1.2：并发复检失败（_StateConflict）同路径转 _fail，业务回滚、审计留痕。
+        return _fail(con, "ApproveMitigation", task_id, actor, role, as_of,
+                     f"审批执行失败（已回滚）：{exc}", {"decision": decision})
+    return _res(True, task_id, effects)
+
+
+def close_risk_event(con, risk_event_id, outcome, resolution_summary, actor, role, as_of,
+                     quality_label=None):
+    """A6：关闭。前置：任务全终态（false_alarm 例外：联动取消）；mitigated 须有已批准提案。
+    C1：quality_label 可空三选一（effective/partial/ineffective，专员关闭时顺手打），
+    连同 outcome/耗时回填本风险的处置记忆（既有调用不传即维持原行为）。"""
+    if role not in ROLE_PERMS["CloseRiskEvent"]:
+        return _denied(con, "CloseRiskEvent", risk_event_id, actor, role, as_of)
+    if quality_label is not None and quality_label not in QUALITY_LABELS:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                     f"quality_label 必须是 {sorted(QUALITY_LABELS)} 之一或不填（C1 三值校验）",
+                     {"quality_label": quality_label})
+    cur = con.cursor()
+    risk = cur.execute("SELECT * FROM risk_events WHERE risk_event_id=?", (risk_event_id,)).fetchone()
+    if not risk or risk["status"] in RISK_TERMINAL:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of, "风险不存在或已终态")
+    if not resolution_summary:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of, "关闭必须填写处理小结")
+    open_tasks = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
+                                AND status NOT IN (?,?)""",
+                             (risk_event_id, *TASK_TERMINAL)).fetchall()
+    # 前置校验（只读 + _fail，保持事务外——不产生写）：非误报不得有未结任务；mitigated 须已批提案。
+    if outcome != "false_alarm" and open_tasks:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                     f"存在非终态任务 {[t['task_id'] for t in open_tasks]}，仅 false_alarm 可强制关闭")
+    if outcome == "mitigated":
+        ok = cur.execute("""SELECT 1 FROM tasks WHERE risk_event_id=? AND approval_status='approved'
+                            AND status='done'""", (risk_event_id,)).fetchone()
+        if not ok:
+            return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                         "outcome=mitigated 需要存在已批准并执行的提案")
+    status = "escalated" if outcome == "escalated" else "resolved"
+    ensure_resolution_memory_table(con)  # 事务外幂等建表（对齐 approve_mitigation，避免事务内 DDL）
+    effects = []
+    n_mem = 0
+    # 洞1.1：把全部写操作（取消任务/回滚行/更新风险/回填记忆/审计）套进 BEGIN IMMEDIATE 事务
+    # + try/except→_fail，与 approve_mitigation 对齐——中途异常整体回滚、不留半成品、不穿透抛给
+    # 调用方（守 actions.py 顶部"从不抛异常给调用方"契约）。洞1.2：写锁下复检终态。
+    try:
+        with transaction(con, immediate=True):
+            rk = cur.execute("SELECT status FROM risk_events WHERE risk_event_id=?",
+                             (risk_event_id,)).fetchone()
+            if not rk or rk["status"] in RISK_TERMINAL:
+                raise _StateConflict("风险不存在或已终态（并发已被处理）")
+            if outcome == "false_alarm":
+                live_tasks = cur.execute("""SELECT task_id FROM tasks WHERE risk_event_id=?
+                                            AND status NOT IN (?,?)""",
+                                         (risk_event_id, *TASK_TERMINAL)).fetchall()
+                for tr in live_tasks:
+                    cur.execute("UPDATE tasks SET status='cancelled' WHERE task_id=?",
+                                (tr["task_id"],))
+                    effects.append(f"Task {tr['task_id']} cancelled（误报联动）")
+                for lid in json.loads(risk["affected_so_line_ids"]):  # 误报回滚行状态
+                    cur.execute("""UPDATE sales_order_lines SET line_status='allocated'
+                                   WHERE so_line_id=? AND line_status='at_risk'""", (lid,))
+            cur.execute("""UPDATE risk_events SET status=?, outcome=?, resolution_summary=?,
+                           resolved_at=? WHERE risk_event_id=?""",
+                        (status, outcome, resolution_summary, as_of, risk_event_id))
+            # C1：关闭时回填处置记忆的实际结果（同一事务；无记忆行则 0 行回填，兼容无提案关闭路径）
+            n_mem = backfill_outcome(con, risk_event_id, quality_label, closed_by=actor,
+                                     as_of=as_of, outcome=outcome)
+            _log(cur, actor, role, "CloseRiskEvent", risk_event_id,
+                 {"outcome": outcome, "resolution_summary": resolution_summary,
+                  "quality_label": quality_label}, as_of, "ok")
+    except (_StateConflict, ValueError, sqlite3.Error) as exc:
+        return _fail(con, "CloseRiskEvent", risk_event_id, actor, role, as_of,
+                     f"关闭执行失败（已回滚）：{exc}", {"outcome": outcome})
+    effects.append(f"RiskEvent {risk_event_id}: →{status} ({outcome})")
+    if n_mem:
+        effects.append(f"处置记忆结果已回填 {n_mem} 条"
+                       + (f"（质量标签 {quality_label}）" if quality_label else "（未打质量标签）"))
+    return _res(True, risk_event_id, effects)
+
+
+def connect(db_path="data/ontology.sqlite"):
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    return con

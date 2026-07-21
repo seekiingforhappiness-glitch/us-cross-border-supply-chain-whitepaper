@@ -1,0 +1,13 @@
+# 生成物不进版本库（AGENTS.md §5）
+data/
+*.sqlite
+*.sqlite3
+
+# 密钥
+.env
+
+# 系统与缓存
+.DS_Store
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

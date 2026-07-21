@@ -1,0 +1,85 @@
+# Freight Audit Agent — 单一配置源
+# 严格对齐 docs/domain-spec.md。datagen 与 recon 共用此文件。
+
+random_seed: 42
+
+# 显式 as_of（不用系统时钟；datagen 与 recon 均从此派生 created_at）
+datagen_as_of: "2026-07-01"
+recon_as_of: "2026-07-08"
+
+db_path: "data/audit.sqlite"
+
+# ---- 容差（domain-spec §5）----
+tolerances:
+  rate_mismatch_pct: 0.02
+  fx_error_pct: 0.02
+  weight_mismatch_pct: 0.05
+  amount_math_abs_usd: 0.01
+  min_recovery_usd: 5.0
+
+# ---- 误报控制（domain-spec §6）----
+# 常见合理附加费即使不在 rate_con 也不报 PHANTOM / NOT_IN_CONTRACT。
+accessorial_whitelist: [BAF, CAF, ISPS]
+
+# ---- 基准汇率（local -> USD）----
+base_fx:
+  USD: 1.0
+  EUR: 1.08
+  CNY: 0.14
+
+# ---- 生成规模（domain-spec §4）----
+scale:
+  n_carriers: 5
+  n_rate_cons: 15
+  n_rate_card_lines: 180        # 15 rate_cons x 12 charge lines
+  n_invoices: 150
+  pct_clean: 0.70               # 105 张
+  pct_dirty: 0.30               # 45 张
+  n_gray_zone: 12               # 灰区（clean 的子集，无 ground truth）
+  n_bols: 150
+
+container_types: ["20GP", "40HC", "40GP"]
+
+# 每张 dirty 发票注入 1-3 条差异
+inject_min_per_invoice: 1
+inject_max_per_invoice: 3
+
+# 差异类型加权（domain-spec §4，展开为单类型权重）
+discrepancy_weights:
+  RATE_MISMATCH: 30
+  DEMURRAGE_MISCALC: 10
+  DETENTION_MISCALC: 10
+  PHANTOM_ACCESSORIAL: 7.5
+  NOT_IN_CONTRACT: 7.5
+  DUPLICATE_CHARGE: 7.5
+  SURCHARGE_DUPLICATE: 7.5
+  CONTAINER_COUNT_MISMATCH: 5
+  WEIGHT_MISMATCH: 5
+  FX_ERROR: 3.34
+  UNIT_MATH_ERROR: 3.33
+  TARIFF_EXPIRED: 3.33
+
+# ---- Charge Code 目录（domain-spec §2，20 项）----
+# category: base/surcharge/doc/dd/transport/customs
+# unit: per_container/per_bl/per_day/per_shipment
+charge_codes:
+  OFR:  {desc_en: "Ocean Freight",              desc_zh: "海运费",       unit: per_container, min_usd: 800, max_usd: 3500, category: base}
+  BAF:  {desc_en: "Bunker Adjustment Factor",   desc_zh: "燃油附加费",   unit: per_container, min_usd: 150, max_usd: 600,  category: surcharge}
+  CAF:  {desc_en: "Currency Adjustment Factor", desc_zh: "货币贬值附加费", unit: per_container, min_usd: 50,  max_usd: 200,  category: surcharge}
+  PSS:  {desc_en: "Peak Season Surcharge",      desc_zh: "旺季附加费",   unit: per_container, min_usd: 100, max_usd: 500,  category: surcharge}
+  GRI:  {desc_en: "General Rate Increase",      desc_zh: "综合费率上涨", unit: per_container, min_usd: 100, max_usd: 400,  category: surcharge}
+  THCO: {desc_en: "Terminal Handling Origin",   desc_zh: "起运港码头费", unit: per_container, min_usd: 100, max_usd: 250,  category: base}
+  THCD: {desc_en: "Terminal Handling Dest",     desc_zh: "目的港码头费", unit: per_container, min_usd: 120, max_usd: 300,  category: base}
+  ISPS: {desc_en: "Ship & Port Security",       desc_zh: "安保费",       unit: per_container, min_usd: 10,  max_usd: 40,   category: surcharge}
+  CGS:  {desc_en: "Congestion Surcharge",       desc_zh: "拥堵费",       unit: per_container, min_usd: 50,  max_usd: 300,  category: surcharge}
+  DOC:  {desc_en: "Documentation Fee",          desc_zh: "文件费",       unit: per_bl,        min_usd: 30,  max_usd: 80,   category: doc}
+  SEAL: {desc_en: "Seal Fee",                   desc_zh: "铅封费",       unit: per_container, min_usd: 5,   max_usd: 15,   category: doc}
+  TLX:  {desc_en: "Telex Release",              desc_zh: "电放费",       unit: per_bl,        min_usd: 25,  max_usd: 50,   category: doc}
+  AMS:  {desc_en: "Automated Manifest System",  desc_zh: "舱单预报费",   unit: per_bl,        min_usd: 25,  max_usd: 40,   category: doc}
+  ISF:  {desc_en: "Importer Security Filing",   desc_zh: "进口安全申报费", unit: per_bl,        min_usd: 30,  max_usd: 50,   category: doc}
+  DET:  {desc_en: "Detention",                  desc_zh: "滞箱费",       unit: per_day,       min_usd: 75,  max_usd: 200,  category: dd}
+  DEM:  {desc_en: "Demurrage",                  desc_zh: "滞港费",       unit: per_day,       min_usd: 100, max_usd: 300,  category: dd}
+  CHAS: {desc_en: "Chassis Fee",                desc_zh: "底盘车费",     unit: per_day,       min_usd: 20,  max_usd: 45,   category: dd}
+  DRAY: {desc_en: "Drayage",                    desc_zh: "拖车费",       unit: per_container, min_usd: 150, max_usd: 600,  category: transport}
+  CUS:  {desc_en: "Customs Clearance",          desc_zh: "清关费",       unit: per_shipment,  min_usd: 80,  max_usd: 200,  category: customs}
+  LSS:  {desc_en: "Low Sulphur Surcharge",      desc_zh: "低硫附加费",   unit: per_container, min_usd: 20,  max_usd: 100,  category: surcharge}

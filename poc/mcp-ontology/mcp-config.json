@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ontology": {
+      "command": "python3",
+      "args": [
+        "/Users/Zhuanz/Desktop/数智供应链/poc/mcp-ontology/server.py"
+      ]
+    }
+  }
+}

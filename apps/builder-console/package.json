@@ -1,0 +1,24 @@
+{
+  "name": "builder-console",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "建造者透视镜 v2 —— 内在设计 + 活世界数据 + 关联织网 + 实体下钻（零后端静态应用）",
+  "scripts": {
+    "export": "python3 export_data.py",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
