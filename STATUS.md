@@ -7,9 +7,13 @@
 > **V25 轮4 四道裁决落地（960c170，2026-07-20 晚；决策日志 V25）**：ops 卡异常总票/finance 卡
 > 现金水位标红/证据包按声明与对象端点同口径（核心不变量测试固化）/临期窗 30→40（sim 得
 > RSK-SIM-00261 medium 演示样本，verify 真值合法重算 R/P=1.000）。**执行环境备注**：本地
-> worktree 遭 macOS 权限撤销（EPERM，候 Daniel 重启 Claude 应用或系统设置恢复"桌面文件夹"
-> 授权），本批经 scratchpad 克隆副本完成推送；恢复后本地 `git pull` 同步+全量复跑（唯一
-> 环境残红 test_trust_real_gating_domain 因 shadow.sqlite 锁于本地，届时应绿）+服务重启。
+> worktree 遭 macOS 权限撤销（EPERM），本批经 scratchpad 克隆副本完成推送。**2026-07-21 权限
+> 已恢复并收口**：本地快进至 09da1fc；正式目录全链重建（含 V25 config 阈值 30→40）+ sim.backfill
+> + gating 全绿——sim 四档样本齐（R22 critical×2/R23 high×1/**medium×1 RSK-SIM-00261**）、
+> R1-R23 全评估器 R/P=1.000、pytest 194+2 条件 skip、security 288、lint 0；服务栈已从临时目录
+> **切回正式目录**（8100 指向本 worktree data/，shadow.sqlite 在位，test_trust 环境残红消解）。
+> 浏览器实证：finance 卡主数字=$-271.8K 净现金流（费用敞口降副行）、ops 卡=31 异常总票
+> （OTD 降副行）、控制台零错误。**四道裁决在正式代码树上全部生效。**
 
 > **V23 四道裁决全量落地（2026-07-20 上午，Opus×3/Sonnet×1 四批+主会话复核，API 断连 8 次
 > 全部续命完成）**：①**R22 供应商绩效劣化+R23 资质过期预警**感知层——引擎新规则+真值双 oracle
